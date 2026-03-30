@@ -96,11 +96,19 @@ typedef struct {
     uint8_t cps_bufs[5][1500];
     int cps_lens[5];
 
-    /* GRO state */
+    /* GRO state — s2c */
     uint8_t gro_buf[GRO_BUF_SIZE];
     struct iovec gro_iov;
     struct msghdr gro_hdr;
     uint8_t gro_cmsg[32];
+
+    /* GRO state — c2s */
+    uint8_t gro_buf_c2s[GRO_BUF_SIZE];
+    struct iovec gro_iov_c2s;
+    struct msghdr gro_hdr_c2s;
+    uint8_t gro_cmsg_c2s[32];
+    struct sockaddr_in gro_addr_c2s;
+    int gro_enabled_c2s;
 
     /* === Large cold arrays === */
     uint32_t h4_ring[H4_RING_SIZE];

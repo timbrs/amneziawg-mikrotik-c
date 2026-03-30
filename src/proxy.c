@@ -164,6 +164,7 @@ static int enable_gro(int fd) {
 }
 
 static void init_gro_state(proxy_t *p) {
+    /* s2c GRO (remote → client) */
     p->gro_iov.iov_base = p->gro_buf;
     p->gro_iov.iov_len = GRO_BUF_SIZE;
     memset(&p->gro_hdr, 0, sizeof(p->gro_hdr));
@@ -171,6 +172,17 @@ static void init_gro_state(proxy_t *p) {
     p->gro_hdr.msg_iovlen = 1;
     p->gro_hdr.msg_control = p->gro_cmsg;
     p->gro_hdr.msg_controllen = sizeof(p->gro_cmsg);
+
+    /* c2s GRO (client → remote) */
+    p->gro_iov_c2s.iov_base = p->gro_buf_c2s;
+    p->gro_iov_c2s.iov_len = GRO_BUF_SIZE;
+    memset(&p->gro_hdr_c2s, 0, sizeof(p->gro_hdr_c2s));
+    p->gro_hdr_c2s.msg_iov = &p->gro_iov_c2s;
+    p->gro_hdr_c2s.msg_iovlen = 1;
+    p->gro_hdr_c2s.msg_control = p->gro_cmsg_c2s;
+    p->gro_hdr_c2s.msg_controllen = sizeof(p->gro_cmsg_c2s);
+    p->gro_hdr_c2s.msg_name = &p->gro_addr_c2s;
+    p->gro_hdr_c2s.msg_namelen = sizeof(struct sockaddr_in);
 }
 
 /* recv_gro: blocking recvmsg with GRO. Returns total bytes, sets *seg_size.
@@ -203,7 +215,7 @@ static int recv_gro(proxy_t *p, int fd, int *seg_size) {
  * Returns number of packets sent, or negative errno on error. */
 static int send_gso(int fd, struct iovec *iovecs, int count,
                     struct sockaddr_in *addr) {
-    if (count <= 1 || !addr) return 0;
+    if (count <= 1) return 0;
 
     /* Find longest prefix of same-size packets */
     int seg_size = (int)iovecs[0].iov_len;
@@ -432,7 +444,7 @@ static void send_batch_gso(proxy_t *p, int fd, struct mmsghdr *msgs,
         }
     }
     while (sent < nsend) {
-        int r = sendmmsg(fd, msgs + sent, nsend - sent, MSG_DONTWAIT | MSG_NOSIGNAL);
+        int r = sendmmsg(fd, msgs + sent, nsend - sent, MSG_NOSIGNAL);
         if (r <= 0) {
             log_debug2("sendmmsg failed: ", strerror(errno));
             break;
@@ -452,21 +464,69 @@ static void *c2s_thread_normal(void *arg) {
     set_thread_affinity(cfg->cpu_c2s, "c2s");
     int prefix = cfg->s4;
     int prev_nrecv = BATCH_SIZE;
+    int gro_no_coalesce = 0;
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
-        /* Reset iov_len only for previously used elements */
-        for (int i = 0; i < prev_nrecv; i++) {
-            p->recv_c2s.iovecs[i].iov_len = BUF_SIZE;
-        }
-        p->recv_c2s.msgs[0].msg_hdr.msg_namelen = sizeof(struct sockaddr_in);
+        int nrecv;
 
-        int nrecv = recvmmsg(p->listen_fd, p->recv_c2s.msgs, BATCH_SIZE,
+        if (p->gro_enabled_c2s) {
+            /* GRO receive: coalesced packets into gro_buf_c2s */
+            p->gro_hdr_c2s.msg_controllen = sizeof(p->gro_cmsg_c2s);
+            p->gro_hdr_c2s.msg_flags = 0;
+            p->gro_hdr_c2s.msg_namelen = sizeof(struct sockaddr_in);
+
+            ssize_t total = recvmsg(p->listen_fd, &p->gro_hdr_c2s, 0);
+            if (total <= 0) {
+                if (atomic_load_explicit(&p->stopped, memory_order_relaxed)) break;
+                continue;
+            }
+
+            int seg_size = 0;
+            for (struct cmsghdr *cm = CMSG_FIRSTHDR(&p->gro_hdr_c2s); cm;
+                 cm = CMSG_NXTHDR(&p->gro_hdr_c2s, cm)) {
+                if (cm->cmsg_level == IPPROTO_UDP && cm->cmsg_type == UDP_SEGMENT) {
+                    uint16_t ss;
+                    memcpy(&ss, CMSG_DATA(cm), sizeof(ss));
+                    seg_size = ss;
+                    break;
+                }
+            }
+
+            /* Copy source address for client detection below */
+            p->recv_c2s.addrs[0] = p->gro_addr_c2s;
+            nrecv = 0;
+
+            if (seg_size > 0 && total > seg_size) {
+                gro_no_coalesce = 0;
+                for (int off = 0; off < total && nrecv < BATCH_SIZE; off += seg_size) {
+                    int plen = (off + seg_size <= total) ? seg_size : (int)(total - off);
+                    memcpy(p->recv_c2s.bufs[nrecv] + prefix, p->gro_buf_c2s + off, plen);
+                    p->recv_c2s.msgs[nrecv].msg_len = plen;
+                    nrecv++;
+                }
+            } else {
+                if (++gro_no_coalesce >= 8) {
+                    p->gro_enabled_c2s = 0;
+                    log_info("c2s: GRO not coalescing, falling back to recvmmsg");
+                }
+                memcpy(p->recv_c2s.bufs[0] + prefix, p->gro_buf_c2s, (int)total);
+                p->recv_c2s.msgs[0].msg_len = (unsigned int)total;
+                nrecv = 1;
+            }
+        } else {
+            /* recvmmsg path */
+            for (int i = 0; i < prev_nrecv; i++)
+                p->recv_c2s.iovecs[i].iov_len = BUF_SIZE;
+            p->recv_c2s.msgs[0].msg_hdr.msg_namelen = sizeof(struct sockaddr_in);
+
+            nrecv = recvmmsg(p->listen_fd, p->recv_c2s.msgs, BATCH_SIZE,
                              MSG_WAITFORONE, NULL);
-        if (nrecv <= 0) {
-            if (atomic_load_explicit(&p->stopped, memory_order_relaxed)) break;
-            continue;
+            if (nrecv <= 0) {
+                if (atomic_load_explicit(&p->stopped, memory_order_relaxed)) break;
+                continue;
+            }
+            prev_nrecv = nrecv;
         }
-        prev_nrecv = nrecv;
 
         atomic_store_explicit(&p->last_active, 1, memory_order_relaxed);
 
@@ -1009,6 +1069,11 @@ int proxy_run(proxy_t *p) {
     }
     set_socket_buffers(p->listen_fd, cfg->socket_buf);
     set_busy_poll(p->listen_fd, cfg->busy_poll);
+    if (!cfg->no_gro) {
+        p->gro_enabled_c2s = enable_gro(p->listen_fd);
+        if (p->gro_enabled_c2s)
+            log_info("c2s: UDP GRO enabled");
+    }
     log_socket_buffers(p->listen_fd, cfg, "listen");
 
     /* Connect to remote with retry */

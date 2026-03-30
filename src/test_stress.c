@@ -169,6 +169,45 @@ static pid_t start_proxy(const char *mode, int listen_port, int remote_port) {
     return pid;
 }
 
+static pid_t start_proxy_with_gro(const char *mode, int listen_port, int remote_port) {
+    int src_port = find_free_port();
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        char lbuf[32], rbuf[64], sp[8];
+        char jc[8], jmin[8], jmax[8], s1[8], s2[8];
+        char h1[16], h2[16], h3[16], h4[16];
+
+        snprintf(lbuf, sizeof(lbuf), ":%d", listen_port);
+        snprintf(rbuf, sizeof(rbuf), "127.0.0.1:%d", remote_port);
+
+        setenv("AWG_LISTEN", lbuf, 1);
+        setenv("AWG_REMOTE", rbuf, 1);
+        setenv("AWG_MODE", mode, 1);
+        setenv("AWG_JC", itoa_buf(TEST_JC, jc), 1);
+        setenv("AWG_JMIN", itoa_buf(TEST_JMIN, jmin), 1);
+        setenv("AWG_JMAX", itoa_buf(TEST_JMAX, jmax), 1);
+        setenv("AWG_S1", itoa_buf(TEST_S1, s1), 1);
+        setenv("AWG_S2", itoa_buf(TEST_S2, s2), 1);
+        setenv("AWG_H1", utoa_buf(TEST_H1, h1), 1);
+        setenv("AWG_H2", utoa_buf(TEST_H2, h2), 1);
+        setenv("AWG_H3", utoa_buf(TEST_H3, h3), 1);
+        setenv("AWG_H4", utoa_buf(TEST_H4, h4), 1);
+        setenv("AWG_SERVER_PUB", DUMMY_SERVER_PUB, 1);
+        setenv("AWG_CLIENT_PUB", DUMMY_CLIENT_PUB, 1);
+        setenv("AWG_LOG_LEVEL", "error", 1);
+        setenv("AWG_TIMEOUT", "30", 1);
+        /* GRO enabled — no AWG_NO_GRO */
+        unsetenv("AWG_NO_GRO");
+        setenv("AWG_SRC_PORT", itoa_buf(src_port, sp), 1);
+
+        execl(PROXY_BINARY, "awg-proxy", NULL);
+        _exit(127);
+    }
+    usleep(200000);
+    return pid;
+}
+
 static void stop_proxy(pid_t pid) {
     if (pid <= 0) return;
     kill(pid, SIGTERM);
@@ -863,6 +902,304 @@ static void test_scale(void) {
     close(server_fd);
 }
 
+/* ---- Scenario 7: GSO on connected socket ---- */
+
+#ifndef UDP_SEGMENT
+#define UDP_SEGMENT 103
+#endif
+
+static void test_gso_connected(void) {
+    /* Verify kernel UDP GSO works with msg_name=NULL (connected socket).
+     * Before the fix, send_gso() returned early when addr==NULL,
+     * preventing GSO on the upload (c2s) path. */
+    int recv_port = find_free_port();
+    ASSERT(recv_port > 0);
+
+    int recv_fd = make_udp_socket(recv_port);
+    ASSERT(recv_fd >= 0);
+
+    int send_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    ASSERT(send_fd >= 0);
+    struct sockaddr_in dest = make_addr(recv_port);
+    int ret = connect(send_fd, (struct sockaddr *)&dest, sizeof(dest));
+    ASSERT(ret == 0);
+
+    /* Build 4 same-size packets in one buffer */
+    int seg_size = 200;
+    int count = 4;
+    uint8_t data[800];
+    for (int i = 0; i < count; i++)
+        memset(data + i * seg_size, (uint8_t)(i + 1), seg_size);
+
+    /* sendmsg with UDP_SEGMENT cmsg, msg_name=NULL */
+    struct iovec iov = { .iov_base = data, .iov_len = (size_t)(seg_size * count) };
+
+    union {
+        char buf[CMSG_SPACE(sizeof(uint16_t))];
+        struct cmsghdr align;
+    } cmsg_u;
+    memset(&cmsg_u, 0, sizeof(cmsg_u));
+
+    struct msghdr hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.msg_iov = &iov;
+    hdr.msg_iovlen = 1;
+    hdr.msg_control = cmsg_u.buf;
+    hdr.msg_controllen = sizeof(cmsg_u.buf);
+    /* msg_name = NULL — connected socket, this is the scenario the fix enables */
+
+    struct cmsghdr *cm = CMSG_FIRSTHDR(&hdr);
+    cm->cmsg_level = IPPROTO_UDP;
+    cm->cmsg_type = UDP_SEGMENT;
+    cm->cmsg_len = CMSG_LEN(sizeof(uint16_t));
+    uint16_t ss = (uint16_t)seg_size;
+    memcpy(CMSG_DATA(cm), &ss, sizeof(ss));
+
+    ssize_t sent = sendmsg(send_fd, &hdr, 0);
+    if (sent < 0 && errno == ENOPROTOOPT) {
+        fprintf(stderr, "          (kernel lacks UDP_SEGMENT, skipping)\n");
+        close(send_fd);
+        close(recv_fd);
+        return;
+    }
+    ASSERT_EQ((int)sent, seg_size * count);
+
+    /* Verify all 4 packets arrived individually */
+    usleep(50000);
+    int received = 0;
+    uint8_t rbuf[256];
+    for (int i = 0; i < count + 2; i++) {
+        ssize_t n = recvfrom(recv_fd, rbuf, sizeof(rbuf), MSG_DONTWAIT, NULL, NULL);
+        if (n <= 0) break;
+        ASSERT_EQ((int)n, seg_size);
+        ASSERT_EQ(rbuf[0], (uint8_t)(received + 1));
+        received++;
+    }
+    ASSERT_EQ(received, count);
+
+    fprintf(stderr, "          (GSO connected: sent %d segments, received %d)\n", count, received);
+    close(send_fd);
+    close(recv_fd);
+}
+
+/* ---- Scenario 8: GRO-enabled bidirectional throughput ---- */
+
+static void test_gro_bidirectional(void) {
+    /* Run proxy WITH GRO enabled and verify both directions work.
+     * Before the fix: GRO was only on s2c (download).
+     * After: GRO on both directions, GSO on both directions. */
+    int listen_port = find_free_port();
+    int remote_port = find_free_port();
+    ASSERT(listen_port > 0 && remote_port > 0);
+
+    int server_fd = make_udp_socket(remote_port);
+    ASSERT(server_fd >= 0);
+
+    pid_t proxy = start_proxy_with_gro("normal", listen_port, remote_port);
+    ASSERT(proxy > 0);
+
+    int client_fd = make_client_socket();
+    ASSERT(client_fd >= 0);
+    struct sockaddr_in proxy_addr = make_addr(listen_port);
+
+    /* Handshake */
+    uint8_t init_buf[WG_INIT_SIZE];
+    make_wg_init(init_buf, 0xD000);
+    sendto(client_fd, init_buf, WG_INIT_SIZE, 0,
+           (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+    usleep(300000);
+
+    /* Capture proxy's remote address from server side */
+    struct sockaddr_in proxy_remote_addr;
+    memset(&proxy_remote_addr, 0, sizeof(proxy_remote_addr));
+    {
+        uint8_t tmp[2048];
+        struct sockaddr_in from;
+        socklen_t fromlen = sizeof(from);
+        int got = 0;
+        for (int i = 0; i < TEST_JC + 5; i++) {
+            ssize_t n = recvfrom(server_fd, tmp, sizeof(tmp), MSG_DONTWAIT,
+                                 (struct sockaddr *)&from, &fromlen);
+            if (n > 0) { proxy_remote_addr = from; got = 1; }
+        }
+        ASSERT(got);
+        drain_socket(server_fd);
+    }
+
+    int count = BIDIR_COUNT;
+
+    /* c2s (upload): client → proxy → server */
+    async_recv_t srv_recv;
+    pthread_t srv_thread;
+    async_recv_start(&srv_recv, &srv_thread, server_fd);
+
+    int64_t t0_c2s = now_us();
+    {
+        uint8_t transport[200];
+        for (int i = 0; i < count; i++) {
+            make_wg_transport(transport, 0x2000, (uint64_t)i, 200);
+            sendto(client_fd, transport, 200, 0,
+                   (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+            if ((i + 1) % 64 == 0) usleep(100);
+        }
+    }
+    int64_t t1_c2s = now_us();
+
+    usleep(500000);
+    int c2s_recv = async_recv_stop(&srv_recv, srv_thread);
+    drain_socket(server_fd);
+
+    /* s2c (download): server → proxy → client */
+    drain_socket(client_fd);
+    async_recv_t cli_recv;
+    pthread_t cli_thread;
+    async_recv_start(&cli_recv, &cli_thread, client_fd);
+
+    int64_t t0_s2c = now_us();
+    {
+        uint8_t transport[200];
+        for (int i = 0; i < count; i++) {
+            make_awg_transport(transport, 0x2000, (uint64_t)i, 200);
+            sendto(server_fd, transport, 200, 0,
+                   (struct sockaddr *)&proxy_remote_addr, sizeof(proxy_remote_addr));
+            if ((i + 1) % 64 == 0) usleep(100);
+        }
+    }
+    int64_t t1_s2c = now_us();
+
+    usleep(500000);
+    int s2c_recv = async_recv_stop(&cli_recv, cli_thread);
+
+    double c2s_time = (t1_c2s - t0_c2s) / 1e6;
+    double s2c_time = (t1_s2c - t0_s2c) / 1e6;
+    double c2s_loss = 100.0 * (count - c2s_recv) / count;
+    double s2c_loss = 100.0 * (count - s2c_recv) / count;
+
+    fprintf(stderr, "          c2s: %d/%d (%.2f%% loss, %.3fs)  "
+            "s2c: %d/%d (%.2f%% loss, %.3fs)\n",
+            c2s_recv, count, c2s_loss, c2s_time,
+            s2c_recv, count, s2c_loss, s2c_time);
+
+    ASSERT(c2s_recv >= count * 99 / 100);
+    ASSERT(s2c_recv >= count * 99 / 100);
+
+    stop_proxy(proxy);
+    close(client_fd);
+    close(server_fd);
+}
+
+/* ---- Scenario 9: Throughput benchmark (realistic MTU) ---- */
+
+static void test_throughput_benchmark(void) {
+    /* Measure real throughput in both directions with realistic WG packet size.
+     * WG transport overhead: 32 bytes header + 16 bytes AEAD tag = 1432 bytes for MTU 1420.
+     * Plus AWG overhead: S1 padding on init, H4 type swap on transport. */
+    int listen_port = find_free_port();
+    int remote_port = find_free_port();
+    ASSERT(listen_port > 0 && remote_port > 0);
+
+    int server_fd = make_udp_socket(remote_port);
+    ASSERT(server_fd >= 0);
+
+    pid_t proxy = start_proxy_with_gro("normal", listen_port, remote_port);
+    ASSERT(proxy > 0);
+
+    int client_fd = make_client_socket();
+    ASSERT(client_fd >= 0);
+    struct sockaddr_in proxy_addr = make_addr(listen_port);
+
+    /* Handshake */
+    uint8_t init_buf[WG_INIT_SIZE];
+    make_wg_init(init_buf, 0xE000);
+    sendto(client_fd, init_buf, WG_INIT_SIZE, 0,
+           (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+    usleep(300000);
+
+    struct sockaddr_in proxy_remote_addr;
+    memset(&proxy_remote_addr, 0, sizeof(proxy_remote_addr));
+    {
+        uint8_t tmp[2048];
+        struct sockaddr_in from;
+        socklen_t fromlen = sizeof(from);
+        int got = 0;
+        for (int i = 0; i < TEST_JC + 5; i++) {
+            ssize_t n = recvfrom(server_fd, tmp, sizeof(tmp), MSG_DONTWAIT,
+                                 (struct sockaddr *)&from, &fromlen);
+            if (n > 0) { proxy_remote_addr = from; got = 1; }
+        }
+        ASSERT(got);
+        drain_socket(server_fd);
+    }
+
+    /* Realistic WG transport packet: 1432 bytes (MTU 1420 - IP/UDP overhead absorbed) */
+    int pkt_size = 1400;
+    int duration_pkts = 500000;
+
+    /* Pre-fill packet */
+    uint8_t wg_pkt[1500];
+    make_wg_transport(wg_pkt, 0x2000, 0, pkt_size);
+    uint8_t awg_pkt[1500];
+    make_awg_transport(awg_pkt, 0x2000, 0, pkt_size);
+
+    /* c2s benchmark (upload) */
+    async_recv_t srv_recv;
+    pthread_t srv_thread;
+    async_recv_start(&srv_recv, &srv_thread, server_fd);
+
+    int64_t t0 = now_us();
+    for (int i = 0; i < duration_pkts; i++) {
+        sendto(client_fd, wg_pkt, pkt_size, 0,
+               (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+        if ((i + 1) % 64 == 0) usleep(50);
+    }
+    int64_t t1 = now_us();
+
+    usleep(1000000);
+    int c2s_recv = async_recv_stop(&srv_recv, srv_thread);
+    double c2s_sec = (t1 - t0) / 1e6;
+    double c2s_mbps = (double)c2s_recv * pkt_size * 8.0 / c2s_sec / 1e6;
+
+    /* s2c benchmark (download) */
+    drain_socket(client_fd);
+    drain_socket(server_fd);
+
+    async_recv_t cli_recv;
+    pthread_t cli_thread;
+    async_recv_start(&cli_recv, &cli_thread, client_fd);
+
+    int64_t t2 = now_us();
+    for (int i = 0; i < duration_pkts; i++) {
+        sendto(server_fd, awg_pkt, pkt_size, 0,
+               (struct sockaddr *)&proxy_remote_addr, sizeof(proxy_remote_addr));
+        if ((i + 1) % 64 == 0) usleep(50);
+    }
+    int64_t t3 = now_us();
+
+    usleep(1000000);
+    int s2c_recv = async_recv_stop(&cli_recv, cli_thread);
+    double s2c_sec = (t3 - t2) / 1e6;
+    double s2c_mbps = (double)s2c_recv * pkt_size * 8.0 / s2c_sec / 1e6;
+
+    double c2s_loss = 100.0 * (duration_pkts - c2s_recv) / duration_pkts;
+    double s2c_loss = 100.0 * (duration_pkts - s2c_recv) / duration_pkts;
+
+    fprintf(stderr, "          packet size: %d bytes,  count: %d\n", pkt_size, duration_pkts);
+    fprintf(stderr, "          c2s(upload):   %7.1f Mbit/s  (%d/%d, loss=%.2f%%)\n",
+            c2s_mbps, c2s_recv, duration_pkts, c2s_loss);
+    fprintf(stderr, "          s2c(download): %7.1f Mbit/s  (%d/%d, loss=%.2f%%)\n",
+            s2c_mbps, s2c_recv, duration_pkts, s2c_loss);
+
+    double ratio = (c2s_mbps > s2c_mbps) ? s2c_mbps / c2s_mbps : c2s_mbps / s2c_mbps;
+    fprintf(stderr, "          parity: %.0f%%\n", ratio * 100);
+
+    ASSERT(c2s_recv >= duration_pkts * 98 / 100);
+    ASSERT(s2c_recv >= duration_pkts * 98 / 100);
+
+    stop_proxy(proxy);
+    close(client_fd);
+    close(server_fd);
+}
+
 /* ---- Main ---- */
 
 int main(void) {
@@ -873,5 +1210,8 @@ int main(void) {
     RUN_TEST(server_rekey);
     RUN_TEST(concurrent_handshakes);
     RUN_TEST(scale);
+    RUN_TEST(gso_connected);
+    RUN_TEST(gro_bidirectional);
+    RUN_TEST(throughput_benchmark);
     TEST_MAIN_END();
 }

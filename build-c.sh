@@ -3,7 +3,7 @@ set -e
 
 cd "$(dirname "$0")"
 
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}
 IMAGE=awg-proxy
 DIR=builds
 
