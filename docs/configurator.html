@@ -382,6 +382,33 @@
             border-radius: 4px;
         }
 
+        .domain-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: var(--tag-ok);
+            color: var(--tag-ok-text);
+            font-size: 0.82rem;
+            font-family: var(--mono);
+        }
+
+        .domain-tag button {
+            background: none;
+            border: none;
+            color: inherit;
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1;
+            padding: 0 2px;
+            opacity: 0.7;
+        }
+
+        .domain-tag button:hover {
+            opacity: 1;
+        }
+
         .scenario-panel {
             margin-top: 10px;
             padding: 12px;
@@ -663,6 +690,14 @@
                 </div>
             </div>
             <div id="services-grid" class="checkbox-grid"></div>
+            <div id="custom-domains-section" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+                <label style="font-weight:600;font-size:0.9rem" data-i18n="customDomainsLabel">Custom domains</label>
+                <div style="display:flex;gap:6px;margin-top:6px">
+                    <input type="text" id="custom-domain-input" placeholder="example.com" data-i18n-ph="customDomainsPlaceholder" style="flex:1;min-width:0" onkeydown="if(event.key==='Enter'){event.preventDefault();addCustomDomain()}">
+                    <button class="btn btn-secondary btn-sm" onclick="addCustomDomain()" data-i18n="customDomainsAdd">+</button>
+                </div>
+                <div id="custom-domains-list" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px"></div>
+            </div>
         </div>
         <div id="exclusions-panel" style="display:none" class="scenario-panel">
             <div class="scenario-panel-header">
@@ -1012,7 +1047,10 @@
             btnDeselectAll: 'Deselect all',
             sAuto: 'Auto (usb1/ \u2192 disk1/)',
             warnFasttrack: 'FastTrack rules will be modified (out-interface-list=WAN) to keep FastTrack active for non-VPN traffic while policy routing works correctly. Uninstall script restores the original settings.',
-            noServiceSelected: 'Select at least one service.',
+            noServiceSelected: 'Select at least one service or add a custom domain.',
+            customDomainsLabel: 'Custom domains',
+            customDomainsPlaceholder: 'example.com',
+            customDomainsAdd: '+',
             modeContainerHint: 'WireGuard client on MikroTik + awg-proxy runs inside a Docker container directly on the router',
             modeStandaloneHint: 'WireGuard client on MikroTik + awg-proxy runs on a separate device (Raspberry Pi, VPS, or another server). Use this mode for MikroTik routers that do not support containers.',
             scenarioTunnelHint: 'You configure routes manually via /ip/route or other methods. For advanced users.',
@@ -1107,10 +1145,10 @@
             igTipStandalone: 'External Device (awg-proxy)\n\nawg-proxy runs on a separate device (Raspberry Pi, VPS, etc). The MikroTik WireGuard peer endpoint points to this device\u2019s IP address.\n\nThe device converts WireGuard traffic to AmneziaWG format before forwarding to the AWG server.',
             igTipDns: 'DNS (DoH Forwarding)\n\n/ip/dns/static/add type=FWD \u2014 creates forwarding entries for selected service domains\n\nWhen a client resolves a domain (e.g. youtube.com), MikroTik forwards the query to a DoH provider and saves the resolved IPs in an address list.\nThis address list is provided to Mangle rules which mark matching traffic for routing through the VPN tunnel.',
             igTipRouting: 'Policy Routing\n\n/routing/table/add \u2014 creates a separate routing table for VPN traffic\n/ip/route/add \u2014 adds a default route through the WireGuard tunnel in that table\n/routing/rule/add \u2014 binds the routing mark to the routing table\n\nTraffic marked by Mangle goes through this table and gets routed through the VPN tunnel. All other traffic uses the default routing table (direct).',
-            igTipFirewall: 'Firewall / NAT\n\n/ip/firewall/nat/add chain=srcnat masquerade src-address=172.18.0.0/30 \u2014 NATs container traffic to the internet\n/ip/firewall/nat/add chain=srcnat masquerade out-interface=wg-* \u2014 NATs traffic leaving through the WireGuard tunnel\n\nWithout these rules, return traffic would not reach its destination.',
+            igTipFirewall: 'Firewall / NAT\n\n/ip/firewall/nat/add chain=srcnat masquerade src-address=172.18.0.0/30 \u2014 NATs container traffic to the internet\n\nThe out-interface masquerade rule for the WireGuard tunnel is added in the routing section when a routing scenario is configured.',
             igTipMangle: 'Mangle (Traffic Marking)\n\n/ip/firewall/mangle/add mark-connection \u2014 marks connections going to IPs from DNS address lists\n/ip/firewall/mangle/add mark-routing \u2014 applies a routing mark to marked connections\n/ip/firewall/mangle/add change-mss clamp-to-pmtu \u2014 fixes MSS for tunneled traffic\n\nThis is the core of selective routing: only traffic to selected services gets marked and routed through the VPN.',
             igTipMangleNonRu: 'Mangle (Traffic Marking)\n\n/ip/firewall/mangle/add mark-routing dst-address-list=!RU \u2014 marks ALL traffic EXCEPT to Russian IPs\n/ip/firewall/mangle/add accept dst-address-list=vpn-server \u2014 excludes VPN server itself from tunneling\n/ip/firewall/mangle/add change-mss clamp-to-pmtu \u2014 fixes MSS\n\nAll non-Russian traffic goes through the VPN tunnel.',
-            igTipManualConfig: 'Manual Configuration\n\nNo automatic routing is configured. You choose how traffic enters the tunnel:\n\nRoute specific subnets:\n/ip/route/add dst-address=X.X.X.X/X gateway=wg-*\n\nRoute all traffic:\n/ip/route/add dst-address=0.0.0.0/0 gateway=wg-* distance=1\n\nPolicy routing with mangle marks\n\nUse address-lists for selective routing',
+            igTipManualConfig: 'Manual Configuration\n\nNo automatic routing is configured. You choose how traffic enters the tunnel:\n\nRoute specific subnets:\n/ip/route/add dst-address=X.X.X.X/X gateway=wg-*\n\nRoute all traffic:\n/ip/route/add dst-address=0.0.0.0/0 gateway=wg-* distance=1\n\nPolicy routing with mangle marks\n\nUse address-lists for selective routing\n\nRemember to add NAT masquerade for tunneled traffic:\n/ip/firewall/nat/add chain=srcnat action=masquerade out-interface=wg-*',
             igTipRuList: 'RU Address List\n\nA daily-updated list of all Russian IP ranges from RIPE database.\nPrivate networks (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) are also added to prevent local traffic from entering the tunnel.\n\nMangle uses this list to decide what traffic stays direct.',
             igTipScheduler: 'Scheduler\n\n/system/scheduler/add \u2014 runs the update script daily at 04:05\n/system/script/add \u2014 downloads and imports fresh RU IP ranges\n\nKeeps the RU address list current so routing decisions stay accurate.',
             igTipFirewallS2S: 'Firewall\n\n/ip/firewall/filter/add accept \u2014 allows AWG port on WAN interface\n/ip/firewall/nat/add dstnat \u2014 forwards incoming AWG traffic to the container\n/ip/firewall/nat/add masquerade \u2014 NATs container and tunnel traffic\n\nSide B (server) needs additional rules to accept incoming connections.',
@@ -1180,7 +1218,10 @@
             btnDeselectAll: '\u0421\u043d\u044f\u0442\u044c \u0432\u0441\u0435',
             sAuto: 'Auto (usb1/ \u2192 disk1/)',
             warnFasttrack: '\u041f\u0440\u0430\u0432\u0438\u043b\u0430 FastTrack \u0431\u0443\u0434\u0443\u0442 \u0438\u0437\u043c\u0435\u043d\u0435\u043d\u044b (out-interface-list=WAN), \u0447\u0442\u043e\u0431\u044b FastTrack \u043e\u0441\u0442\u0430\u0432\u0430\u043b\u0441\u044f \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u043c \u0434\u043b\u044f \u043d\u0435-VPN \u0442\u0440\u0430\u0444\u0438\u043a\u0430, \u0430 policy-\u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u0440\u0430\u0431\u043e\u0442\u0430\u043b\u0430 \u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u043e. \u0421\u043a\u0440\u0438\u043f\u0442 \u0443\u0434\u0430\u043b\u0435\u043d\u0438\u044f \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442 \u0438\u0441\u0445\u043e\u0434\u043d\u044b\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438.',
-            noServiceSelected: '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0445\u043e\u0442\u044f \u0431\u044b \u043e\u0434\u0438\u043d \u0441\u0435\u0440\u0432\u0438\u0441.',
+            noServiceSelected: '\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0435\u0440\u0432\u0438\u0441 \u0438\u043b\u0438 \u0434\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u0441\u0432\u043e\u0439 \u0434\u043e\u043c\u0435\u043d.',
+            customDomainsLabel: '\u0421\u0432\u043e\u0438 \u0434\u043e\u043c\u0435\u043d\u044b',
+            customDomainsPlaceholder: 'example.com',
+            customDomainsAdd: '+',
             modeContainerHint: 'WireGuard-\u043a\u043b\u0438\u0435\u043d\u0442 \u043d\u0430 MikroTik + awg-proxy \u0437\u0430\u043f\u0443\u0441\u043a\u0430\u0435\u0442\u0441\u044f \u0432 Docker-\u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0435 \u043f\u0440\u044f\u043c\u043e \u043d\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0435',
             modeStandaloneHint: 'WireGuard-\u043a\u043b\u0438\u0435\u043d\u0442 \u043d\u0430 MikroTik + awg-proxy \u0437\u0430\u043f\u0443\u0441\u043a\u0430\u0435\u0442\u0441\u044f \u043d\u0430 \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e\u043c \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0435 (Raspberry Pi, VPS \u0438\u043b\u0438 \u0434\u0440\u0443\u0433\u043e\u0439 \u0441\u0435\u0440\u0432\u0435\u0440). \u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\u0442\u0435 \u044d\u0442\u043e\u0442 \u0440\u0435\u0436\u0438\u043c \u0434\u043b\u044f MikroTik, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u043d\u0435 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u044e\u0442 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u044b.',
             scenarioTunnelHint: '\u041c\u0430\u0440\u0448\u0440\u0443\u0442\u044b \u043d\u0430\u0441\u0442\u0440\u0430\u0438\u0432\u0430\u0435\u0442\u0435 \u0441\u0430\u043c\u043e\u0441\u0442\u043e\u044f\u0442\u0435\u043b\u044c\u043d\u043e \u0447\u0435\u0440\u0435\u0437 /ip/route \u0438\u043b\u0438 \u0434\u0440\u0443\u0433\u0438\u043c\u0438 \u0441\u043f\u043e\u0441\u043e\u0431\u0430\u043c\u0438. \u0414\u043b\u044f \u043e\u043f\u044b\u0442\u043d\u044b\u0445 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439.',
@@ -1275,7 +1316,7 @@
             igTipStandalone: '\u0412\u043d\u0435\u0448\u043d\u0435\u0435 \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u043e (awg-proxy)\n\nawg-proxy \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u043d\u0430 \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e\u043c \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0435 (Raspberry Pi, VPS \u0438 \u0442.\u0434.). WireGuard-\u043f\u0438\u0440 \u043d\u0430 MikroTik \u0443\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u0442 endpoint \u043d\u0430 IP \u044d\u0442\u043e\u0433\u043e \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430.\n\n\u041f\u0440\u0435\u043e\u0431\u0440\u0430\u0437\u0443\u0435\u0442 WG-\u0442\u0440\u0430\u0444\u0438\u043a \u0432 \u0444\u043e\u0440\u043c\u0430\u0442 AmneziaWG \u043f\u0435\u0440\u0435\u0434 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u043e\u0439 \u043d\u0430 AWG-\u0441\u0435\u0440\u0432\u0435\u0440.',
             igTipDns: 'DNS (DoH-\u0444\u043e\u0440\u0432\u0430\u0440\u0434\u0438\u043d\u0433)\n\n/ip/dns/static/add type=FWD \u2014 \u0441\u043e\u0437\u0434\u0430\u0451\u0442 \u043f\u0435\u0440\u0435\u043d\u0430\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u044f \u0434\u043b\u044f \u0434\u043e\u043c\u0435\u043d\u043e\u0432 \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u044b\u0445 \u0441\u0435\u0440\u0432\u0438\u0441\u043e\u0432\n\n\u041a\u043e\u0433\u0434\u0430 \u043a\u043b\u0438\u0435\u043d\u0442 \u0440\u0435\u0437\u043e\u043b\u0432\u0438\u0442 \u0434\u043e\u043c\u0435\u043d (\u043d\u0430\u043f\u0440. youtube.com), MikroTik \u043f\u0435\u0440\u0435\u043d\u0430\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u0442 \u0437\u0430\u043f\u0440\u043e\u0441 \u0447\u0435\u0440\u0435\u0437 DoH \u0438 \u0441\u043e\u0445\u0440\u0430\u043d\u044f\u0435\u0442 IP \u0432 address-list.\n\u042d\u0442\u0438 address-list\u2019\u044b \u043f\u0435\u0440\u0435\u0434\u0430\u044e\u0442\u0441\u044f \u0432 Mangle, \u043a\u043e\u0442\u043e\u0440\u044b\u0439 \u043c\u0430\u0440\u043a\u0438\u0440\u0443\u0435\u0442 \u0441\u043e\u043e\u0442\u0432\u0435\u0442\u0441\u0442\u0432\u0443\u044e\u0449\u0438\u0439 \u0442\u0440\u0430\u0444\u0438\u043a \u0434\u043b\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438 \u0447\u0435\u0440\u0435\u0437 VPN.',
             igTipRouting: '\u041f\u043e\u043b\u0438\u0442\u0438\u043a\u0430 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438\n\n/routing/table/add \u2014 \u0441\u043e\u0437\u0434\u0430\u0451\u0442 \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u0443\u044e \u0442\u0430\u0431\u043b\u0438\u0446\u0443 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u043e\u0432 \u0434\u043b\u044f VPN\n/ip/route/add \u2014 \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u0442 \u043c\u0430\u0440\u0448\u0440\u0443\u0442 \u043f\u043e \u0443\u043c\u043e\u043b\u0447\u0430\u043d\u0438\u044e \u0447\u0435\u0440\u0435\u0437 WG-\u0442\u0443\u043d\u043d\u0435\u043b\u044c\n/routing/rule/add \u2014 \u043f\u0440\u0438\u0432\u044f\u0437\u044b\u0432\u0430\u0435\u0442 \u043c\u0435\u0442\u043a\u0443 \u043a \u0442\u0430\u0431\u043b\u0438\u0446\u0435\n\n\u041c\u0430\u0440\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439 Mangle \u0442\u0440\u0430\u0444\u0438\u043a \u0438\u0434\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 \u044d\u0442\u0443 \u0442\u0430\u0431\u043b\u0438\u0446\u0443 \u0432 VPN. \u041e\u0441\u0442\u0430\u043b\u044c\u043d\u043e\u0439 \u2014 \u043d\u0430\u043f\u0440\u044f\u043c\u0443\u044e.',
-            igTipFirewall: 'Firewall / NAT\n\n/ip/firewall/nat/add chain=srcnat masquerade src-address=172.18.0.0/30 \u2014 NAT \u0442\u0440\u0430\u0444\u0438\u043a\u0430 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\n/ip/firewall/nat/add chain=srcnat masquerade out-interface=wg-* \u2014 NAT \u0442\u0440\u0430\u0444\u0438\u043a\u0430 \u0447\u0435\u0440\u0435\u0437 WG-\u0442\u0443\u043d\u043d\u0435\u043b\u044c\n\n\u0411\u0435\u0437 \u044d\u0442\u0438\u0445 \u043f\u0440\u0430\u0432\u0438\u043b \u043e\u0431\u0440\u0430\u0442\u043d\u044b\u0439 \u0442\u0440\u0430\u0444\u0438\u043a \u043d\u0435 \u0434\u043e\u0439\u0434\u0451\u0442 \u0434\u043e \u043d\u0430\u0437\u043d\u0430\u0447\u0435\u043d\u0438\u044f.',
+            igTipFirewall: 'Firewall / NAT\n\n/ip/firewall/nat/add chain=srcnat masquerade src-address=172.18.0.0/30 \u2014 NAT \u0442\u0440\u0430\u0444\u0438\u043a\u0430 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430\n\n\u041f\u0440\u0430\u0432\u0438\u043b\u043e masquerade out-interface \u0434\u043b\u044f WG-\u0442\u0443\u043d\u043d\u0435\u043b\u044f \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u0442\u0441\u044f \u0432 \u0440\u0430\u0437\u0434\u0435\u043b\u0435 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438 \u043f\u0440\u0438 \u0432\u044b\u0431\u043e\u0440\u0435 \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u044f.',
             igTipMangle: 'Mangle (\u043c\u0430\u0440\u043a\u0438\u0440\u043e\u0432\u043a\u0430 \u0442\u0440\u0430\u0444\u0438\u043a\u0430)\n\n/ip/firewall/mangle/add mark-connection \u2014 \u043c\u0430\u0440\u043a\u0438\u0440\u0443\u0435\u0442 \u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u044f \u043a IP \u0438\u0437 DNS address-list\n/ip/firewall/mangle/add mark-routing \u2014 \u043f\u0440\u0438\u0441\u0432\u0430\u0438\u0432\u0430\u0435\u0442 \u043c\u0435\u0442\u043a\u0443 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438\n/ip/firewall/mangle/add change-mss clamp-to-pmtu \u2014 \u0438\u0441\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u0442 MSS \u0434\u043b\u044f \u0442\u0443\u043d\u043d\u0435\u043b\u044f\n\n\u042f\u0434\u0440\u043e \u0438\u0437\u0431\u0438\u0440\u0430\u0442\u0435\u043b\u044c\u043d\u043e\u0439 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438: \u0442\u043e\u043b\u044c\u043a\u043e \u0442\u0440\u0430\u0444\u0438\u043a \u043a \u0432\u044b\u0431\u0440\u0430\u043d\u043d\u044b\u043c \u0441\u0435\u0440\u0432\u0438\u0441\u0430\u043c \u0438\u0434\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 VPN.',
             igTipMangleNonRu: 'Mangle (\u043c\u0430\u0440\u043a\u0438\u0440\u043e\u0432\u043a\u0430 \u0442\u0440\u0430\u0444\u0438\u043a\u0430)\n\n/ip/firewall/mangle/add mark-routing dst-address-list=!RU \u2014 \u043c\u0430\u0440\u043a\u0438\u0440\u0443\u0435\u0442 \u0412\u0415\u0421\u042c \u0442\u0440\u0430\u0444\u0438\u043a \u041a\u0420\u041e\u041c\u0415 \u0440\u043e\u0441\u0441\u0438\u0439\u0441\u043a\u0438\u0445 IP\n/ip/firewall/mangle/add accept dst-address-list=vpn-server \u2014 \u0438\u0441\u043a\u043b\u044e\u0447\u0430\u0435\u0442 \u0441\u0430\u043c VPN-\u0441\u0435\u0440\u0432\u0435\u0440\n/ip/firewall/mangle/add change-mss clamp-to-pmtu \u2014 \u0438\u0441\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u0442 MSS\n\n\u0412\u0435\u0441\u044c \u043d\u0435-\u0420\u0424 \u0442\u0440\u0430\u0444\u0438\u043a \u0438\u0434\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 VPN.',
             igTipRuList: '\u0421\u043f\u0438\u0441\u043e\u043a RU IP\n\n\u0415\u0436\u0435\u0434\u043d\u0435\u0432\u043d\u043e \u043e\u0431\u043d\u043e\u0432\u043b\u044f\u0435\u043c\u044b\u0439 \u0441\u043f\u0438\u0441\u043e\u043a \u0440\u043e\u0441\u0441\u0438\u0439\u0441\u043a\u0438\u0445 IP-\u0434\u0438\u0430\u043f\u0430\u0437\u043e\u043d\u043e\u0432 \u0438\u0437 RIPE.\n\u041f\u0440\u0438\u0432\u0430\u0442\u043d\u044b\u0435 \u0441\u0435\u0442\u0438 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) \u0442\u043e\u0436\u0435 \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u044e\u0442\u0441\u044f, \u0447\u0442\u043e\u0431\u044b \u043b\u043e\u043a\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0440\u0430\u0444\u0438\u043a \u043d\u0435 \u0448\u0451\u043b \u0432 \u0442\u0443\u043d\u043d\u0435\u043b\u044c.\n\nMangle \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442 \u044d\u0442\u043e\u0442 \u0441\u043f\u0438\u0441\u043e\u043a \u0434\u043b\u044f \u043e\u043f\u0440\u0435\u0434\u0435\u043b\u0435\u043d\u0438\u044f, \u043a\u0430\u043a\u043e\u0439 \u0442\u0440\u0430\u0444\u0438\u043a \u0438\u0434\u0451\u0442 \u043d\u0430\u043f\u0440\u044f\u043c\u0443\u044e.',
@@ -1283,7 +1324,7 @@
             igTipFirewallS2S: 'Firewall\n\n/ip/firewall/filter/add accept \u2014 \u0440\u0430\u0437\u0440\u0435\u0448\u0430\u0435\u0442 AWG-\u043f\u043e\u0440\u0442 \u043d\u0430 WAN\n/ip/firewall/nat/add dstnat \u2014 \u043f\u0435\u0440\u0435\u043d\u0430\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u0442 AWG-\u0442\u0440\u0430\u0444\u0438\u043a \u0432 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\n/ip/firewall/nat/add masquerade \u2014 NAT \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430 + \u0442\u0443\u043d\u043d\u0435\u043b\u044f\n\n\u0421\u0442\u043e\u0440\u043e\u043d\u0430 B (\u0441\u0435\u0440\u0432\u0435\u0440) \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u0434\u043e\u043f. \u043f\u0440\u0430\u0432\u0438\u043b\u0430 \u0434\u043b\u044f \u0432\u0445\u043e\u0434\u044f\u0449\u0438\u0445 \u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u0439.',
             igTipFirewallSrv: 'Firewall\n\n/ip/firewall/filter/add accept \u2014 \u0440\u0430\u0437\u0440\u0435\u0448\u0430\u0435\u0442 AWG-\u043f\u043e\u0440\u0442 \u043d\u0430 WAN\n/ip/firewall/nat/add dstnat \u2014 \u043f\u0435\u0440\u0435\u043d\u0430\u043f\u0440\u0430\u0432\u043b\u044f\u0435\u0442 AWG-\u0442\u0440\u0430\u0444\u0438\u043a \u0432 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\n/ip/firewall/nat/add masquerade \u2014 NAT \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430 + \u0442\u0443\u043d\u043d\u0435\u043b\u044f\n/ip/route/add \u2014 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u044b \u043a LAN \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432 \u0447\u0435\u0440\u0435\u0437 WG-\u043f\u0438\u0440\u044b\n\n\u0421\u0435\u0440\u0432\u0435\u0440 \u043f\u0440\u0438\u043d\u0438\u043c\u0430\u0435\u0442 \u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u044f \u043e\u0442 \u0432\u0441\u0435\u0445 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432 \u0438 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0438\u0440\u0443\u0435\u0442 \u043c\u0435\u0436\u0434\u0443 \u0438\u0445 \u0441\u0435\u0442\u044f\u043c\u0438.',
             igTipRoutingS2S: '\u041c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f\n\n/ip/route/add \u2014 \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u0442 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u044b \u043a \u0443\u0434\u0430\u043b\u0451\u043d\u043d\u043e\u0439 LAN-\u043f\u043e\u0434\u0441\u0435\u0442\u0438 \u0447\u0435\u0440\u0435\u0437 WG-\u0442\u0443\u043d\u043d\u0435\u043b\u044c\n\n\u0423\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430 \u0441\u0442\u043e\u0440\u043e\u043d\u044b A \u043c\u043e\u0433\u0443\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430\u0442\u044c\u0441\u044f \u0434\u043e \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432 \u0441\u0442\u043e\u0440\u043e\u043d\u044b B \u0438 \u043d\u0430\u043e\u0431\u043e\u0440\u043e\u0442.',
-            igTipRoutingTunnel: '\u0420\u0443\u0447\u043d\u0430\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f\n\n\u0410\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0430\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u043d\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u0430.\n\u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u044b \u0432\u0440\u0443\u0447\u043d\u0443\u044e: /ip/route/add dst-address=X.X.X.X/X gateway=wg-awg-proxy\n\n\u0414\u043b\u044f \u043e\u043f\u044b\u0442\u043d\u044b\u0445 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u0445\u043e\u0442\u044f\u0442 \u043f\u043e\u043b\u043d\u044b\u0439 \u043a\u043e\u043d\u0442\u0440\u043e\u043b\u044c.',
+            igTipRoutingTunnel: '\u0420\u0443\u0447\u043d\u0430\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f\n\n\u0410\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0430\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u043d\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u0430.\n\u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u044b \u0432\u0440\u0443\u0447\u043d\u0443\u044e: /ip/route/add dst-address=X.X.X.X/X gateway=wg-awg-proxy\n\n\u041d\u0435 \u0437\u0430\u0431\u0443\u0434\u044c\u0442\u0435 \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c NAT \u0434\u043b\u044f \u0442\u0443\u043d\u043d\u0435\u043b\u044c\u043d\u043e\u0433\u043e \u0442\u0440\u0430\u0444\u0438\u043a\u0430:\n/ip/firewall/nat/add chain=srcnat action=masquerade out-interface=wg-*\n\n\u0414\u043b\u044f \u043e\u043f\u044b\u0442\u043d\u044b\u0445 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439, \u043a\u043e\u0442\u043e\u0440\u044b\u0435 \u0445\u043e\u0442\u044f\u0442 \u043f\u043e\u043b\u043d\u044b\u0439 \u043a\u043e\u043d\u0442\u0440\u043e\u043b\u044c.',
             igTipManualConfig: '\u0420\u0443\u0447\u043d\u0430\u044f \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0430\n\n\u0410\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0430\u044f \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u043d\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0435\u043d\u0430. \u0412\u044b \u0432\u044b\u0431\u0438\u0440\u0430\u0435\u0442\u0435, \u043a\u0430\u043a \u0442\u0440\u0430\u0444\u0438\u043a \u043f\u043e\u043f\u0430\u0434\u0430\u0435\u0442 \u0432 \u0442\u0443\u043d\u043d\u0435\u043b\u044c:\n\n\u041c\u0430\u0440\u0448\u0440\u0443\u0442 \u0434\u043b\u044f \u043a\u043e\u043d\u043a\u0440\u0435\u0442\u043d\u044b\u0445 \u043f\u043e\u0434\u0441\u0435\u0442\u0435\u0439:\n/ip/route/add dst-address=X.X.X.X/X gateway=wg-*\n\n\u0412\u0435\u0441\u044c \u0442\u0440\u0430\u0444\u0438\u043a \u0447\u0435\u0440\u0435\u0437 \u0442\u0443\u043d\u043d\u0435\u043b\u044c:\n/ip/route/add dst-address=0.0.0.0/0 gateway=wg-* distance=1\n\nPolicy-\u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u0447\u0435\u0440\u0435\u0437 mangle-\u043c\u0435\u0442\u043a\u0438\n\n\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u043d\u0438\u0435 address-list \u0434\u043b\u044f \u0438\u0437\u0431\u0438\u0440\u0430\u0442\u0435\u043b\u044c\u043d\u043e\u0439 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438',
             igTipInternetWan: '\u0418\u043d\u0442\u0435\u0440\u043d\u0435\u0442 (WAN)\n\n\u041f\u0440\u044f\u043c\u043e\u0435 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u043a \u0438\u043d\u0442\u0435\u0440\u043d\u0435\u0442\u0443 \u0447\u0435\u0440\u0435\u0437 WAN-\u043f\u043e\u0440\u0442 MikroTik.\n\u0422\u0440\u0430\u0444\u0438\u043a, \u043d\u0435 \u043e\u0442\u043c\u0435\u0447\u0435\u043d\u043d\u044b\u0439 \u0434\u043b\u044f VPN, \u0438\u0434\u0451\u0442 \u0441\u044e\u0434\u0430 \u043d\u0430\u043f\u0440\u044f\u043c\u0443\u044e.',
             igTipRoutingSrv: '\u041c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f (L3)\n\n/ip/route/add \u2014 \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u0442 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u044b \u043a \u0443\u0434\u0430\u043b\u0451\u043d\u043d\u044b\u043c LAN-\u043f\u043e\u0434\u0441\u0435\u0442\u044f\u043c \u0447\u0435\u0440\u0435\u0437 WireGuard-\u043f\u0438\u0440\u044b\n/ip/firewall/filter/add \u2014 \u0440\u0430\u0437\u0440\u0435\u0448\u0430\u0435\u0442 \u043f\u0435\u0440\u0435\u0441\u044b\u043b\u043a\u0443 \u043c\u0435\u0436\u0434\u0443 \u0442\u0443\u043d\u043d\u0435\u043b\u0435\u043c \u0438 LAN\n\n\u0421\u0435\u0440\u0432\u0435\u0440 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0438\u0440\u0443\u0435\u0442 \u0442\u0440\u0430\u0444\u0438\u043a \u043c\u0435\u0436\u0434\u0443 \u0432\u0441\u0435\u043c\u0438 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0451\u043d\u043d\u044b\u043c\u0438 \u0441\u0435\u0442\u044f\u043c\u0438. \u041a\u0430\u0436\u0434\u044b\u0439 \u043a\u043b\u0438\u0435\u043d\u0442 \u043f\u043e\u043b\u0443\u0447\u0430\u0435\u0442 \u043c\u0430\u0440\u0448\u0440\u0443\u0442 \u043a LAN \u0441\u0435\u0440\u0432\u0435\u0440\u0430. \u0414\u043b\u044f \u0441\u0432\u044f\u0437\u0438 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432 \u043c\u0435\u0436\u0434\u0443 \u0441\u043e\u0431\u043e\u0439 \u043d\u0443\u0436\u043d\u043e \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u044b \u0432\u0440\u0443\u0447\u043d\u0443\u044e.',
@@ -1702,7 +1743,17 @@
         epic:    {list:'EpicGames',   label:'Epic Games',  d:['epicgames.com','unrealengine.com','fortnite.com','epicgames.dev'], r:[], on:false},
         blizzard:{list:'Blizzard',    label:'Battle.net',  d:['blizzard.com','battle.net','blizzard.net'], r:[], on:false},
         apple:   {list:'Apple',       label:'Apple',       d:['apple.com','icloud.com','mzstatic.com','apple-dns.net','cdn-apple.com'], r:[], on:false},
-        microsoft:{list:'Microsoft',  label:'Microsoft',   d:['microsoft.com','windowsupdate.com','live.com','office.com','office.net','msftconnecttest.com','azure.com'], r:[], on:false}
+        microsoft:{list:'Microsoft',  label:'Microsoft',   d:['microsoft.com','windowsupdate.com','live.com','office.com','office.net','msftconnecttest.com','azure.com'], r:[], on:false},
+        wot:      {list:'WoT',        label:'World of Tanks', d:['worldoftanks.eu','worldoftanks.com','worldoftanks.asia','wargaming.net','wotblitz.com','tanki.su'], r:[], ip:[
+            '92.223.1.0/24','92.223.4.0/24','92.223.5.0/24','92.223.6.0/24',
+            '92.223.8.0/24','92.223.9.0/24','92.223.10.0/24','92.223.12.0/24',
+            '92.223.14.0/24','92.223.16.0/24','92.223.18.0/24','92.223.19.0/24',
+            '92.223.20.0/24','92.223.36.0/24','92.223.37.0/24','92.223.38.0/24',
+            '92.223.54.0/24','92.223.56.0/24',
+            '185.12.240.0/24','185.12.241.0/24','185.12.242.0/24',
+            '185.12.213.0/24','185.12.214.0/24','185.12.215.0/24',
+            '88.204.200.192/26','83.229.15.0/24','45.82.31.0/24','121.78.67.0/24'
+        ], on:false}
     };
 
     var DOH_FORWARDERS = [
@@ -1832,6 +1883,48 @@
     }
 
     // ============================================================
+    // Custom domains
+    // ============================================================
+    var customDomains = [];
+
+    function addCustomDomain() {
+        var input = document.getElementById('custom-domain-input');
+        var domain = input.value.trim().toLowerCase();
+        if (!domain || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/.test(domain)) {
+            input.style.borderColor = 'var(--error)';
+            setTimeout(function() { input.style.borderColor = ''; }, 1500);
+            return;
+        }
+        if (customDomains.indexOf(domain) >= 0) {
+            input.value = '';
+            return;
+        }
+        customDomains.push(domain);
+        input.value = '';
+        renderCustomDomains();
+    }
+
+    function removeCustomDomain(domain) {
+        var idx = customDomains.indexOf(domain);
+        if (idx >= 0) customDomains.splice(idx, 1);
+        renderCustomDomains();
+    }
+
+    function renderCustomDomains() {
+        var list = document.getElementById('custom-domains-list');
+        var html = '';
+        for (var i = 0; i < customDomains.length; i++) {
+            html += '<span class="domain-tag">' + esc(customDomains[i]) +
+                '<button onclick="removeCustomDomain(\'' + esc(customDomains[i]) + '\')">&times;</button></span>';
+        }
+        list.innerHTML = html;
+    }
+
+    function getCustomDomains() {
+        return customDomains.slice();
+    }
+
+    // ============================================================
     // Routing scenario builders
     // ============================================================
     function buildFwdEntries(prefix, serviceKeys, svcMap, forwarderName) {
@@ -1849,6 +1942,20 @@
                     lines.push(':do { /ip/dns/static/add address-list=' + svc.list + ' forward-to=' + forwarderName + ' type=FWD regexp=' + svc.r[j] + ' comment=' + prefix + '-dns-fwd } on-error={}');
                 }
             }
+        }
+        return lines;
+    }
+
+    function buildIpEntries(prefix, serviceKeys, svcMap) {
+        var lines = [];
+        for (var i = 0; i < serviceKeys.length; i++) {
+            var svc = svcMap[serviceKeys[i]];
+            if (!svc || !svc.ip || svc.ip.length === 0) continue;
+            var nets = [];
+            for (var j = 0; j < svc.ip.length; j++) nets.push('"' + svc.ip[j] + '"');
+            lines.push(':foreach net in={' + nets.join(';') + '} do={');
+            lines.push('  :do { /ip/firewall/address-list/add list=' + svc.list + ' address=$net comment=' + prefix + '-excl-ip } on-error={}');
+            lines.push('}');
         }
         return lines;
     }
@@ -1949,14 +2056,26 @@
         var fwdName = fwd.name;
         lines.push('# FWD entries');
         lines = lines.concat(buildFwdEntries(prefix, selectedServices, SERVICES, fwdName));
+        var cDomains = getCustomDomains();
+        if (cDomains.length > 0) {
+            lines.push('# Custom domain FWD entries');
+            var domStrs = [];
+            for (var j = 0; j < cDomains.length; j++) domStrs.push('"' + cDomains[j] + '"');
+            lines.push(':foreach d in={' + domStrs.join(';') + '} do={');
+            lines.push('  :do { /ip/dns/static/add address-list=Custom forward-to=' + fwdName + ' match-subdomain=yes type=FWD name=$d comment=' + prefix + '-dns-fwd } on-error={}');
+            lines.push('}');
+        }
         lines.push('# Policy routing');
         lines = lines.concat(buildPolicyRouting(prefix, prefix + '-fwd-table', prefix + '-fwd'));
+        lines.push('# NAT for tunneled traffic');
+        lines.push('/ip/firewall/nat/add chain=srcnat action=masquerade out-interface=wg-' + prefix + ' comment=' + prefix + '-fwd');
         lines.push('# Mangle rules');
         var listNames = [];
         for (var i = 0; i < selectedServices.length; i++) {
             var svc = SERVICES[selectedServices[i]];
             if (svc) listNames.push('"' + svc.list + '"');
         }
+        if (cDomains.length > 0) listNames.push('"Custom"');
         lines.push(':foreach l in={' + listNames.join(';') + '} do={');
         lines.push('  /ip/firewall/mangle/add chain=prerouting action=mark-connection new-connection-mark=' + prefix + '-fwd-conn dst-address-list=$l in-interface-list=LAN passthrough=yes comment=' + prefix + '-fwd');
         lines.push('}');
@@ -2006,6 +2125,7 @@
         if (exclusionKeys.length > 0) {
             lines.push('# FWD entries for exclusions');
             lines = lines.concat(buildFwdEntries(prefix, exclusionKeys, EXCLUSIONS, fwd.name));
+            lines = lines.concat(buildIpEntries(prefix, exclusionKeys, EXCLUSIONS));
         }
 
         lines.push('# Add private/special ranges to RU list (excluded from VPN routing via dst-address-list=!RU)');
@@ -2022,6 +2142,17 @@
         }
         lines.push('# Policy routing');
         lines = lines.concat(buildPolicyRouting(prefix, prefix + '-non-ru-table', prefix + '-non-ru'));
+        lines.push('# NAT for tunneled traffic');
+        lines.push('/ip/firewall/nat/add chain=srcnat action=masquerade out-interface=wg-' + prefix + ' comment=' + prefix + '-non-ru');
+        if (exclusionKeys.length > 0) {
+            lines.push('# Exclusions: accept (bypass VPN)');
+            for (var ei = 0; ei < exclusionKeys.length; ei++) {
+                var exSvc = EXCLUSIONS[exclusionKeys[ei]];
+                if (exSvc) {
+                    lines.push('/ip/firewall/mangle/add chain=prerouting action=accept dst-address-list=' + exSvc.list + ' in-interface-list=LAN comment=' + prefix + '-non-ru');
+                }
+            }
+        }
         lines.push('# Mark non-RU traffic for tunnel');
         lines.push('/ip/firewall/mangle/add chain=prerouting action=mark-routing new-routing-mark=' + prefix + '-non-ru-table dst-address-list=!RU in-interface-list=LAN passthrough=no comment=' + prefix + '-non-ru');
         lines.push('# MSS clamp for WireGuard (MTU 1420)');
@@ -2122,6 +2253,7 @@
             src.push('  :do { /ip/firewall/address-list/remove [find where list=RU and comment=RIPE-RU] } on-error={}');
             src.push('  :do { /ip/firewall/address-list/remove [find where comment~"' + prefix + '-private"] } on-error={}');
             src.push('  :do { /ip/firewall/address-list/remove [find where list="' + prefix + '-vpn-server"] } on-error={}');
+            src.push('  :do { /ip/firewall/address-list/remove [find where comment~"' + prefix + '-excl-ip"] } on-error={}');
             src.push('  :do { /system/scheduler/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /tool/netwatch/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /system/script/remove [find where comment~"' + prefix + '" and name!="' + prefix + '-uninstall"] } on-error={}');
@@ -2203,6 +2335,7 @@
             src.push('  :do { /ip/firewall/address-list/remove [find where list=RU and comment=RIPE-RU] } on-error={}');
             src.push('  :do { /ip/firewall/address-list/remove [find where comment~"' + prefix + '-private"] } on-error={}');
             src.push('  :do { /ip/firewall/address-list/remove [find where list="' + prefix + '-vpn-server"] } on-error={}');
+            src.push('  :do { /ip/firewall/address-list/remove [find where comment~"' + prefix + '-excl-ip"] } on-error={}');
             src.push('  :do { /system/scheduler/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /tool/netwatch/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /system/script/remove [find where comment~"' + prefix + '" and name!="' + prefix + '-uninstall"] } on-error={}');
@@ -2312,7 +2445,6 @@
             '/interface/wireguard/add name=wg-' + prefix + ' private-key="' + i.PrivateKey + '" listen-port=' + net.wgPort + ' disabled=yes',
             peerAdd,
             '/ip/address/add address=' + i.Address + ' interface=wg-' + prefix,
-            '/ip/firewall/nat/add chain=srcnat action=masquerade out-interface=wg-' + prefix,
             '',
             '# 4. Container environment variables',
             '/container/envs/add list=' + prefix + '-env key=AWG_LISTEN value=":51820"',
@@ -2535,7 +2667,6 @@
             '/interface/wireguard/add name=wg-' + prefix + ' private-key="' + i.PrivateKey + '" listen-port=' + net.wgPort,
             peerAdd,
             '/ip/address/add address=' + i.Address + ' interface=wg-' + prefix,
-            '/ip/firewall/nat/add chain=srcnat action=masquerade out-interface=wg-' + prefix,
             '',
         ]);
 
@@ -3931,7 +4062,7 @@
         var exclusions = [];
         if (scenario === 'dns-fwd') {
             selectedServices = getSelectedServices();
-            if (selectedServices.length === 0) {
+            if (selectedServices.length === 0 && getCustomDomains().length === 0) {
                 showError(t('noServiceSelected'));
                 return;
             }
