@@ -8,13 +8,17 @@ The repository is intentionally scoped to the RouterOS App flow:
 
 - `routeros-app/src` contains the App bootstrapper and RouterOS API reconcile logic;
 - `routeros-app/proxy-src` contains the minimal AWG proxy/transform code needed by the image;
-- `.github/workflows/routeros-app-image.yml` builds and publishes the combined image.
+- `.github/workflows/routeros-app-oci.yml` builds RouterOS 7.21+ OCI image archives.
 
-Build locally from the repository root:
+The GitHub workflow does not use Docker. It cross-compiles static Linux/musl
+binaries with Zig and writes OCI image layout archives directly:
 
-```sh
-docker build -f routeros-app/Dockerfile -t awg-routeros-app:dev .
-```
+- `awg-proxy-amd64.tar.gz`
+- `awg-proxy-arm64.tar.gz`
+- `awg-proxy-armv7.tar.gz`
+
+Every workflow run keeps these files as Actions artifacts. Tag pushes such as
+`v0.1.0` also publish them directly to the matching GitHub Release.
 
 See `routeros-app/README.md` for bundle format, RouterOS preflight notes, and
 App environment variables.

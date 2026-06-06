@@ -1,5 +1,9 @@
 /builds/
 .idea/
+.zig-cache/
+zig-cache/
+routeros-app/awg-proxy
+routeros-app/awg-routeros-app
 *.json
 *.png
 *.exe

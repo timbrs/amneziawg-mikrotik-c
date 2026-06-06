@@ -104,28 +104,28 @@ The produced `awg-routeros-app` and `awg-proxy` binaries are both required by
 the final image. `proxy-src/` contains the minimal proxy/transform code kept for
 that purpose.
 
-To build the combined RouterOS App image from the repository root:
+## Direct OCI image builds
 
-```sh
-docker build -f routeros-app/Dockerfile -t awg-routeros-app:dev .
-```
+RouterOS 7.21+ can import standard OCI archives. This repository therefore does
+not need Docker/Buildx for CI image creation.
+
+`.github/workflows/routeros-app-oci.yml` builds per-architecture OCI archives
+directly:
+
+- `awg-proxy-amd64.tar.gz`
+- `awg-proxy-arm64.tar.gz`
+- `awg-proxy-armv7.tar.gz`
+
+The workflow uses `zig cc` for Linux/musl cross-compilation and
+`scripts/make-oci-image.sh` to write the OCI image layout tarball.
+
+Every workflow run uploads the archives as GitHub Actions artifacts. On `v*`
+tags, the same archives are uploaded directly to the matching GitHub Release.
 
 `app-template.yml` is a starter custom App YAML. Replace its image reference
 with your published image tag. The template wires `AWG_CONTAINER_IP=[containerIP]`
 and mounts `disk1/awg-proxy` at `/etc/awg-proxy`, where both `awg-bundle.conf`
 and `routeros-api.conf` are expected by default.
-
-## GitHub Actions image builds
-
-`.github/workflows/routeros-app-image.yml` builds the combined image with
-GitHub-hosted Docker Buildx:
-
-- pushes `ghcr.io/<owner>/awg-routeros-app` for `main` and `v*` tags;
-- builds PRs without pushing;
-- on `workflow_dispatch` and `v*` tags, uploads per-architecture
-  `awg-routeros-app-*.oci.tar.gz` artifacts for RouterOS import/testing.
-
-Use the GHCR image tag in `app-template.yml` after the package is published.
 
 For multi-profile safety the RouterOS WireGuard listen port is assigned as
 `42000 + profile_index` by default. The `ListenPort` inside imported AWG files
