@@ -18,6 +18,12 @@ same images to GHCR for RouterOS `/app`:
 image: ghcr.io/iietp/awg-proxy:latest
 ```
 
+The current test branch publishes:
+
+```yaml
+image: ghcr.io/iietp/awg-proxy:codex-routeros-app-full-cycle
+```
+
 The workflow also produces RouterOS 7.21+ OCI archives:
 
 - `awg-proxy-amd64.tar.gz`
@@ -29,3 +35,17 @@ Every workflow run keeps these files as Actions artifacts. Tag pushes such as
 
 See `routeros-app/README.md` for bundle format, RouterOS preflight notes, and
 App environment variables.
+
+## RouterOS App Store
+
+Use this custom app-store URL while testing the branch:
+
+```routeros
+/app/settings/set app-store-urls=https://raw.githubusercontent.com/IIeTp/amneziawg-mikrotik-c/refs/heads/codex/routeros-app-full-cycle/app-store.yml
+```
+
+The entry uses the branch image tag:
+
+```yaml
+image: ghcr.io/iietp/awg-proxy:codex-routeros-app-full-cycle
+```

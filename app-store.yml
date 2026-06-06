@@ -1,0 +1,17 @@
+- category: networking
+  default-credentials: none
+  descr: AmneziaWG RouterOS full-cycle client bootstrapper
+  name: awg-proxy
+  page: https://github.com/IIeTp/amneziawg-mikrotik-c
+  services:
+    awg-proxy:
+      image: ghcr.io/iietp/awg-proxy:codex-routeros-app-full-cycle
+      command: /awg-routeros-app
+      hostname: awg-proxy
+      dns: 8.8.8.8
+      environment:
+        AWG_CONFIG: /etc/awg-proxy/awg-bundle.conf
+        AWG_CONTAINER_IP: "[containerIP]"
+        AWG_CONTAINER_INTERFACE: "[containerInterface]"
+      volumes:
+        - disk1/awg-proxy:/etc/awg-proxy

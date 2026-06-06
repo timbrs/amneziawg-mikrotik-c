@@ -116,6 +116,12 @@ directly and publishes the same images to GHCR for RouterOS `/app`:
 image: ghcr.io/iietp/awg-proxy:latest
 ```
 
+The current test branch publishes:
+
+```yaml
+image: ghcr.io/iietp/awg-proxy:codex-routeros-app-full-cycle
+```
+
 Artifacts:
 
 - `awg-proxy-amd64.tar.gz`
@@ -129,10 +135,11 @@ and `podman manifest` publish the generated OCI images to GHCR without Docker.
 Every workflow run uploads the archives as GitHub Actions artifacts. On `v*`
 tags, the same archives are uploaded directly to the matching GitHub Release.
 
-`app-template.yml` is a starter custom App YAML. It wires
-`AWG_CONTAINER_IP=[containerIP]` and mounts `disk1/awg-proxy` at
-`/etc/awg-proxy`, where both `awg-bundle.conf` and `routeros-api.conf` are
-expected by default.
+`app-template.yml` is a starter single-App YAML for `/app add yaml=...`.
+The repository root `app-store.yml` is a YAML array for
+`/app/settings app-store-urls`. Both wire `AWG_CONTAINER_IP=[containerIP]` and
+mount `disk1/awg-proxy` at `/etc/awg-proxy`, where both `awg-bundle.conf` and
+`routeros-api.conf` are expected by default.
 
 For multi-profile safety the RouterOS WireGuard listen port is assigned as
 `42000 + profile_index` by default. The `ListenPort` inside imported AWG files
