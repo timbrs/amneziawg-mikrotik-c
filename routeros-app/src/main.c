@@ -128,11 +128,7 @@ static int connect_and_reconcile(awg_bundle_t *bundle, const reconcile_options_t
 }
 
 int main(void) {
-    const char *config_path = getenv("AWG_CONFIG");
-    if (!config_path || !config_path[0]) {
-        fprintf(stderr, "FATAL: AWG_CONFIG is not set\n");
-        return 1;
-    }
+    const char *config_path = env_str("AWG_CONFIG", "/etc/awg-proxy/awg-bundle.conf");
 
     char err[512];
     awg_bundle_t bundle;

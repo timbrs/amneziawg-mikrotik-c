@@ -22,6 +22,29 @@ static void set_err(char *err, size_t err_len, const char *msg) {
     snprintf(err, err_len, "%s", msg);
 }
 
+static int is_app_token_literal(const char *value) {
+    return strcmp(value, "[routerIP]") == 0 ||
+           strcmp(value, "[containerIP]") == 0 ||
+           strcmp(value, "[containerInterface]") == 0 ||
+           strcmp(value, "[accessIP]") == 0 ||
+           strcmp(value, "[accessPort]") == 0 ||
+           strcmp(value, "[accessProto]") == 0;
+}
+
+static const char *env_effective(const char *name) {
+    const char *v = getenv(name);
+    if (!v || !v[0] || is_app_token_literal(v)) return NULL;
+    return v;
+}
+
+static const char *env_first(const char *a, const char *b, const char *c) {
+    const char *v;
+    if ((v = env_effective(a)) != NULL) return v;
+    if ((v = env_effective(b)) != NULL) return v;
+    if ((v = env_effective(c)) != NULL) return v;
+    return NULL;
+}
+
 static void endpoint_split(const char *endpoint, char *host, size_t host_len, char *port, size_t port_len) {
     const char *colon = strrchr(endpoint, ':');
     if (!colon) {
@@ -58,6 +81,11 @@ int ros_credentials_load(const char *path, ros_credentials_t *creds, char *err, 
         else if (strcmp(key, "password") == 0) snprintf(creds->password, sizeof(creds->password), "%s", value);
     }
     fclose(f);
+
+    if (strcmp(creds->host, "auto") == 0 || strcmp(creds->host, "[routerIP]") == 0) {
+        const char *host = env_first("AWG_ROUTEROS_HOST", "[routerIP]", "ROUTER_IP");
+        snprintf(creds->host, sizeof(creds->host), "%s", host ? host : "172.18.0.1");
+    }
 
     if (!creds->host[0] || !creds->user[0] || !creds->password[0]) {
         set_err(err, err_len, "RouterOS credentials file must contain host, user and password");

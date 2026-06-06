@@ -54,3 +54,7 @@ The app exposes editable `Configs` in RouterOS UI:
 
 - `awg_bundle` for one or more AWG profiles;
 - `routeros_api` for RouterOS API credentials used by the bootstrapper.
+
+`AWG_CONFIG` is optional and defaults to `/etc/awg-proxy/awg-bundle.conf`.
+`routeros_api` can use `host=auto`, which resolves `AWG_ROUTEROS_HOST` /
+`[routerIP]` when RouterOS provides it and falls back to `172.18.0.1`.

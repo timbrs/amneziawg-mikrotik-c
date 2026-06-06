@@ -45,13 +45,14 @@ valid and becomes profile `default`.
 
 ## Runtime inputs
 
-Only `AWG_CONFIG` is the user-provided AWG profile input.
+The AWG profile input is the `awg_bundle` App config. `AWG_CONFIG` is optional
+and defaults to `/etc/awg-proxy/awg-bundle.conf`.
 
 When packaged as a RouterOS App, use the built-in App placeholders to avoid
 hardcoding the container address:
 
 ```ini
-AWG_CONFIG=/etc/awg-proxy/awg-bundle.conf
+AWG_ROUTEROS_HOST=[routerIP]
 AWG_CONTAINER_IP=[containerIP]
 AWG_CONTAINER_INTERFACE=[containerInterface]
 ```
@@ -69,14 +70,16 @@ reads them from `AWG_ROUTEROS_CREDS`, defaulting to
 `/etc/awg-proxy/routeros-api.conf`:
 
 ```ini
-host=172.18.0.1
+host=auto
 port=8728
 user=awg-proxy
 password=...
 ```
 
-This file is expected to be created by a RouterOS preflight script and mounted
-into the app container.
+When using RouterOS App `configs`, `AWG_CONFIG` is optional and defaults to
+`/etc/awg-proxy/awg-bundle.conf`. The API credentials config can use
+`host=auto`, which resolves `AWG_ROUTEROS_HOST` / `[routerIP]` when RouterOS
+provides it and falls back to `172.18.0.1`.
 
 ## Managed lifecycle
 

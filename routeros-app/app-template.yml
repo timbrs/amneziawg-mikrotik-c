@@ -10,7 +10,7 @@ services:
     hostname: awg-proxy
     dns: 8.8.8.8
     environment:
-      AWG_CONFIG: /etc/awg-proxy/awg-bundle.conf
+      AWG_ROUTEROS_HOST: "[routerIP]"
       AWG_CONTAINER_IP: "[containerIP]"
       AWG_CONTAINER_INTERFACE: "[containerInterface]"
     configs:
@@ -49,7 +49,7 @@ configs:
       PersistentKeepalive = 25
   routeros_api:
     content: |
-      host=172.18.0.1
+      host=auto
       port=8728
       user=awg-proxy
       password=change-me
