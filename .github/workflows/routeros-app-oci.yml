@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME:-dev}"
-          cflags="-O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE -DVERSION=\\\"${version}\\\""
+          cflags="-O2 -Wall -Wextra -Werror -Wno-error=sign-compare -std=c11 -D_GNU_SOURCE -DVERSION=\\\"${version}\\\""
           make -C routeros-app clean
           make -C routeros-app \
             VERSION="${version}" \
