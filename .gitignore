@@ -1,7 +1,13 @@
 /builds/
-.idea
+.idea/
 *.json
-*.md
-*.py
 *.png
-*.txt
+*.exe
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.tar
+*.tar.gz
+*.oci.tar

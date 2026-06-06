@@ -1,0 +1,15 @@
+name: awg-proxy
+descr: AmneziaWG RouterOS full-cycle client bootstrapper
+page: https://github.com/timbrs/awg-proxy
+category: network
+default-credential: none
+services:
+  awg-proxy:
+    image: registry.example.com/awg-routeros-app:latest
+    command: /awg-routeros-app
+    environment:
+      AWG_CONFIG: /etc/awg-proxy/awg-bundle.conf
+      AWG_CONTAINER_IP: "[containerIP]"
+      AWG_CONTAINER_INTERFACE: "[containerInterface]"
+    volumes:
+      - disk1/awg-proxy:/etc/awg-proxy
