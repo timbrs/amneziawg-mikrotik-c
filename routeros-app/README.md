@@ -100,8 +100,9 @@ This app therefore emulates dynamic ownership:
 make
 ```
 
-The produced `awg-routeros-app` expects the existing proxy binary at
-`/awg-proxy` unless `AWG_PROXY_BIN` is set.
+The produced `awg-routeros-app` and `awg-proxy` binaries are both required by
+the final image. `proxy-src/` contains the minimal proxy/transform code kept for
+that purpose.
 
 To build the combined RouterOS App image from the repository root:
 
