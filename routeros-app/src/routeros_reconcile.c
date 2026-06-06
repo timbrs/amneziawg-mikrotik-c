@@ -159,7 +159,7 @@ static int ensure_wireguard(ros_api_t *api, const awg_profile_t *p, const reconc
     snprintf(name_word, sizeof(name_word), "=name=%s", iface);
     snprintf(comment_word, sizeof(comment_word), "=comment=%s", comment);
 
-    ros_reply_t reply;
+    static ros_reply_t reply;
     if (ros_find_by_name(api, "/interface/wireguard/print", iface, &reply) < 0) return -1;
     if (ensure_managed_collision_free(&reply, iface, err, err_len) < 0) return -1;
     const ros_sentence_t *existing = ros_reply_first_re(&reply);
@@ -180,7 +180,7 @@ static int ensure_wireguard(ros_api_t *api, const awg_profile_t *p, const reconc
 
 static int read_wireguard_public_key(ros_api_t *api, const char *iface, char *out, size_t out_len,
                                      char *err, size_t err_len) {
-    ros_reply_t reply;
+    static ros_reply_t reply;
     if (ros_find_by_name(api, "/interface/wireguard/print", iface, &reply) < 0) return -1;
     const ros_sentence_t *existing = ros_reply_first_re(&reply);
     if (!existing) {
@@ -203,7 +203,7 @@ static int ensure_address(ros_api_t *api, const awg_profile_t *p, const char *if
     snprintf(addr_word, sizeof(addr_word), "=address=%s", p->interface_address);
     snprintf(comment_word, sizeof(comment_word), "=comment=%s", comment);
 
-    ros_reply_t reply;
+    static ros_reply_t reply;
     if (ros_find_address(api, iface, &reply) < 0) return -1;
     const ros_sentence_t *existing = ros_reply_first_re(&reply);
     if (!existing) {
@@ -244,7 +244,7 @@ static int ensure_peer(ros_api_t *api, const awg_profile_t *p, const reconcile_o
              p->peer_persistent_keepalive[0] ? p->peer_persistent_keepalive : "25");
     snprintf(comment_word, sizeof(comment_word), "=comment=%s", comment);
 
-    ros_reply_t reply;
+    static ros_reply_t reply;
     if (ros_find_peer(api, iface, &reply) < 0) return -1;
     const ros_sentence_t *existing = ros_reply_first_re(&reply);
     const char *cmd_add_psk[] = { "/interface/wireguard/peers/add", iface_word, pub_word, psk_word, allowed_word,
@@ -281,7 +281,7 @@ static int ensure_nat(ros_api_t *api, const awg_profile_t *p, const char *iface,
     snprintf(out_word, sizeof(out_word), "=out-interface=%s", iface);
     snprintf(comment_word, sizeof(comment_word), "=comment=%s", comment);
 
-    ros_reply_t reply;
+    static ros_reply_t reply;
     char prefix[128];
     snprintf(prefix, sizeof(prefix), "awg-proxy:%s:", p->name);
     if (ros_find_nat(api, prefix, &reply) < 0) return -1;
@@ -311,7 +311,7 @@ static int remove_sentence_id(ros_api_t *api, const char *path, const char *id) 
     char id_word[128];
     snprintf(id_word, sizeof(id_word), "=.id=%s", id);
     const char *cmd[] = { path, id_word };
-    ros_reply_t reply;
+    static ros_reply_t reply;
     return ros_api_command(api, cmd, 2, &reply);
 }
 
@@ -329,7 +329,7 @@ static int comment_is_kept(const awg_bundle_t *bundle, const char *comment) {
 static int cleanup_path_by_comment(ros_api_t *api, const awg_bundle_t *bundle,
                                    const char *print_path, const char *remove_path) {
     const char *cmd[] = { print_path };
-    ros_reply_t reply;
+    static ros_reply_t reply;
     if (ros_api_command(api, cmd, 1, &reply) < 0) return -1;
     for (int i = 0; i < reply.count; i++) {
         const ros_sentence_t *s = &reply.sentences[i];

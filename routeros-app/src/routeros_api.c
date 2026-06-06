@@ -191,7 +191,7 @@ int ros_api_connect(ros_api_t *api, const char *host, int port, const char *user
     snprintf(uword, sizeof(uword), "=name=%s", user);
     snprintf(pword, sizeof(pword), "=password=%s", password);
     const char *login[] = { "/login", uword, pword };
-    ros_reply_t reply;
+    static ros_reply_t reply;
     if (ros_api_command(api, login, 3, &reply) < 0) {
         ros_api_close(api);
         return -1;
