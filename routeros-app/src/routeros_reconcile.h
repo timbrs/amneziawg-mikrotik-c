@@ -11,6 +11,7 @@ typedef struct {
     int port;
     char user[128];
     char password[256];
+    int host_auto;
 } ros_credentials_t;
 
 typedef struct {

@@ -1,5 +1,7 @@
 #include "routeros_api.h"
 
+#include "app_log.h"
+
 #include <errno.h>
 #include <netdb.h>
 #include <stdint.h>
@@ -151,7 +153,7 @@ int ros_api_command(ros_api_t *api, const char *const *words, int word_count, ro
     return 0;
 }
 
-static int tcp_connect(const char *host, int port) {
+static int tcp_connect(const char *host, int port, char *err, size_t err_len) {
     char port_s[16];
     snprintf(port_s, sizeof(port_s), "%d", port);
 
@@ -161,17 +163,30 @@ static int tcp_connect(const char *host, int port) {
     hints.ai_family = AF_UNSPEC;
 
     struct addrinfo *res = NULL;
-    if (getaddrinfo(host, port_s, &hints, &res) != 0) return -1;
+    int gai = getaddrinfo(host, port_s, &hints, &res);
+    if (gai != 0) {
+        snprintf(err, err_len, "getaddrinfo(%s:%s) failed: %s", host, port_s, gai_strerror(gai));
+        return -1;
+    }
 
     int fd = -1;
+    int last_errno = 0;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
         fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
-        if (fd < 0) continue;
+        if (fd < 0) {
+            last_errno = errno;
+            continue;
+        }
         if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+        last_errno = errno;
         close(fd);
         fd = -1;
     }
     freeaddrinfo(res);
+    if (fd < 0) {
+        snprintf(err, err_len, "connect(%s:%d) failed: %s",
+                 host, port, last_errno ? strerror(last_errno) : "unknown error");
+    }
     return fd;
 }
 
@@ -179,12 +194,16 @@ int ros_api_connect(ros_api_t *api, const char *host, int port, const char *user
     memset(api, 0, sizeof(*api));
     api->fd = -1;
 
-    int fd = tcp_connect(host, port);
+    app_log("INFO", "RouterOS API connecting to %s:%d as user '%s'", host, port, user);
+    char conn_err[256];
+    int fd = tcp_connect(host, port, conn_err, sizeof(conn_err));
     if (fd < 0) {
-        api_err(api, "cannot connect to RouterOS API");
+        api_err(api, conn_err);
+        app_log("ERROR", "RouterOS API TCP connect failed: %s", api->last_error);
         return -1;
     }
     api->fd = fd;
+    app_log("INFO", "RouterOS API TCP connected to %s:%d", host, port);
 
     char uword[ROS_API_MAX_WORD];
     char pword[ROS_API_MAX_WORD];
@@ -192,10 +211,13 @@ int ros_api_connect(ros_api_t *api, const char *host, int port, const char *user
     snprintf(pword, sizeof(pword), "=password=%s", password);
     const char *login[] = { "/login", uword, pword };
     static ros_reply_t reply;
+    app_log("INFO", "RouterOS API login started for user '%s'", user);
     if (ros_api_command(api, login, 3, &reply) < 0) {
+        app_log("ERROR", "RouterOS API login failed for user '%s': %s", user, api->last_error);
         ros_api_close(api);
         return -1;
     }
+    app_log("INFO", "RouterOS API login succeeded for user '%s'", user);
     return 0;
 }
 

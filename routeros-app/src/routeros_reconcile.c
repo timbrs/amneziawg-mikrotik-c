@@ -1,5 +1,7 @@
 #include "routeros_reconcile.h"
 
+#include "app_log.h"
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,6 +85,7 @@ int ros_credentials_load(const char *path, ros_credentials_t *creds, char *err, 
     fclose(f);
 
     if (strcmp(creds->host, "auto") == 0 || strcmp(creds->host, "[routerIP]") == 0) {
+        creds->host_auto = 1;
         const char *host = env_first("AWG_ROUTEROS_HOST", "[routerIP]", "ROUTER_IP");
         snprintf(creds->host, sizeof(creds->host), "%s", host ? host : "172.18.0.1");
     }
@@ -164,9 +167,11 @@ static int ensure_wireguard(ros_api_t *api, const awg_profile_t *p, const reconc
     if (ensure_managed_collision_free(&reply, iface, err, err_len) < 0) return -1;
     const ros_sentence_t *existing = ros_reply_first_re(&reply);
     if (!existing) {
+        app_log("INFO", "RouterOS creating WireGuard interface %s", iface);
         const char *cmd[] = { "/interface/wireguard/add", name_word, private_key, listen_port, mtu, comment_word, "=disabled=no" };
         return ros_api_command(api, cmd, 7, &reply);
     }
+    app_log("INFO", "RouterOS updating WireGuard interface %s", iface);
 
     const char *id = ros_reply_find(existing, ".id");
     if (!id) {
@@ -207,9 +212,11 @@ static int ensure_address(ros_api_t *api, const awg_profile_t *p, const char *if
     if (ros_find_address(api, iface, &reply) < 0) return -1;
     const ros_sentence_t *existing = ros_reply_first_re(&reply);
     if (!existing) {
+        app_log("INFO", "RouterOS adding IP address %s to %s", p->interface_address, iface);
         const char *cmd[] = { "/ip/address/add", iface_word, addr_word, comment_word };
         return ros_api_command(api, cmd, 4, &reply);
     }
+    app_log("INFO", "RouterOS updating IP address %s on %s", p->interface_address, iface);
     const char *ec = ros_reply_find(existing, "comment");
     if (!ec || !starts_with(ec, "awg-proxy:")) {
         snprintf(err, err_len, "IP address on %s exists without awg-proxy comment", iface);
@@ -252,9 +259,13 @@ static int ensure_peer(ros_api_t *api, const awg_profile_t *p, const reconcile_o
     const char *cmd_add[] = { "/interface/wireguard/peers/add", iface_word, pub_word, allowed_word,
                               endpoint_addr_word, endpoint_port_word, keepalive_word, comment_word, "=disabled=no" };
     if (!existing) {
+        app_log("INFO", "RouterOS adding WireGuard peer on %s endpoint=%s:%d",
+                iface, opts->container_ip, profile_proxy_port(p, opts));
         if (p->peer_preshared_key[0]) return ros_api_command(api, cmd_add_psk, 10, &reply);
         return ros_api_command(api, cmd_add, 9, &reply);
     }
+    app_log("INFO", "RouterOS updating WireGuard peer on %s endpoint=%s:%d",
+            iface, opts->container_ip, profile_proxy_port(p, opts));
 
     const char *ec = ros_reply_find(existing, "comment");
     if (!ec || !starts_with(ec, "awg-proxy:")) {
@@ -296,9 +307,11 @@ static int ensure_nat(ros_api_t *api, const awg_profile_t *p, const char *iface,
         }
     }
     if (!existing) {
+        app_log("INFO", "RouterOS adding NAT masquerade for %s", iface);
         const char *cmd[] = { "/ip/firewall/nat/add", "=chain=srcnat", "=action=masquerade", out_word, comment_word };
         return ros_api_command(api, cmd, 5, &reply);
     }
+    app_log("INFO", "RouterOS updating NAT masquerade for %s", iface);
     const char *id = ros_reply_find(existing, ".id");
     if (!id) return -1;
     char id_word[128];
@@ -337,8 +350,11 @@ static int cleanup_path_by_comment(ros_api_t *api, const awg_bundle_t *bundle,
         const char *comment = ros_reply_find(s, "comment");
         const char *id = ros_reply_find(s, ".id");
         if (!comment || !id || !starts_with(comment, "awg-proxy:")) continue;
-        if (!comment_is_kept(bundle, comment) && remove_sentence_id(api, remove_path, id) < 0)
-            return -1;
+        if (!comment_is_kept(bundle, comment)) {
+            app_log("INFO", "RouterOS removing stale managed object %s via %s", comment, remove_path);
+            if (remove_sentence_id(api, remove_path, id) < 0)
+                return -1;
+        }
     }
     return 0;
 }
@@ -365,6 +381,7 @@ int routeros_reconcile_bundle(ros_api_t *api, awg_bundle_t *bundle,
         profile_interface_name(p, iface, sizeof(iface));
         profile_comment(p, comment, sizeof(comment));
 
+        app_log("INFO", "RouterOS reconcile profile %s as interface %s", p->name, iface);
         if (ensure_wireguard(api, p, opts, iface, comment, err, err_len) < 0) return -1;
         if (read_wireguard_public_key(api, iface, p->routeros_public_key,
                                       sizeof(p->routeros_public_key), err, err_len) < 0) return -1;

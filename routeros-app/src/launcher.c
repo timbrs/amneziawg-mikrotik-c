@@ -1,5 +1,7 @@
 #include "launcher.h"
 
+#include "app_log.h"
+
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -77,18 +79,21 @@ static int start_profile(launcher_t *launcher, const awg_profile_t *p, const rec
 
     pid_t pid = fork();
     if (pid < 0) {
+        app_log("ERROR", "failed to fork proxy worker for profile %s: %s", p->name, strerror(errno));
         free_envv(envv, n);
         return -1;
     }
     if (pid == 0) {
         char *argv[] = { launcher->proxy_bin, NULL };
         execve(launcher->proxy_bin, argv, envv);
+        fprintf(stdout, "ERROR: failed to exec %s: %s\n", launcher->proxy_bin, strerror(errno));
+        fflush(stdout);
         _exit(127);
     }
 
     free_envv(envv, n);
     launcher->child_pids[launcher->child_count++] = pid;
-    fprintf(stderr, "started profile %s pid=%ld listen=%s remote=%s\n",
+    app_log("INFO", "started profile %s pid=%ld listen=%s remote=%s",
             p->name, (long)pid, listen, p->peer_endpoint);
     return 0;
 }
@@ -98,6 +103,7 @@ int launcher_start_profiles(launcher_t *launcher, const awg_bundle_t *bundle,
     memset(launcher, 0, sizeof(*launcher));
     const char *proxy_bin = getenv("AWG_PROXY_BIN");
     snprintf(launcher->proxy_bin, sizeof(launcher->proxy_bin), "%s", proxy_bin && proxy_bin[0] ? proxy_bin : "/awg-proxy");
+    app_log("INFO", "proxy binary: %s", launcher->proxy_bin);
 
     for (int i = 0; i < bundle->count; i++) {
         const awg_profile_t *p = &bundle->profiles[i];

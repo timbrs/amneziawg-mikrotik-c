@@ -1,4 +1,5 @@
 #include "awg_bundle.h"
+#include "app_log.h"
 #include "launcher.h"
 #include "routeros_api.h"
 #include "routeros_reconcile.h"
@@ -6,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int env_int(const char *name, int def) {
@@ -66,16 +68,116 @@ static void print_app_context(const reconcile_options_t *opts) {
     const char *access_proto = env_app_str("AWG_ACCESS_PROTO", "[accessProto]",
                                           "accessProto", "ACCESS_PROTO", "");
 
-    fprintf(stderr, "app network: container-ip=%s", opts->container_ip);
-    if (opts->container_interface[0])
-        fprintf(stderr, " container-interface=%s", opts->container_interface);
-    if (router_ip[0])
-        fprintf(stderr, " router-ip=%s", router_ip);
-    if (access_ip[0])
-        fprintf(stderr, " access=%s://%s%s%s",
+    app_log("INFO", "app network: container-ip=%s%s%s%s%s",
+            opts->container_ip,
+            opts->container_interface[0] ? " container-interface=" : "",
+            opts->container_interface[0] ? opts->container_interface : "",
+            router_ip[0] ? " router-ip=" : "",
+            router_ip[0] ? router_ip : "");
+    if (access_ip[0]) {
+        app_log("INFO", "app access endpoint: %s://%s%s%s",
                 access_proto[0] ? access_proto : "http",
                 access_ip, access_port[0] ? ":" : "", access_port);
-    fputc('\n', stderr);
+    }
+}
+
+static int append_host(char hosts[][128], int *count, int max, const char *host) {
+    if (!host || !host[0] || is_app_token_literal(host)) return 0;
+    for (int i = 0; i < *count; i++) {
+        if (strcmp(hosts[i], host) == 0) return 0;
+    }
+    if (*count >= max) return -1;
+    snprintf(hosts[*count], 128, "%s", host);
+    (*count)++;
+    return 0;
+}
+
+static int read_default_gateway(char *out, size_t out_len) {
+    FILE *f = fopen("/proc/net/route", "rb");
+    if (!f) return -1;
+
+    char line[256];
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        char iface[64];
+        unsigned int dest, gateway, flags;
+        if (sscanf(line, "%63s %x %x %x", iface, &dest, &gateway, &flags) != 4)
+            continue;
+        (void)iface;
+        (void)flags;
+        if (dest != 0 || gateway == 0) continue;
+        snprintf(out, out_len, "%u.%u.%u.%u",
+                 gateway & 0xffu,
+                 (gateway >> 8) & 0xffu,
+                 (gateway >> 16) & 0xffu,
+                 (gateway >> 24) & 0xffu);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    return -1;
+}
+
+static int connect_routeros(ros_api_t *api, const ros_credentials_t *creds,
+                            char *err, size_t err_len) {
+    char hosts[4][128];
+    int host_count = 0;
+    append_host(hosts, &host_count, 4, creds->host);
+    if (creds->host_auto) {
+        char gateway[128];
+        if (read_default_gateway(gateway, sizeof(gateway)) == 0) {
+            append_host(hosts, &host_count, 4, gateway);
+        } else {
+            app_log("WARN", "RouterOS API auto host: could not read container default gateway");
+        }
+        append_host(hosts, &host_count, 4, "172.18.0.1");
+    }
+
+    if (host_count == 0) {
+        snprintf(err, err_len, "RouterOS API host is empty");
+        return -1;
+    }
+
+    if (creds->host_auto)
+        app_log("INFO", "RouterOS API auto host has %d candidate(s)", host_count);
+
+    for (int i = 0; i < host_count; i++) {
+        if (ros_api_connect(api, hosts[i], creds->port, creds->user, creds->password) == 0) {
+            if (creds->host_auto && strcmp(hosts[i], creds->host) != 0)
+                app_log("INFO", "RouterOS API auto host selected fallback %s", hosts[i]);
+            return 0;
+        }
+        snprintf(err, err_len, "%s", api->last_error);
+    }
+
+    return -1;
+}
+
+static void log_worker_exit(int status) {
+    if (WIFSIGNALED(status)) {
+        app_log("ERROR", "proxy worker exited by signal %d", WTERMSIG(status));
+    } else if (WIFEXITED(status)) {
+        app_log("ERROR", "proxy worker exited with code %d", WEXITSTATUS(status));
+    } else {
+        app_log("ERROR", "proxy worker exited with status %d", status);
+    }
+}
+
+static void log_enabled_profiles(const awg_bundle_t *bundle, const reconcile_options_t *opts) {
+    int enabled = 0;
+    for (int i = 0; i < bundle->count; i++) {
+        const awg_profile_t *p = &bundle->profiles[i];
+        if (!p->enabled) continue;
+        enabled++;
+        app_log("INFO", "AWG profile enabled: name=%s proxy-port=%d wg-port=%d",
+                p->name, profile_proxy_port(p, opts), profile_wg_port(p, opts));
+    }
+    if (enabled == 0)
+        app_log("WARN", "no enabled AWG profiles in config");
 }
 
 static void bundle_fingerprint(const awg_bundle_t *bundle, char *out, size_t out_len) {
@@ -106,13 +208,16 @@ static int connect_and_reconcile(awg_bundle_t *bundle, const reconcile_options_t
     ros_credentials_t creds;
     if (ros_credentials_load(creds_path, &creds, err, err_len) < 0)
         return -1;
+    app_log("INFO", "RouterOS credentials loaded from %s: host=%s port=%d user=%s%s",
+            creds_path, creds.host, creds.port, creds.user,
+            creds.host_auto ? " mode=auto" : "");
 
     ros_api_t api;
-    if (ros_api_connect(&api, creds.host, creds.port, creds.user, creds.password) < 0) {
-        snprintf(err, err_len, "%s", api.last_error);
+    if (connect_routeros(&api, &creds, err, err_len) < 0) {
         return -1;
     }
 
+    app_log("INFO", "RouterOS reconcile started");
     if (routeros_reconcile_bundle(&api, bundle, opts, err, err_len) < 0) {
         if (api.last_error[0]) {
             size_t used = strlen(err);
@@ -124,33 +229,39 @@ static int connect_and_reconcile(awg_bundle_t *bundle, const reconcile_options_t
     }
 
     ros_api_close(&api);
+    app_log("INFO", "RouterOS reconcile completed");
     return 0;
 }
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    app_log("INFO", "awg-routeros-app starting");
     const char *config_path = env_str("AWG_CONFIG", "/etc/awg-proxy/awg-bundle.conf");
+    app_log("INFO", "AWG config path: %s", config_path);
 
     char err[512];
     awg_bundle_t bundle;
     if (awg_bundle_load(config_path, &bundle, err, sizeof(err)) < 0) {
-        fprintf(stderr, "FATAL: %s\n", err);
+        app_log("FATAL", "%s", err);
         return 1;
     }
-    fprintf(stderr, "loaded %d AWG profile(s) from %s\n", bundle.count, config_path);
+    app_log("INFO", "loaded %d AWG profile(s) from %s", bundle.count, config_path);
 
     reconcile_options_t opts;
     options_from_env(&opts);
+    log_enabled_profiles(&bundle, &opts);
     print_app_context(&opts);
     const char *creds_path = env_str("AWG_ROUTEROS_CREDS", "/etc/awg-proxy/routeros-api.conf");
 
     if (connect_and_reconcile(&bundle, &opts, creds_path, err, sizeof(err)) < 0) {
-        fprintf(stderr, "FATAL: %s\n", err);
+        app_log("FATAL", "%s", err);
         return 1;
     }
 
     launcher_t launcher;
     if (launcher_start_profiles(&launcher, &bundle, &opts) < 0) {
-        fprintf(stderr, "FATAL: failed to start proxy workers\n");
+        app_log("FATAL", "failed to start proxy workers");
         return 1;
     }
 
@@ -164,7 +275,9 @@ int main(void) {
             int status = 0;
             int r = launcher_poll(&launcher, &status);
             if (r < 0 || r > 0) {
-                fprintf(stderr, "proxy worker exited, stopping app\n");
+                if (r > 0) log_worker_exit(status);
+                else app_log("ERROR", "failed to poll proxy workers");
+                app_log("ERROR", "proxy worker exited, stopping app");
                 launcher_stop(&launcher);
                 return r < 0 ? 1 : status;
             }
@@ -173,7 +286,7 @@ int main(void) {
 
         awg_bundle_t fresh;
         if (awg_bundle_load(config_path, &fresh, err, sizeof(err)) < 0) {
-            fprintf(stderr, "reconcile skipped: %s\n", err);
+            app_log("ERROR", "reconcile skipped: %s", err);
             continue;
         }
 
@@ -183,22 +296,23 @@ int main(void) {
         char fresh_fp[AWG_APP_MAX_PROFILES * 96 + 256];
         runtime_fingerprint(&fresh, &fresh_opts, fresh_fp, sizeof(fresh_fp));
         if (strcmp(current_fp, fresh_fp) != 0) {
-            fprintf(stderr, "AWG runtime inputs changed, restarting workers\n");
+            app_log("INFO", "AWG runtime inputs changed, restarting workers");
             launcher_stop(&launcher);
             bundle = fresh;
             opts = fresh_opts;
+            log_enabled_profiles(&bundle, &opts);
             print_app_context(&opts);
             if (connect_and_reconcile(&bundle, &opts, creds_path, err, sizeof(err)) < 0) {
-                fprintf(stderr, "FATAL: %s\n", err);
+                app_log("FATAL", "%s", err);
                 return 1;
             }
             if (launcher_start_profiles(&launcher, &bundle, &opts) < 0) {
-                fprintf(stderr, "FATAL: failed to restart proxy workers\n");
+                app_log("FATAL", "failed to restart proxy workers");
                 return 1;
             }
             runtime_fingerprint(&bundle, &opts, current_fp, sizeof(current_fp));
         } else if (connect_and_reconcile(&bundle, &opts, creds_path, err, sizeof(err)) < 0) {
-            fprintf(stderr, "reconcile failed: %s\n", err);
+            app_log("ERROR", "reconcile failed: %s", err);
         }
     }
 }

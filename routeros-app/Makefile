@@ -5,6 +5,7 @@ LDFLAGS ?= -static -Wl,--gc-sections -flto -s
 PROXY_LDLIBS ?= -lpthread
 
 APP_SRC = \
+	src/app_log.c \
 	src/awg_bundle.c \
 	src/launcher.c \
 	src/main.c \
