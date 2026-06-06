@@ -19,6 +19,10 @@ on:
 
 permissions:
   contents: write
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/awg-proxy
 
 jobs:
   build-oci:
@@ -48,7 +52,7 @@ jobs:
           version: 0.15.2
 
       - name: Install packer dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make python3 file
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make python3 file skopeo
 
       - name: Build static binaries
         shell: bash
@@ -90,6 +94,55 @@ jobs:
           name: awg-proxy-${{ matrix.slug }}.tar.gz
           path: ${{ runner.temp }}/awg-proxy-${{ matrix.slug }}.tar.gz
           if-no-files-found: error
+
+      - name: Push architecture image to GHCR
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_NAME,,}"
+          branch_tag="${GITHUB_REF_NAME//\//-}-${{ matrix.slug }}"
+          echo "${GH_TOKEN}" | skopeo login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          skopeo copy \
+            "oci-archive:${RUNNER_TEMP}/awg-proxy-${{ matrix.slug }}.tar.gz" \
+            "docker://${image}:${branch_tag}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            skopeo copy \
+              "oci-archive:${RUNNER_TEMP}/awg-proxy-${{ matrix.slug }}.tar.gz" \
+              "docker://${image}:${GITHUB_REF_NAME}-${{ matrix.slug }}"
+          fi
+
+  publish-ghcr-index:
+    if: github.event_name != 'pull_request'
+    needs: build-oci
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install manifest tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends podman skopeo
+
+      - name: Publish GHCR manifest list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_NAME,,}"
+          branch_tag="${GITHUB_REF_NAME//\//-}"
+          echo "${GH_TOKEN}" | podman login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          podman manifest create "${image}:${branch_tag}"
+          podman manifest add "${image}:${branch_tag}" "docker://${image}:${branch_tag}-amd64"
+          podman manifest add "${image}:${branch_tag}" "docker://${image}:${branch_tag}-arm64"
+          podman manifest add "${image}:${branch_tag}" "docker://${image}:${branch_tag}-armv7"
+          podman manifest push --all "${image}:${branch_tag}" "docker://${image}:${branch_tag}"
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            podman manifest push --all "${image}:${branch_tag}" "docker://${image}:latest"
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            podman manifest push --all "${image}:${branch_tag}" "docker://${image}:${GITHUB_REF_NAME}"
+          fi
 
   publish-release:
     if: startsWith(github.ref, 'refs/tags/')

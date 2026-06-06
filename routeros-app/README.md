@@ -110,22 +110,29 @@ RouterOS 7.21+ can import standard OCI archives. This repository therefore does
 not need Docker/Buildx for CI image creation.
 
 `.github/workflows/routeros-app-oci.yml` builds per-architecture OCI archives
-directly:
+directly and publishes the same images to GHCR for RouterOS `/app`:
+
+```yaml
+image: ghcr.io/iietp/awg-proxy:latest
+```
+
+Artifacts:
 
 - `awg-proxy-amd64.tar.gz`
 - `awg-proxy-arm64.tar.gz`
 - `awg-proxy-armv7.tar.gz`
 
 The workflow uses `zig cc` for Linux/musl cross-compilation and
-`scripts/make-oci-image.sh` to write the OCI image layout tarball.
+`scripts/make-oci-image.sh` to write the OCI image layout tarball. `skopeo`
+and `podman manifest` publish the generated OCI images to GHCR without Docker.
 
 Every workflow run uploads the archives as GitHub Actions artifacts. On `v*`
 tags, the same archives are uploaded directly to the matching GitHub Release.
 
-`app-template.yml` is a starter custom App YAML. Replace its image reference
-with your published image tag. The template wires `AWG_CONTAINER_IP=[containerIP]`
-and mounts `disk1/awg-proxy` at `/etc/awg-proxy`, where both `awg-bundle.conf`
-and `routeros-api.conf` are expected by default.
+`app-template.yml` is a starter custom App YAML. It wires
+`AWG_CONTAINER_IP=[containerIP]` and mounts `disk1/awg-proxy` at
+`/etc/awg-proxy`, where both `awg-bundle.conf` and `routeros-api.conf` are
+expected by default.
 
 For multi-profile safety the RouterOS WireGuard listen port is assigned as
 `42000 + profile_index` by default. The `ListenPort` inside imported AWG files

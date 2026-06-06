@@ -5,7 +5,7 @@ category: network
 default-credential: none
 services:
   awg-proxy:
-    image: registry.example.com/awg-routeros-app:latest
+    image: ghcr.io/iietp/awg-proxy:latest
     command: /awg-routeros-app
     environment:
       AWG_CONFIG: /etc/awg-proxy/awg-bundle.conf

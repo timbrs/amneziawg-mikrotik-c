@@ -11,7 +11,14 @@ The repository is intentionally scoped to the RouterOS App flow:
 - `.github/workflows/routeros-app-oci.yml` builds RouterOS 7.21+ OCI image archives.
 
 The GitHub workflow does not use Docker. It cross-compiles static Linux/musl
-binaries with Zig and writes OCI image layout archives directly:
+binaries with Zig, writes OCI image layout archives directly, and publishes the
+same images to GHCR for RouterOS `/app`:
+
+```yaml
+image: ghcr.io/iietp/awg-proxy:latest
+```
+
+The workflow also produces RouterOS 7.21+ OCI archives:
 
 - `awg-proxy-amd64.tar.gz`
 - `awg-proxy-arm64.tar.gz`
