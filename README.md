@@ -49,3 +49,8 @@ The entry uses the branch image tag:
 ```yaml
 image: ghcr.io/iietp/awg-proxy:codex-routeros-app-full-cycle
 ```
+
+The app exposes editable `Configs` in RouterOS UI:
+
+- `awg_bundle` for one or more AWG profiles;
+- `routeros_api` for RouterOS API credentials used by the bootstrapper.

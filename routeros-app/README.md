@@ -138,8 +138,13 @@ tags, the same archives are uploaded directly to the matching GitHub Release.
 `app-template.yml` is a starter single-App YAML for `/app add yaml=...`.
 The repository root `app-store.yml` is a YAML array for
 `/app/settings app-store-urls`. Both wire `AWG_CONTAINER_IP=[containerIP]` and
-mount `disk1/awg-proxy` at `/etc/awg-proxy`, where both `awg-bundle.conf` and
-`routeros-api.conf` are expected by default.
+provide editable App UI configs:
+
+- `awg_bundle` -> `/etc/awg-proxy/awg-bundle.conf`;
+- `routeros_api` -> `/etc/awg-proxy/routeros-api.conf`.
+
+Replace the disabled example profile in `awg_bundle` with the real AWG config
+before enabling the app.
 
 For multi-profile safety the RouterOS WireGuard listen port is assigned as
 `42000 + profile_index` by default. The `ListenPort` inside imported AWG files

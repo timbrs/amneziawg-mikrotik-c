@@ -13,5 +13,43 @@
         AWG_CONFIG: /etc/awg-proxy/awg-bundle.conf
         AWG_CONTAINER_IP: "[containerIP]"
         AWG_CONTAINER_INTERFACE: "[containerInterface]"
-      volumes:
-        - disk1/awg-proxy:/etc/awg-proxy
+      configs:
+        - source: awg_bundle
+          target: /etc/awg-proxy/awg-bundle.conf
+          mode: 0600
+        - source: routeros_api
+          target: /etc/awg-proxy/routeros-api.conf
+          mode: 0600
+  configs:
+    awg_bundle:
+      content: |
+        # Replace this disabled example with one or more AWG profiles.
+        # A plain single-profile AmneziaWG .conf is also accepted.
+        #@awg-profile name=example enabled=no
+        [Interface]
+        Address = 10.0.0.2/24
+        ListenPort = 51820
+        PrivateKey = CHANGE_ME
+        Jc = 4
+        Jmin = 50
+        Jmax = 1000
+        S1 = 146
+        S2 = 42
+        H1 = 0
+        H2 = 0
+        H3 = 0
+        H4 = 0
+        MTU = 1420
+
+        [Peer]
+        PublicKey = CHANGE_ME
+        PresharedKey = CHANGE_ME
+        AllowedIPs = 0.0.0.0/0, ::/0
+        Endpoint = 203.0.113.1:51820
+        PersistentKeepalive = 25
+    routeros_api:
+      content: |
+        host=172.18.0.1
+        port=8728
+        user=awg-proxy
+        password=change-me
