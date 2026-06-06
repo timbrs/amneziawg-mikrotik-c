@@ -2,7 +2,7 @@ name: Build RouterOS App OCI Images
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
     tags: ['v*']
     paths:
       - '.github/workflows/routeros-app-oci.yml'
