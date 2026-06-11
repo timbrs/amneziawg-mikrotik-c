@@ -276,10 +276,18 @@ int main(void) {
     if ((v = getenv("AWG_SOCKET_BUF")) && v[0])
         cfg->socket_buf = parse_int_str(v);
 
-    /* Source port */
+    /* Source port:
+     *   <unset> or "auto" → take src port from first client packet (auto mode)
+     *   "random"          → kernel-assigned ephemeral port (matches Go proxy)
+     *   <number>          → fixed local port (bind+SO_REUSEADDR)
+     */
     int src_port = 0;
-    if ((v = getenv("AWG_SRC_PORT")) && v[0])
-        src_port = parse_int_str(v);
+    if ((v = getenv("AWG_SRC_PORT")) && v[0]) {
+        if (v[0] == 'r' || v[0] == 'R')
+            src_port = -1;
+        else
+            src_port = parse_int_str(v);
+    }
 
     /* CPU affinity */
     cfg->cpu_c2s = -1;

@@ -343,6 +343,14 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
 
     if (src_port > 0) {
         p->local_port = src_port;
+    } else if (src_port == -1) {
+        /* AWG_SRC_PORT=random: kernel-assigned ephemeral port, no
+         * auto-bind to client port. Matches Go proxy default behavior.
+         * Needed on networks where the operator uses symmetric NAT and
+         * the WG router's listen port collides with other UDP services
+         * (e.g. Rostelecom CGN). */
+        p->local_port = 0;
+        p->auto_src_port = 0;
     } else {
         p->auto_src_port = 1;
     }
