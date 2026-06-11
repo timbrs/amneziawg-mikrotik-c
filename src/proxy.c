@@ -108,7 +108,25 @@ static int parse_host_port(const char *s, char *host, int hostmax, uint16_t *por
 static int create_udp_socket(int blocking) {
     int flags = SOCK_DGRAM | SOCK_CLOEXEC;
     if (!blocking) flags |= SOCK_NONBLOCK;
-    return socket(AF_INET, flags, 0);
+    int fd = socket(AF_INET, flags, 0);
+    if (fd < 0) return fd;
+    /* Disable PMTU discovery so outgoing UDP carries IP DF=0.
+     *
+     * In 2026 we observed operator DPI (Russian Rostelecom and MegaFon TSPU
+     * gateways) drop UDP replies for fixed-length packets with DF=1 — this
+     * matches the typical Linux-kernel WireGuard fingerprint. Native mobile
+     * AmneziaWG clients on the same network send DF=0 and pass through
+     * unhindered; our proxy was the only flow getting filtered.
+     *
+     * Setting IP_PMTUDISC_DONT makes the kernel clear DF on every outgoing
+     * datagram, matching the native client behavior. PMTU discovery is not
+     * useful here anyway: AmneziaWG payloads stay well under any sane MTU
+     * after the junk/CPS shaping, so we don't lose anything by turning it off.
+     * Failure of the setsockopt is non-fatal: the proxy still works on
+     * networks without DF-based DPI. */
+    int pmtu = IP_PMTUDISC_DONT;
+    setsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER, &pmtu, sizeof(pmtu));
+    return fd;
 }
 
 static void set_socket_buffers(int fd, int size) {
