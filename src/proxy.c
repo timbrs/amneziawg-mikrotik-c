@@ -659,6 +659,31 @@ static void *c2s_thread_normal(void *arg) {
                 uint32_t h;
                 memcpy(&h, data, 4);
                 if (h == WG_TRANSPORT_DATA) {
+                    /* Drop transport-data until we have forwarded a fresh
+                     * handshake init to the remote on this proxy instance.
+                     *
+                     * After (re)connect the WG kernel module on the router
+                     * often still believes a previous session is alive and
+                     * eagerly emits transport keepalive/data before any
+                     * handshake. If we forward that pre-handshake transport,
+                     * the upstream server happily keeps the matching zombie
+                     * session alive and will not respond with a handshake
+                     * response to the next handshake init until its own
+                     * silent timeout (~3 minutes) finally tears the zombie
+                     * down. The visible symptom is a tunnel that comes up
+                     * only ~3 minutes after each container start/restart.
+                     *
+                     * Dropping pre-handshake transport here forces the WG
+                     * router to fall back to handshake_init retransmits,
+                     * which the server then answers immediately.
+                     *
+                     * Mirrors the equivalent gate in the Go sibling proxy
+                     * (proxy.go: "drop transport data until handshake
+                     * completes on this proxy instance"). */
+                    if (!atomic_load_explicit(&p->fe_init_sent, memory_order_relaxed)) {
+                        log_debug("c2s: pre-handshake transport, dropping");
+                        continue;
+                    }
                     if (!cfg->h4_noop) {
                         uint32_t h4 = pick_h4(p);
                         memcpy(data, &h4, 4);
