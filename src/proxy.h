@@ -3,6 +3,7 @@
 
 #include "transform.h"
 #include "fastrand.h"
+#include "concurrency.h"
 #include <stdint.h>
 #include <stdatomic.h>
 #include <sys/socket.h>
@@ -54,7 +55,7 @@ typedef struct {
     _Atomic uint8_t fe_transport_c2s;   /* first transport packet to remote */
     _Atomic uint8_t fe_transport_s2c;   /* first transport packet to client */
     uint8_t _pad_fe;
-    struct sockaddr_in client_addr; /* 16B */
+    client_slot_t client;           /* seqlock-published client addr (writer: c2s) */
     int gso_ok;                     /* 4B */
     int gro_enabled;                /* 4B */
     uint16_t h4_idx;                /* 2B */
@@ -96,6 +97,9 @@ typedef struct {
     uint16_t remote_port;
     int auto_src_port;
     int local_port;
+
+    /* Deferred close of superseded remote fds (writer: s2c/do_reconnect). */
+    fd_retire_t remote_retire;
 
     uint32_t cps_counter;
     uint8_t *junk_buf;

@@ -302,6 +302,8 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     p->signal_fd = -1;
     p->timer_fd = -1;
     p->gso_ok = 1;
+    client_slot_init(&p->client);
+    fd_retire_init(&p->remote_retire);
 
     if (config_validate(cfg, &cfg_err) < 0) {
         log_error2("invalid config: ", cfg_err);
@@ -517,6 +519,10 @@ static void *c2s_thread_normal(void *arg) {
     int prefix = cfg->s4;
     int prev_nrecv = BATCH_SIZE;
     int gro_no_coalesce = 0;
+    /* Thread-local shadow of the last published client addr — lets the sole
+     * writer detect changes without reading the seqlock-guarded slot. */
+    struct sockaddr_in last_client;
+    memset(&last_client, 0, sizeof(last_client));
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
         int nrecv;
@@ -593,14 +599,15 @@ static void *c2s_thread_normal(void *arg) {
         /* Check client address from first packet */
         if (p->recv_c2s.addrs[0].sin_family == AF_INET) {
             if (!atomic_load_explicit(&p->has_client, memory_order_acquire) ||
-                p->client_addr.sin_addr.s_addr != p->recv_c2s.addrs[0].sin_addr.s_addr ||
-                p->client_addr.sin_port != p->recv_c2s.addrs[0].sin_port) {
-                p->client_addr = p->recv_c2s.addrs[0];
+                last_client.sin_addr.s_addr != p->recv_c2s.addrs[0].sin_addr.s_addr ||
+                last_client.sin_port != p->recv_c2s.addrs[0].sin_port) {
+                last_client = p->recv_c2s.addrs[0];
+                client_slot_write(&p->client, &p->recv_c2s.addrs[0]);
                 atomic_store_explicit(&p->has_client, 1, memory_order_release);
                 char abuf[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &p->client_addr.sin_addr, abuf, sizeof(abuf));
+                inet_ntop(AF_INET, &last_client.sin_addr, abuf, sizeof(abuf));
                 char pbuf[12];
-                const char *parts[] = { "client: ", abuf, ":", u32_to_str(pbuf, ntohs(p->client_addr.sin_port)) };
+                const char *parts[] = { "client: ", abuf, ":", u32_to_str(pbuf, ntohs(last_client.sin_port)) };
                 log_infon(parts, 4);
 
                 if (p->auto_src_port) {
@@ -711,6 +718,8 @@ static void *c2s_thread_reverse(void *arg) {
     set_thread_affinity(cfg->cpu_c2s, "c2s");
     int s4 = cfg->s4;
     int prev_nrecv = BATCH_SIZE;
+    struct sockaddr_in last_client;
+    memset(&last_client, 0, sizeof(last_client));
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
         for (int i = 0; i < prev_nrecv; i++) {
@@ -731,14 +740,15 @@ static void *c2s_thread_reverse(void *arg) {
         /* In reverse (1:1) mode, track single client */
         if (!server_mode && p->recv_c2s.addrs[0].sin_family == AF_INET) {
             if (!atomic_load_explicit(&p->has_client, memory_order_acquire) ||
-                p->client_addr.sin_addr.s_addr != p->recv_c2s.addrs[0].sin_addr.s_addr ||
-                p->client_addr.sin_port != p->recv_c2s.addrs[0].sin_port) {
-                p->client_addr = p->recv_c2s.addrs[0];
+                last_client.sin_addr.s_addr != p->recv_c2s.addrs[0].sin_addr.s_addr ||
+                last_client.sin_port != p->recv_c2s.addrs[0].sin_port) {
+                last_client = p->recv_c2s.addrs[0];
+                client_slot_write(&p->client, &p->recv_c2s.addrs[0]);
                 atomic_store_explicit(&p->has_client, 1, memory_order_release);
                 char abuf[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &p->client_addr.sin_addr, abuf, sizeof(abuf));
+                inet_ntop(AF_INET, &last_client.sin_addr, abuf, sizeof(abuf));
                 char pbuf[12];
-                const char *parts[] = { "client: ", abuf, ":", u32_to_str(pbuf, ntohs(p->client_addr.sin_port)) };
+                const char *parts[] = { "client: ", abuf, ":", u32_to_str(pbuf, ntohs(last_client.sin_port)) };
                 log_infon(parts, 4);
             }
         }
@@ -838,6 +848,11 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
     awg_config_t *cfg = p->cfg;
     int s4 = cfg->s4;
 
+    /* Consistent snapshot of the client addr (writer: c2s). */
+    struct sockaddr_in client;
+    if (!client_slot_read(&p->client, &client))
+        return 0;
+
     /* Transport fast-path with precomputed ambiguity check */
     if (n >= s4 + WG_TRANSPORT_MIN) {
         if (!cfg->transport_size_ambiguous ||
@@ -850,7 +865,7 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
                 int idx = *nsend;
                 send_iovecs[idx].iov_base = pkt + s4;
                 send_iovecs[idx].iov_len = n - s4;
-                send_addrs[idx] = p->client_addr;
+                send_addrs[idx] = client;
                 (*nsend)++;
                 if (!atomic_exchange_explicit(&p->fe_transport_s2c, 1, memory_order_relaxed))
                     log_info("s2c: first transport packet to client");
@@ -890,7 +905,7 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
     int idx = *nsend;
     send_iovecs[idx].iov_base = out;
     send_iovecs[idx].iov_len = out_len;
-    send_addrs[idx] = p->client_addr;
+    send_addrs[idx] = client;
     (*nsend)++;
     if (mtype == WG_HANDSHAKE_RESPONSE &&
         !atomic_exchange_explicit(&p->fe_resp_sent, 1, memory_order_relaxed))
@@ -911,6 +926,7 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
 
     /* Determine destination address */
     struct sockaddr_in *dest_addr = NULL;
+    struct sockaddr_in client_local;   /* backs dest_addr in reverse 1:1 mode */
     session_entry_t *dest_entry = NULL;
     uint32_t msg_type = 0;
     const uint8_t *out_mac1key = NULL;
@@ -946,9 +962,9 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
         }
         dest_addr = &dest_entry->addr;
     } else {
-        /* reverse 1:1: use single client_addr */
-        if (!atomic_load_explicit(&p->has_client, memory_order_acquire)) return 0;
-        dest_addr = &p->client_addr;
+        /* reverse 1:1: consistent snapshot of the single client addr */
+        if (!client_slot_read(&p->client, &client_local)) return 0;
+        dest_addr = &client_local;
     }
 
     /* Transport fast-path */
@@ -1010,8 +1026,12 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
 static int do_reconnect(proxy_t *p) {
     int old_fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
     if (old_fd >= 0) {
-        close(old_fd);
+        /* Defer the close by one reconnect generation: c2s may have just
+         * loaded old_fd and be about to send on it, and the kernel could
+         * reuse the freed number. By the next reconnect c2s has long since
+         * reloaded remote_fd, so closing then can never hit a live user. */
         atomic_store_explicit(&p->remote_fd, -1, memory_order_release);
+        fd_retire_push(&p->remote_retire, old_fd);
     }
 
     log_info2("reconnecting to ", p->remote_host);
@@ -1377,6 +1397,7 @@ join:
     /* Cleanup */
     rfd = atomic_load_explicit(&p->remote_fd, memory_order_relaxed);
     if (rfd >= 0) close(rfd);
+    fd_retire_drain(&p->remote_retire);   /* close any fd still held for grace */
     if (p->listen_fd >= 0) close(p->listen_fd);
     if (p->signal_fd >= 0) close(p->signal_fd);
     if (p->timer_fd >= 0) close(p->timer_fd);

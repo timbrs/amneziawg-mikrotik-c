@@ -7,6 +7,7 @@ CFLAGS = -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE -ffunction-sections -f
 LDFLAGS = -static -Wl,--gc-sections -flto -s -lpthread
 
 .PHONY: build clean test test-blake2s test-cps test-transform test-base64 test-session test-stress \
+	test-concurrency \
 	docker-arm64 docker-arm docker-armv5 docker-amd64 docker-all \
 	docker-arm64-7.20-docker docker-arm-7.20-docker docker-armv5-7.20-docker docker-amd64-7.20-docker docker-all-7.20-docker
 
@@ -17,7 +18,7 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(IMAGE_NAME) $(SRCS)
 
-test: test-blake2s test-cps test-transform test-base64 test-session
+test: test-blake2s test-cps test-transform test-base64 test-session test-concurrency
 	@echo "All tests passed"
 
 test-blake2s: src/test_blake2s.c $(TEST_SRCS)
@@ -39,6 +40,10 @@ test-base64: src/test_base64.c $(TEST_SRCS)
 test-session: src/test_session.c $(TEST_SRCS)
 	$(CC) $(TEST_CFLAGS) -o /tmp/test_session $^
 	/tmp/test_session
+
+test-concurrency: src/test_concurrency.c
+	$(CC) $(TEST_CFLAGS) -lpthread -o /tmp/test_concurrency $<
+	/tmp/test_concurrency
 
 # Stress test — manual only, NOT part of `make test` or CI
 test-stress: src/test_stress.c build
