@@ -708,7 +708,7 @@
         <div id="netwatch-row" style="margin-top:8px">
             <label><input type="checkbox" id="netwatch-enable" checked>
             <span data-i18n="netwatchLabel">Netwatch failover</span></label>
-            <div class="hint" data-i18n="netwatchHint">Monitors tunnel availability by pinging 1.1.1.1 through the WG interface. If the tunnel is down, disables its route &mdash; traffic falls back to the next tunnel (by distance) or goes direct. Re-enables the route when the tunnel recovers.</div>
+            <div class="hint" data-i18n="netwatchHint">Monitors tunnel availability by pinging 8.8.8.8 through the WG interface (via a pinned probe route). If the tunnel is down, disables its route &mdash; traffic falls back to the next tunnel (by distance) or goes direct. Re-enables the route when the tunnel recovers.</div>
         </div>
         <div id="storage-row" style="margin-top:14px">
             <label for="storage-select" data-i18n="storageLabel">Container storage</label>
@@ -1041,7 +1041,7 @@
             pAwg5: 'awg-proxy-5 \u2014 5th tunnel',
             pCustom: 'Custom...',
             netwatchLabel: 'Netwatch failover',
-            netwatchHint: 'Monitors tunnel availability by pinging 1.1.1.1 through the WG interface. If the tunnel is down, disables its route \u2014 traffic falls back to the next tunnel (by distance) or goes direct. Re-enables when the tunnel recovers.',
+            netwatchHint: 'Monitors tunnel availability by pinging 8.8.8.8 through the WG interface (via a pinned probe route). If the tunnel is down, disables its route \u2014 traffic falls back to the next tunnel (by distance) or goes direct. Re-enables when the tunnel recovers.',
             scenarioLabel: 'Routing scenario',
             scenarioTunnel: 'Tunnel only (manual routes)',
             scenarioDns: 'DNS-based routing for services',
@@ -1216,7 +1216,7 @@
             pAwg5: 'awg-proxy-5 \u2014 5-\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c',
             pCustom: '\u0414\u0440\u0443\u0433\u043e\u0435...',
             netwatchLabel: 'Netwatch failover',
-            netwatchHint: '\u041f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e\u0441\u0442\u044c \u0442\u0443\u043d\u043d\u0435\u043b\u044f \u043f\u0438\u043d\u0433\u043e\u043c 1.1.1.1 \u0447\u0435\u0440\u0435\u0437 WG-\u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441. \u0415\u0441\u043b\u0438 \u0442\u0443\u043d\u043d\u0435\u043b\u044c \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u2014 \u043e\u0442\u043a\u043b\u044e\u0447\u0430\u0435\u0442 \u0435\u0433\u043e \u043c\u0430\u0440\u0448\u0440\u0443\u0442, \u0442\u0440\u0430\u0444\u0438\u043a \u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0430\u0435\u0442\u0441\u044f \u043d\u0430 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c (\u043f\u043e distance) \u0438\u043b\u0438 \u0438\u0434\u0451\u0442 \u043d\u0430\u043f\u0440\u044f\u043c\u0443\u044e. \u041f\u0440\u0438 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0438 \u043c\u0430\u0440\u0448\u0440\u0443\u0442 \u0432\u043a\u043b\u044e\u0447\u0430\u0435\u0442\u0441\u044f \u043e\u0431\u0440\u0430\u0442\u043d\u043e.',
+            netwatchHint: '\u041f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e\u0441\u0442\u044c \u0442\u0443\u043d\u043d\u0435\u043b\u044f \u043f\u0438\u043d\u0433\u043e\u043c 8.8.8.8 \u0447\u0435\u0440\u0435\u0437 WG-\u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441 (\u0447\u0435\u0440\u0435\u0437 \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0451\u043d\u043d\u044b\u0439 probe-\u043c\u0430\u0440\u0448\u0440\u0443\u0442). \u0415\u0441\u043b\u0438 \u0442\u0443\u043d\u043d\u0435\u043b\u044c \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u2014 \u043e\u0442\u043a\u043b\u044e\u0447\u0430\u0435\u0442 \u0435\u0433\u043e \u043c\u0430\u0440\u0448\u0440\u0443\u0442, \u0442\u0440\u0430\u0444\u0438\u043a \u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0430\u0435\u0442\u0441\u044f \u043d\u0430 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c (\u043f\u043e distance) \u0438\u043b\u0438 \u0438\u0434\u0451\u0442 \u043d\u0430\u043f\u0440\u044f\u043c\u0443\u044e. \u041f\u0440\u0438 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0438 \u043c\u0430\u0440\u0448\u0440\u0443\u0442 \u0432\u043a\u043b\u044e\u0447\u0430\u0435\u0442\u0441\u044f \u043e\u0431\u0440\u0430\u0442\u043d\u043e.',
             scenarioLabel: '\u0421\u0446\u0435\u043d\u0430\u0440\u0438\u0439 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438',
             scenarioTunnel: '\u0422\u043e\u043b\u044c\u043a\u043e \u0442\u0443\u043d\u043d\u0435\u043b\u044c (\u0440\u0443\u0447\u043d\u044b\u0435 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u044b)',
             scenarioDns: 'DNS-\u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u0434\u043b\u044f \u0441\u0435\u0440\u0432\u0438\u0441\u043e\u0432',
@@ -2008,32 +2008,25 @@
         return map[prefix] || 1;
     }
 
-    // Отдельный probe-IP на туннель: зонд netwatch пингует ИМЕННО его, а /32-маршрут
-    // на этот IP жёстко прибит к туннелю (см. buildNetwatch). Разные IP на разные
-    // туннели — иначе два /32 к одному IP конфликтуют в таблице main.
-    function getPrefixProbeIP(prefix) {
-        var map = {
-            'awg-proxy': '8.8.8.8', 'awg-proxy-2': '8.8.4.4', 'awg-proxy-3': '1.1.1.1',
-            'awg-proxy-4': '1.0.0.1', 'awg-proxy-5': '9.9.9.9'
-        };
-        return map[prefix] || '8.8.8.8';
-    }
-
     function buildNetwatch(prefix, commentTag) {
-        var probeIP = getPrefixProbeIP(prefix);
+        // Пиннинг зонда через route-rule: пингуем 8.8.8.8 с src-address = адрес WG-интерфейса,
+        // а /routing rule по этому src уводит пробу в отдельную probe-таблицу с /32 через ЭТОТ
+        // туннель. Таблица/маршрут/правило netwatch'ем НИКОГДА не трогаются, поэтому после
+        // disable дефолт-роута зонд по-прежнему тестирует ИМЕННО этот туннель → failback честный
+        // (нет ни вечного DOWN, ни ложного UP через чужой живой путь). Один probe-target 8.8.8.8
+        // на все туннели (каждый в своей таблице), без «магических» разных IP. Комментарий
+        // '-probe' ≠ commentTag → down/up-script (find comment=commentTag) probe-объекты не задевают.
+        // Все объекты тегированы prefix → uninstall (comment~prefix) убирает их за собой.
+        var probeTable = prefix + '-probe';
         var lines = [];
-        lines.push('# Netwatch: auto-failover for ' + prefix + ' (probe pinned to tunnel via ' + probeIP + '/32)');
+        lines.push('# Netwatch: auto-failover for ' + prefix + ' (probe pinned via routing-rule -> ' + probeTable + ')');
         lines.push('{');
-        // FAILBACK-FIX: зонд ЖЁСТКО прибиваем к своему туннелю отдельным /32-маршрутом,
-        // который netwatch НИКОГДА не трогает. Иначе (старый вариант: host=1.1.1.1 +
-        // src-address без пиннинга) после down-script'а роут туннеля выключается, зонд
-        // теряет путь к интернету ЧЕРЕЗ ЭТОТ туннель — и либо навсегда остаётся DOWN
-        // (failback не срабатывает), либо ложно поднимается через чужой живой путь.
-        // Пиннинг по НАЗНАЧЕНИЮ (dst /32 + gateway) надёжнее src-address (тот сам по
-        // себе egress не определяет). Комментарий '-probe' ≠ commentTag, поэтому
-        // down/up-script (find comment=commentTag) этот маршрут не задевают.
-        lines.push(':do { /ip/route/add dst-address=' + probeIP + '/32 gateway=wg-' + prefix + ' scope=10 comment=' + commentTag + '-probe } on-error={}');
-        lines.push('/tool/netwatch/add host=' + probeIP + ' type=icmp interval=15s timeout=3s comment=' + commentTag + ' \\');
+        lines.push(':local wgAddr [/ip/address/get [find where interface=wg-' + prefix + '] address]');
+        lines.push(':set wgAddr [:pick $wgAddr 0 [:find $wgAddr "/"]]');
+        lines.push(':do { /routing/table/add name=' + probeTable + ' fib comment=' + commentTag + '-probe } on-error={}');
+        lines.push(':do { /ip/route/add dst-address=8.8.8.8/32 gateway=wg-' + prefix + ' routing-table=' + probeTable + ' scope=10 comment=' + commentTag + '-probe } on-error={}');
+        lines.push(':do { /routing/rule/add src-address=$wgAddr action=lookup table=' + probeTable + ' comment=' + commentTag + '-probe } on-error={}');
+        lines.push('/tool/netwatch/add host=8.8.8.8 type=icmp src-address=$wgAddr interval=15s timeout=3s comment=' + commentTag + ' \\');
         lines.push('  down-script="/ip/route/disable [find where comment=' + commentTag + ' and dst-address=0.0.0.0/0]; :log warning \\"' + prefix + ' tunnel DOWN - route disabled\\"" \\');
         lines.push('  up-script="/ip/route/enable [find where comment=' + commentTag + ' and dst-address=0.0.0.0/0]; :log info \\"' + prefix + ' tunnel UP - route enabled\\""');
         lines.push('}');
@@ -2405,6 +2398,10 @@
             src.push('  /ip/route/remove [find where comment=' + prefix + '-dns]');
         }
         if (scenario !== 'tunnel') {
+            // Health-check гасим ПЕРВЫМ, чтобы netwatch не дёрнул маршруты во время чистки.
+            // Probe-таблицу/маршрут/правило (comment=<tag>-probe) и сам netwatch (comment=<tag>)
+            // подхватит общий prefix-sweep ниже (routing/rule + routing/table + ip/route + netwatch).
+            src.push('  :do { /tool/netwatch/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/route/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/dns/static/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/dns/forwarders/remove [find where comment~"' + prefix + '"] } on-error={}');
@@ -2491,6 +2488,10 @@
             src.push('  /ip/route/remove [find where comment=' + prefix + '-dns]');
         }
         if (scenario !== 'tunnel') {
+            // Health-check гасим ПЕРВЫМ, чтобы netwatch не дёрнул маршруты во время чистки.
+            // Probe-таблицу/маршрут/правило (comment=<tag>-probe) и сам netwatch (comment=<tag>)
+            // подхватит общий prefix-sweep ниже (routing/rule + routing/table + ip/route + netwatch).
+            src.push('  :do { /tool/netwatch/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/route/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/dns/static/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/dns/forwarders/remove [find where comment~"' + prefix + '"] } on-error={}');
