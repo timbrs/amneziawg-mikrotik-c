@@ -732,7 +732,7 @@
         <div style="margin-top:14px">
             <label for="prefix-select" data-i18n="prefixLabel">Tunnel name (prefix)</label>
             <select id="prefix-select">
-                <option value="awg-proxy" data-i18n="pAwg1">awg-proxy &mdash; 1st tunnel (default)</option>
+                <option value="awg-proxy-1" data-i18n="pAwg1">awg-proxy-1 &mdash; 1st tunnel (default)</option>
                 <option value="awg-proxy-2" data-i18n="pAwg2">awg-proxy-2 &mdash; 2nd tunnel</option>
                 <option value="awg-proxy-3" data-i18n="pAwg3">awg-proxy-3 &mdash; 3rd tunnel</option>
                 <option value="awg-proxy-4" data-i18n="pAwg4">awg-proxy-4 &mdash; 4th tunnel</option>
@@ -1034,7 +1034,7 @@
             sNvme1: 'nvme1/ \u2014 NVMe SSD',
             sSata1: 'sata1/ \u2014 SATA drive',
             sCustom: 'Custom...',
-            pAwg1: 'awg-proxy \u2014 1st tunnel (default)',
+            pAwg1: 'awg-proxy-1 \u2014 1st tunnel (default)',
             pAwg2: 'awg-proxy-2 \u2014 2nd tunnel',
             pAwg3: 'awg-proxy-3 \u2014 3rd tunnel',
             pAwg4: 'awg-proxy-4 \u2014 4th tunnel',
@@ -1209,7 +1209,7 @@
             sNvme1: 'nvme1/ \u2014 NVMe SSD',
             sSata1: 'sata1/ \u2014 SATA \u0434\u0438\u0441\u043a',
             sCustom: '\u0414\u0440\u0443\u0433\u043e\u0435...',
-            pAwg1: 'awg-proxy \u2014 1-\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c (\u043f\u043e \u0443\u043c\u043e\u043b\u0447.)',
+            pAwg1: 'awg-proxy-1 \u2014 1-\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c (\u043f\u043e \u0443\u043c\u043e\u043b\u0447.)',
             pAwg2: 'awg-proxy-2 \u2014 2-\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c',
             pAwg3: 'awg-proxy-3 \u2014 3-\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c',
             pAwg4: 'awg-proxy-4 \u2014 4-\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c',
@@ -2002,7 +2002,7 @@
 
     function getPrefixDistance(prefix) {
         var map = {
-            'awg-proxy': 1, 'awg-proxy-2': 2, 'awg-proxy-3': 3,
+            'awg-proxy-1': 1, 'awg-proxy': 1, 'awg-proxy-2': 2, 'awg-proxy-3': 3,
             'awg-proxy-4': 4, 'awg-proxy-5': 5
         };
         return map[prefix] || 1;
@@ -2021,14 +2021,18 @@
         var lines = [];
         lines.push('# Netwatch: auto-failover for ' + prefix + ' (probe pinned via routing-rule -> ' + probeTable + ')');
         lines.push('{');
-        lines.push(':local wgAddr [/ip/address/get [find where interface=wg-' + prefix + '] address]');
-        lines.push(':set wgAddr [:pick $wgAddr 0 [:find $wgAddr "/"]]');
-        lines.push(':do { /routing/table/add name=' + probeTable + ' fib comment=' + commentTag + '-probe } on-error={}');
-        lines.push(':do { /ip/route/add dst-address=8.8.8.8/32 gateway=wg-' + prefix + ' routing-table=' + probeTable + ' scope=10 comment=' + commentTag + '-probe } on-error={}');
-        lines.push(':do { /routing/rule/add src-address=$wgAddr action=lookup table=' + probeTable + ' comment=' + commentTag + '-probe } on-error={}');
-        lines.push('/tool/netwatch/add host=8.8.8.8 type=icmp src-address=$wgAddr interval=15s timeout=3s comment=' + commentTag + ' \\');
-        lines.push('  down-script="/ip/route/disable [find where comment=' + commentTag + ' and dst-address=0.0.0.0/0]; :log warning \\"' + prefix + ' tunnel DOWN - route disabled\\"" \\');
-        lines.push('  up-script="/ip/route/enable [find where comment=' + commentTag + ' and dst-address=0.0.0.0/0]; :log info \\"' + prefix + ' tunnel UP - route enabled\\""');
+        // Guard: если на WG-интерфейсе нет IPv4 (битое/ручное состояние) — не роняем блок,
+        // просто логируем и пропускаем failover для этого туннеля. В штатной установке адрес
+        // ровно один. netwatch одной строкой (без \\-переносов) — безопасно внутри :if-блока.
+        lines.push(':local wgAddr ""');
+        lines.push(':do { :set wgAddr [/ip/address/get [find where interface=wg-' + prefix + '] address] } on-error={}');
+        lines.push(':if ([:len $wgAddr] > 0) do={');
+        lines.push('  :set wgAddr [:pick $wgAddr 0 [:find $wgAddr "/"]]');
+        lines.push('  :do { /routing/table/add name=' + probeTable + ' fib comment=' + commentTag + '-probe } on-error={}');
+        lines.push('  :do { /ip/route/add dst-address=8.8.8.8/32 gateway=wg-' + prefix + ' routing-table=' + probeTable + ' scope=10 comment=' + commentTag + '-probe } on-error={}');
+        lines.push('  :do { /routing/rule/add src-address=$wgAddr action=lookup table=' + probeTable + ' comment=' + commentTag + '-probe } on-error={}');
+        lines.push('  /tool/netwatch/add host=8.8.8.8 type=icmp src-address=$wgAddr interval=15s timeout=3s comment=' + commentTag + ' down-script="/ip/route/disable [find where comment=' + commentTag + ' and dst-address=0.0.0.0/0]; :log warning \\"' + prefix + ' tunnel DOWN - route disabled\\"" up-script="/ip/route/enable [find where comment=' + commentTag + ' and dst-address=0.0.0.0/0]; :log info \\"' + prefix + ' tunnel UP - route enabled\\""');
+        lines.push('} else={ :log warning ("failover: no IPv4 on wg-' + prefix + ', netwatch skipped") }');
         lines.push('}');
         return lines;
     }
@@ -2398,9 +2402,9 @@
             src.push('  /ip/route/remove [find where comment=' + prefix + '-dns]');
         }
         if (scenario !== 'tunnel') {
-            // Health-check гасим ПЕРВЫМ, чтобы netwatch не дёрнул маршруты во время чистки.
-            // Probe-таблицу/маршрут/правило (comment=<tag>-probe) и сам netwatch (comment=<tag>)
-            // подхватит общий prefix-sweep ниже (routing/rule + routing/table + ip/route + netwatch).
+            // Health-check (netwatch) гасим ПЕРВЫМ, чтобы он не дёргал маршруты во время чистки.
+            // Probe-таблицу/маршрут/правило (comment=<tag>-probe) подхватит общий prefix-sweep
+            // ниже (ip/route + routing/rule + routing/table).
             src.push('  :do { /tool/netwatch/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/route/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/dns/static/remove [find where comment~"' + prefix + '"] } on-error={}');
@@ -2413,7 +2417,6 @@
             src.push('  :do { /ip/firewall/address-list/remove [find where list="' + prefix + '-vpn-server"] } on-error={}');
             src.push('  :do { /ip/firewall/address-list/remove [find where comment~"' + prefix + '-excl-ip"] } on-error={}');
             src.push('  :do { /system/scheduler/remove [find where comment~"' + prefix + '"] } on-error={}');
-            src.push('  :do { /tool/netwatch/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /system/script/remove [find where comment~"' + prefix + '" and name!="' + prefix + '-uninstall"] } on-error={}');
             src = src.concat(buildFasttrackRestore(prefix));
         }
@@ -2488,9 +2491,9 @@
             src.push('  /ip/route/remove [find where comment=' + prefix + '-dns]');
         }
         if (scenario !== 'tunnel') {
-            // Health-check гасим ПЕРВЫМ, чтобы netwatch не дёрнул маршруты во время чистки.
-            // Probe-таблицу/маршрут/правило (comment=<tag>-probe) и сам netwatch (comment=<tag>)
-            // подхватит общий prefix-sweep ниже (routing/rule + routing/table + ip/route + netwatch).
+            // Health-check (netwatch) гасим ПЕРВЫМ, чтобы он не дёргал маршруты во время чистки.
+            // Probe-таблицу/маршрут/правило (comment=<tag>-probe) подхватит общий prefix-sweep
+            // ниже (ip/route + routing/rule + routing/table).
             src.push('  :do { /tool/netwatch/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/route/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /ip/dns/static/remove [find where comment~"' + prefix + '"] } on-error={}');
@@ -2503,7 +2506,6 @@
             src.push('  :do { /ip/firewall/address-list/remove [find where list="' + prefix + '-vpn-server"] } on-error={}');
             src.push('  :do { /ip/firewall/address-list/remove [find where comment~"' + prefix + '-excl-ip"] } on-error={}');
             src.push('  :do { /system/scheduler/remove [find where comment~"' + prefix + '"] } on-error={}');
-            src.push('  :do { /tool/netwatch/remove [find where comment~"' + prefix + '"] } on-error={}');
             src.push('  :do { /system/script/remove [find where comment~"' + prefix + '" and name!="' + prefix + '-uninstall"] } on-error={}');
             src = src.concat(buildFasttrackRestore(prefix));
         }
@@ -2995,7 +2997,7 @@
         for (var i = 0; i < hubOpts.length; i++) hubOpts[i].style.display = isSrv ? '' : 'none';
         for (var i = 0; i < proxyOpts.length; i++) proxyOpts[i].style.display = isSrv ? 'none' : '';
         if (isSrv && prefixSel.value.indexOf('awg-proxy') === 0) prefixSel.value = 'awg-server-1';
-        if (!isSrv && prefixSel.value.indexOf('awg-server') === 0) prefixSel.value = 'awg-proxy';
+        if (!isSrv && prefixSel.value.indexOf('awg-server') === 0) prefixSel.value = 'awg-proxy-1';
         if (isS2S) ensureS2SParams();
         if (isSrv) ensureServerParams();
         _igRefresh();
@@ -3039,7 +3041,7 @@
         var sel = document.getElementById('prefix-select').value;
         if (sel === '__custom') {
             var v = document.getElementById('prefix-custom').value.trim();
-            return v || 'awg-proxy';
+            return v || 'awg-proxy-1';
         }
         return sel;
     }
@@ -4546,7 +4548,7 @@
         document.getElementById('storage-select').value = '__auto';
         document.getElementById('storage-custom').style.display = 'none';
         document.getElementById('storage-custom').value = '';
-        document.getElementById('prefix-select').value = 'awg-proxy';
+        document.getElementById('prefix-select').value = 'awg-proxy-1';
         document.getElementById('netwatch-enable').checked = true;
         document.getElementById('prefix-custom').style.display = 'none';
         document.getElementById('prefix-custom').value = '';
