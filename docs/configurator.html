@@ -2008,13 +2008,32 @@
         return map[prefix] || 1;
     }
 
+    // Отдельный probe-IP на туннель: зонд netwatch пингует ИМЕННО его, а /32-маршрут
+    // на этот IP жёстко прибит к туннелю (см. buildNetwatch). Разные IP на разные
+    // туннели — иначе два /32 к одному IP конфликтуют в таблице main.
+    function getPrefixProbeIP(prefix) {
+        var map = {
+            'awg-proxy': '8.8.8.8', 'awg-proxy-2': '8.8.4.4', 'awg-proxy-3': '1.1.1.1',
+            'awg-proxy-4': '1.0.0.1', 'awg-proxy-5': '9.9.9.9'
+        };
+        return map[prefix] || '8.8.8.8';
+    }
+
     function buildNetwatch(prefix, commentTag) {
+        var probeIP = getPrefixProbeIP(prefix);
         var lines = [];
-        lines.push('# Netwatch: auto-failover for ' + prefix);
+        lines.push('# Netwatch: auto-failover for ' + prefix + ' (probe pinned to tunnel via ' + probeIP + '/32)');
         lines.push('{');
-        lines.push(':local wgAddr [/ip/address/get [find where interface=wg-' + prefix + '] address]');
-        lines.push(':set wgAddr [:pick $wgAddr 0 [:find $wgAddr "/"]]');
-        lines.push('/tool/netwatch/add host=1.1.1.1 type=icmp src-address=$wgAddr interval=15s timeout=3s comment=' + commentTag + ' \\');
+        // FAILBACK-FIX: зонд ЖЁСТКО прибиваем к своему туннелю отдельным /32-маршрутом,
+        // который netwatch НИКОГДА не трогает. Иначе (старый вариант: host=1.1.1.1 +
+        // src-address без пиннинга) после down-script'а роут туннеля выключается, зонд
+        // теряет путь к интернету ЧЕРЕЗ ЭТОТ туннель — и либо навсегда остаётся DOWN
+        // (failback не срабатывает), либо ложно поднимается через чужой живой путь.
+        // Пиннинг по НАЗНАЧЕНИЮ (dst /32 + gateway) надёжнее src-address (тот сам по
+        // себе egress не определяет). Комментарий '-probe' ≠ commentTag, поэтому
+        // down/up-script (find comment=commentTag) этот маршрут не задевают.
+        lines.push(':do { /ip/route/add dst-address=' + probeIP + '/32 gateway=wg-' + prefix + ' scope=10 comment=' + commentTag + '-probe } on-error={}');
+        lines.push('/tool/netwatch/add host=' + probeIP + ' type=icmp interval=15s timeout=3s comment=' + commentTag + ' \\');
         lines.push('  down-script="/ip/route/disable [find where comment=' + commentTag + ' and dst-address=0.0.0.0/0]; :log warning \\"' + prefix + ' tunnel DOWN - route disabled\\"" \\');
         lines.push('  up-script="/ip/route/enable [find where comment=' + commentTag + ' and dst-address=0.0.0.0/0]; :log info \\"' + prefix + ' tunnel UP - route enabled\\""');
         lines.push('}');
