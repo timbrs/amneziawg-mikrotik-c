@@ -108,6 +108,7 @@ typedef struct {
     int transport_size_ambiguous; /* handshake size can overlap transport */
 
     int timeout;        /* seconds, default 180 */
+    int dns_refresh;    /* periodic DNS re-resolve interval, seconds, 0 = off */
     int log_level;
     int socket_buf;     /* socket buffer size */
     int src_port;       /* 0 = auto */

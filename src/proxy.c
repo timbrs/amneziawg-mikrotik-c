@@ -91,6 +91,21 @@ static int resolve_addr(const char *host, uint16_t port, struct sockaddr_in *add
     return 0;
 }
 
+int resolve_addr_check(const char *host, const struct in_addr *cur) {
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_DGRAM };
+    struct addrinfo *res;
+    if (getaddrinfo(host, NULL, &hints, &res) != 0)
+        return -1;
+    int found = 0;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        struct sockaddr_in sa;
+        memcpy(&sa, ai->ai_addr, sizeof(sa));
+        if (sa.sin_addr.s_addr == cur->s_addr) { found = 1; break; }
+    }
+    freeaddrinfo(res);
+    return found ? 0 : 1;
+}
+
 static int parse_host_port(const char *s, char *host, int hostmax, uint16_t *port) {
     const char *colon = NULL;
     int len = 0;
@@ -1319,6 +1334,21 @@ int proxy_run(proxy_t *p) {
     if (fb_checks < 1) fb_checks = 1;
     int fb_silent_count = 0;
 
+    /* Periodic DNS re-resolve: hostname remotes only. Reconnect when the
+     * current IP disappears from the A records on two consecutive checks
+     * (round-robin resolvers may return a rotating subset). */
+    int dns_checks = 0;
+    if (cfg->dns_refresh > 0) {
+        struct in_addr lit;
+        if (inet_pton(AF_INET, p->remote_host, &lit) != 1) {
+            dns_checks = cfg->dns_refresh / 5;
+            if (dns_checks < 1) dns_checks = 1;
+            log_info("periodic DNS re-resolve enabled");
+        }
+    }
+    int dns_tick = 0;
+    int dns_miss = 0;
+
     /* Epoll for signal + timer only */
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd < 0) {
@@ -1409,6 +1439,24 @@ int proxy_run(proxy_t *p) {
                             shutdown(rfd2, SHUT_RDWR);
                         }
                         inactive_count = 0;
+                    }
+                }
+
+                if (dns_checks > 0 && ++dns_tick >= dns_checks) {
+                    dns_tick = 0;
+                    int rfd2 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
+                    if (rfd2 >= 0 &&
+                        !atomic_load_explicit(&p->reconnect_needed, memory_order_relaxed)) {
+                        int r = resolve_addr_check(p->remote_host, &p->remote_addr.sin_addr);
+                        if (r == 1 && ++dns_miss >= 2) {
+                            dns_miss = 0;
+                            log_info("DNS changed (current IP gone), triggering reconnect");
+                            atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);
+                            shutdown(rfd2, SHUT_RDWR);
+                        } else if (r == 0) {
+                            dns_miss = 0;
+                        }
+                        /* r == -1 (resolve error): keep the connection, retry later */
                     }
                 }
             }

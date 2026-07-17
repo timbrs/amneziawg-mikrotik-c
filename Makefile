@@ -6,7 +6,7 @@ SRCS = src/main.c src/proxy.c src/transform.c src/blake2s.c src/cps.c src/fastra
 CFLAGS = -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE -ffunction-sections -fdata-sections -flto -DVERSION=\"$(VERSION)\"
 LDFLAGS = -static -Wl,--gc-sections -flto -s -lpthread
 
-.PHONY: build clean test test-blake2s test-cps test-transform test-base64 test-session test-stress \
+.PHONY: build clean test test-blake2s test-cps test-transform test-base64 test-session test-dns test-stress \
 	docker-arm64 docker-arm docker-armv5 docker-amd64 docker-all \
 	docker-arm64-7.20-docker docker-arm-7.20-docker docker-armv5-7.20-docker docker-amd64-7.20-docker docker-all-7.20-docker
 
@@ -17,7 +17,7 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(IMAGE_NAME) $(SRCS)
 
-test: test-blake2s test-cps test-transform test-base64 test-session
+test: test-blake2s test-cps test-transform test-base64 test-session test-dns
 	@echo "All tests passed"
 
 test-blake2s: src/test_blake2s.c $(TEST_SRCS)
@@ -39,6 +39,10 @@ test-base64: src/test_base64.c $(TEST_SRCS)
 test-session: src/test_session.c $(TEST_SRCS)
 	$(CC) $(TEST_CFLAGS) -o /tmp/test_session $^
 	/tmp/test_session
+
+test-dns: src/test_dns.c src/proxy.c $(TEST_SRCS)
+	$(CC) $(TEST_CFLAGS) -o /tmp/test_dns $^ -lpthread
+	/tmp/test_dns
 
 # Stress test — manual only, NOT part of `make test` or CI
 test-stress: src/test_stress.c build

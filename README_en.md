@@ -471,6 +471,7 @@ With 3+ clients, this is easier to automate with a script on the server.
 | `AWG_FB_AFTER` | No | `20` | Seconds of remote silence before probing the other profile (initiator) |
 | `AWG_SRC_PORT` | No | auto | Outgoing port to server |
 | `AWG_TIMEOUT` | No | `180` | Inactivity timeout (sec) |
+| `AWG_DNS_REFRESH` | No | `60` | Background DNS re-check interval for a hostname in AWG_REMOTE (sec, `0` = off) |
 | `AWG_LOG_LEVEL` | No | `info` | Log level |
 | `AWG_NO_GRO` | No | `0` | Disable UDP GRO |
 | `AWG_SOCKET_BUF` | No | `16777216` | Socket buffer size |
@@ -617,6 +618,13 @@ AWG_SRC_PORT=12345   # fixed port 12345
 AWG_TIMEOUT=180   # default, 3 minutes
 AWG_TIMEOUT=60    # aggressive timeout for unstable connections
 AWG_TIMEOUT=3600  # 1 hour, for stable links
+```
+
+**`AWG_DNS_REFRESH`** -- background DNS re-check interval in seconds when `AWG_REMOTE` is a hostname (disabled for a literal IP). The proxy periodically re-resolves the hostname and, if the current server IP has disappeared from the A records on two consecutive checks (round-robin DNS protection), reconnects to the new address without waiting for `AWG_TIMEOUT`. Granularity is 5 seconds. The reconnect resets the client session (same as on timeout) -- WireGuard performs a new handshake on its own.
+
+```
+AWG_DNS_REFRESH=60   # default, check once a minute
+AWG_DNS_REFRESH=0    # disable the background DNS check
 ```
 
 **`AWG_LOG_LEVEL`** -- logging level. Controls the verbosity of output in `/container/print` and the router's syslog.
@@ -816,7 +824,7 @@ Fix:
 
 **3. DNS resolution of AWG_REMOTE on Side A (client)**
 
-If `AWG_REMOTE` is a hostname, the container needs working DNS. Set `AWG_DNS=8.8.8.8` or `AWG_DNS=1.1.1.1` in the container environment variables. If DNS also goes through the tunnel (circular dependency), resolve the hostname manually and use the IP:
+If `AWG_REMOTE` is a hostname, the container needs working DNS. Set `AWG_DNS=8.8.8.8` or `AWG_DNS=1.1.1.1` in the container environment variables. The proxy re-checks DNS in the background (`AWG_DNS_REFRESH`, once per 60 s by default) and reconnects on its own when the server IP changes. If DNS also goes through the tunnel (circular dependency), resolve the hostname manually and use the IP:
 ```routeros
 :put [:resolve vpn.example.com]
 # Then set the resolved IP in AWG_REMOTE

@@ -309,6 +309,12 @@ int main(void) {
     if ((v = getenv("AWG_TIMEOUT")) && v[0])
         cfg->timeout = parse_int_str(v);
 
+    /* Periodic DNS re-resolve interval (hostname remotes only) */
+    cfg->dns_refresh = 60;
+    if ((v = getenv("AWG_DNS_REFRESH")) && v[0])
+        cfg->dns_refresh = parse_int_str(v);
+    if (cfg->dns_refresh < 0) cfg->dns_refresh = 0;
+
     /* Log level */
     cfg->log_level = LOG_INFO;
     v = getenv("AWG_LOG_LEVEL");

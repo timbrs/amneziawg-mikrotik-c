@@ -197,6 +197,10 @@ static inline struct sockaddr_in *session_find_sole_client(proxy_t *p) {
     return entry ? &entry->addr : NULL;
 }
 
+/* Re-check DNS A records for host: 0 = cur still present, 1 = cur gone,
+ * -1 = resolve error. Walks every record to tolerate round-robin DNS. */
+int resolve_addr_check(const char *host, const struct in_addr *cur);
+
 /* Initialize proxy. Returns 0 on success. */
 int proxy_init(proxy_t *p, awg_config_t *cfg,
                const char *listen_str, const char *remote_str, int src_port);
