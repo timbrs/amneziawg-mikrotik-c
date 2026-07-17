@@ -358,6 +358,12 @@ int main(void) {
     if ((v = getenv("AWG_NO_GRO")) && v[0])
         cfg->no_gro = parse_int_str(v);
 
+    /* No DF: clear the Don't-Fragment bit on UDP sockets (some DPI/middleboxes
+     * mishandle DF=1 UDP; opt-in, changes on-wire IP header behavior) */
+    cfg->no_df = 0;
+    if ((v = getenv("AWG_NO_DF")) && v[0])
+        cfg->no_df = parse_int_str(v);
+
     /* DNS resolver for hostname resolution */
     v = getenv("AWG_DNS");
     if (v && v[0]) {
@@ -442,6 +448,8 @@ int main(void) {
     }
     if (cfg->no_gro)
         log_info("config: UDP GRO disabled (AWG_NO_GRO=1)");
+    if (cfg->no_df)
+        log_info("config: DF bit cleared on UDP sockets (AWG_NO_DF=1)");
     if (cfg->cpu_c2s >= 0 || cfg->cpu_s2c >= 0 || cfg->busy_poll > 0) {
         char c2sb[12], s2cb[12], bpb[12];
         const char *parts[] = {

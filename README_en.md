@@ -474,6 +474,7 @@ With 3+ clients, this is easier to automate with a script on the server.
 | `AWG_DNS_REFRESH` | No | `60` | Background DNS re-check interval for a hostname in AWG_REMOTE (sec, `0` = off) |
 | `AWG_LOG_LEVEL` | No | `info` | Log level |
 | `AWG_NO_GRO` | No | `0` | Disable UDP GRO |
+| `AWG_NO_DF` | No | `0` | Clear the DF bit on UDP packets (workaround for DPI dropping DF=1) |
 | `AWG_SOCKET_BUF` | No | `16777216` | Socket buffer size |
 | `AWG_CPU_C2S` | No | `-1` | CPU for client→server thread |
 | `AWG_CPU_S2C` | No | `-1` | CPU for server→client thread |
@@ -647,6 +648,13 @@ AWG_LOG_LEVEL=none    # silence
 ```
 AWG_NO_GRO=0   # default, GRO enabled (if kernel supports it)
 AWG_NO_GRO=1   # force disable GRO, use recvmmsg instead
+```
+
+**`AWG_NO_DF`** -- clears the DF (Don't Fragment) bit on the proxy's outgoing UDP packets (`IP_MTU_DISCOVER=IP_PMTUDISC_DONT` on both sockets). Linux sends UDP with DF=1 by default (Path MTU Discovery); there are reports that some DPI nodes on certain networks handle DF=1 UDP worse than DF=0. This option changes the on-wire IP header, so it is off by default -- enable it only when experiencing connectivity issues: with DF=0 large packets may be fragmented along the path.
+
+```
+AWG_NO_DF=0   # default, DF bit as set by the system (usually DF=1)
+AWG_NO_DF=1   # clear the DF bit on the proxy's UDP packets
 ```
 
 **`AWG_SOCKET_BUF`** -- receive/send buffer sizes (SO_RCVBUF/SO_SNDBUF) for UDP sockets in bytes. The kernel typically doubles the requested value. Larger buffers reduce packet loss under load but consume more RAM.

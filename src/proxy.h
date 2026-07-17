@@ -34,6 +34,12 @@ typedef struct {
 #ifndef IPPROTO_UDP
 #define IPPROTO_UDP    17
 #endif
+#ifndef IP_MTU_DISCOVER
+#define IP_MTU_DISCOVER   10
+#endif
+#ifndef IP_PMTUDISC_DONT
+#define IP_PMTUDISC_DONT  0
+#endif
 
 typedef struct {
     /* === Hot fields === */

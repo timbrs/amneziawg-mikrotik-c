@@ -139,6 +139,12 @@ static void set_socket_buffers(int fd, int size) {
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
 }
 
+static void set_df_off(int fd) {
+    int val = IP_PMTUDISC_DONT;
+    if (setsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER, &val, sizeof(val)) < 0)
+        log_error2("IP_MTU_DISCOVER dont failed: ", strerror(errno));
+}
+
 static void set_busy_poll(int fd, int usec) {
     if (usec <= 0) return;
     setsockopt(fd, SOL_SOCKET, SO_BUSY_POLL, &usec, sizeof(usec));
@@ -208,6 +214,8 @@ static int dial_remote(proxy_t *p, int blocking) {
 
     set_socket_buffers(fd, p->cfg->socket_buf);
     set_busy_poll(fd, p->cfg->busy_poll);
+    if (p->cfg->no_df)
+        set_df_off(fd);
     return fd;
 }
 
@@ -1264,6 +1272,8 @@ int proxy_run(proxy_t *p) {
     }
     set_socket_buffers(p->listen_fd, cfg->socket_buf);
     set_busy_poll(p->listen_fd, cfg->busy_poll);
+    if (cfg->no_df)
+        set_df_off(p->listen_fd);
     if (!cfg->no_gro) {
         p->gro_enabled_c2s = enable_gro(p->listen_fd);
         if (p->gro_enabled_c2s)

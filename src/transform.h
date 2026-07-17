@@ -117,6 +117,7 @@ typedef struct {
     int cpu_s2c;        /* CPU affinity for s2c thread (-1 = auto) */
     int busy_poll;      /* SO_BUSY_POLL timeout in μs (0 = off) */
     int no_gro;         /* disable UDP GRO (AWG_NO_GRO=1) */
+    int no_df;          /* clear DF bit on UDP sockets (AWG_NO_DF=1) */
 
     int mode;           /* 0=normal, 1=reverse, 2=server */
 
