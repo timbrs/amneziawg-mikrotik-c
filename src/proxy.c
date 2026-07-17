@@ -348,9 +348,11 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
 
     if (src_port > 0) {
         p->local_port = src_port;
-    } else {
+    } else if (src_port == 0) {
         p->auto_src_port = 1;
     }
+    /* src_port < 0 ("random"): local_port stays 0, no bind — the kernel
+     * picks a fresh ephemeral port on every connect */
 
     /* Init PRNG */
     uint64_t seed;

@@ -331,10 +331,14 @@ int main(void) {
     if ((v = getenv("AWG_SOCKET_BUF")) && v[0])
         cfg->socket_buf = parse_int_str(v);
 
-    /* Source port */
+    /* Source port: auto (default), fixed N, or "random" (kernel-ephemeral) */
     int src_port = 0;
-    if ((v = getenv("AWG_SRC_PORT")) && v[0])
-        src_port = parse_int_str(v);
+    if ((v = getenv("AWG_SRC_PORT")) && v[0]) {
+        if (strcmp(v, "random") == 0)
+            src_port = -1;
+        else
+            src_port = parse_int_str(v);
+    }
 
     /* CPU affinity */
     cfg->cpu_c2s = -1;
@@ -386,7 +390,8 @@ int main(void) {
     {
         char spb[12];
         const char *parts[] = { "listen=", listen_str, " remote=", remote_str,
-            " src_port=", src_port > 0 ? u32_to_str(spb, src_port) : "auto" };
+            " src_port=", src_port > 0 ? u32_to_str(spb, src_port) :
+                          (src_port < 0 ? "random" : "auto") };
         log_infon(parts, 6);
     }
     {

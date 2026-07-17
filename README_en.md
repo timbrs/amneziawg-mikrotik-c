@@ -469,7 +469,7 @@ With 3+ clients, this is easier to automate with a script on the server.
 | `AWG_FB_S1`, `AWG_FB_S2` | Yes** | -- | Init/response padding for the fallback profile |
 | `AWG_FB_S3` | No | `0` | Cookie reply padding for the fallback profile |
 | `AWG_FB_AFTER` | No | `20` | Seconds of remote silence before probing the other profile (initiator) |
-| `AWG_SRC_PORT` | No | auto | Outgoing port to server |
+| `AWG_SRC_PORT` | No | auto | Outgoing port to server: `auto` / number / `random` |
 | `AWG_TIMEOUT` | No | `180` | Inactivity timeout (sec) |
 | `AWG_DNS_REFRESH` | No | `60` | Background DNS re-check interval for a hostname in AWG_REMOTE (sec, `0` = off) |
 | `AWG_LOG_LEVEL` | No | `info` | Log level |
@@ -604,12 +604,13 @@ In `reverse` and `server` modes, `AWG_REMOTE` points to the WireGuard server (no
 
 #### Optional -- Network and Diagnostics
 
-**`AWG_SRC_PORT`** -- outgoing UDP port for the connection to the AWG server. By default (`auto`), the proxy uses the WireGuard client's port -- this is needed for correct NAT operation on the router. If a number is specified, a fixed port is used.
+**`AWG_SRC_PORT`** -- outgoing UDP port for the connection to the AWG server. By default (`auto`), the proxy uses the WireGuard client's port -- this is needed for correct NAT operation on the router. If a number is specified, a fixed port is used. The value `random` leaves the choice to the kernel: no bind, a fresh ephemeral port on every reconnect -- useful behind CGN/carrier NAT where reusing the old port+server pair after a drop may get stuck.
 
 ```
 AWG_SRC_PORT=auto    # default, copies the WG client port
 AWG_SRC_PORT=0       # same as auto
 AWG_SRC_PORT=12345   # fixed port 12345
+AWG_SRC_PORT=random  # kernel-ephemeral port, new on every reconnect
 ```
 
 **`AWG_TIMEOUT`** -- inactivity timeout in seconds. If no packets are sent or received in either direction within this time, the proxy reconnects to the server (re-resolves DNS + new socket). Useful when the server's IP address changes behind DNS.
