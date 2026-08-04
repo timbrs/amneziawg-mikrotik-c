@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE_NAME = awg-proxy
 BUILD_DIR = ../builds
 
-SRCS = src/main.c src/proxy.c src/transform.c src/blake2s.c src/chacha20.c src/cps.c src/fastrand.c src/base64.c src/log.c
+SRCS = src/main.c src/proxy.c src/transform.c src/blake2s.c src/chacha20.c src/csprng.c src/cps.c src/fastrand.c src/base64.c src/log.c
 CFLAGS = -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE -ffunction-sections -fdata-sections -flto -DVERSION=\"$(VERSION)\"
 LDFLAGS = -static -Wl,--gc-sections -flto -s -lpthread
 
@@ -10,7 +10,7 @@ LDFLAGS = -static -Wl,--gc-sections -flto -s -lpthread
 	docker-arm64 docker-arm docker-armv5 docker-amd64 docker-all \
 	docker-arm64-7.20-docker docker-arm-7.20-docker docker-armv5-7.20-docker docker-amd64-7.20-docker docker-all-7.20-docker
 
-TEST_SRCS = src/blake2s.c src/chacha20.c src/cps.c src/transform.c src/fastrand.c src/base64.c src/log.c
+TEST_SRCS = src/blake2s.c src/chacha20.c src/csprng.c src/cps.c src/transform.c src/fastrand.c src/base64.c src/log.c
 TEST_CFLAGS = -g -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE
 
 build:

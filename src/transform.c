@@ -1,6 +1,7 @@
 #include "transform.h"
 #include "blake2s.h"
 #include "fastrand.h"
+#include "csprng.h"
 #include <string.h>
 
 /* Static buffer for packets that need a padding prefix but have no headroom.
@@ -184,12 +185,10 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
             uint8_t *out;
             if (dataoff >= cfg->s1) {
                 out = data - cfg->s1;
-                fastrand_t tmp; fastrand_init(&tmp, rand_val);
-                fastrand_fill(&tmp, out, cfg->s1);
+                csprng_bytes(out, (size_t)cfg->s1);
             } else {
                 /* Headroom insufficient: use static buffer (handshakes are rare) */
-                fastrand_t tmp; fastrand_init(&tmp, rand_val);
-                fastrand_fill(&tmp, hs_buf, cfg->s1);
+                csprng_bytes(hs_buf, (size_t)cfg->s1);
                 memcpy(hs_buf + cfg->s1, data, n);
                 out = hs_buf;
             }
@@ -210,11 +209,9 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
             uint8_t *out;
             if (dataoff >= cfg->s2) {
                 out = data - cfg->s2;
-                fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x12345);
-                fastrand_fill(&tmp, out, cfg->s2);
+                csprng_bytes(out, (size_t)cfg->s2);
             } else {
-                fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x12345);
-                fastrand_fill(&tmp, hs_buf, cfg->s2);
+                csprng_bytes(hs_buf, (size_t)cfg->s2);
                 memcpy(hs_buf + cfg->s2, data, n);
                 out = hs_buf;
             }
@@ -233,11 +230,9 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
             uint8_t *out;
             if (dataoff >= cfg->s3) {
                 out = data - cfg->s3;
-                fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x67890);
-                fastrand_fill(&tmp, out, cfg->s3);
+                csprng_bytes(out, (size_t)cfg->s3);
             } else {
-                fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x67890);
-                fastrand_fill(&tmp, hs_buf, cfg->s3);
+                csprng_bytes(hs_buf, (size_t)cfg->s3);
                 memcpy(hs_buf + cfg->s3, data, n);
                 out = hs_buf;
             }
@@ -264,8 +259,7 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
             if (cfg->has_hp) {
                 /* The padding is the ChaCha20 nonce, so it must be fresh for
                  * every packet — the caller's one-time fill would repeat it. */
-                fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0xabcdeULL);
-                fastrand_fill(&tmp, out, cfg->s4);
+                csprng_bytes(out, (size_t)cfg->s4);
                 hp_apply(cfg, out, cfg->s4, WG_TRANSPORT_HDR);
             }
             /* Zero-alloc: use headroom. Caller fills random into headroom. */
@@ -276,8 +270,7 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
             /* No headroom, but with header protection the padding is mandatory:
              * fall back to the static buffer instead of sending a bare packet
              * the peer would drop. */
-            fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0xabcdeULL);
-            fastrand_fill(&tmp, hs_buf, cfg->s4);
+            csprng_bytes(hs_buf, (size_t)cfg->s4);
             memcpy(hs_buf + cfg->s4, data, n);
             hp_apply(cfg, hs_buf, cfg->s4, WG_TRANSPORT_HDR);
             *out_len = cfg->s4 + n;

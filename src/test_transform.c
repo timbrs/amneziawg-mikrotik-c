@@ -1332,6 +1332,148 @@ static void test_hp_nonce_is_fresh_per_packet(void) {
     ASSERT(memcmp(wire_a + cfg.s4, wire_b + cfg.s4, WG_TRANSPORT_HDR) != 0);
 }
 
+/* The padding is the nonce, so it must not be derivable from anything an
+ * observer can see or replay: identical inputs (same rand_val) must still give
+ * different padding. Guards against going back to fastrand here. */
+static void test_hp_padding_is_not_derived_from_rand_val(void) {
+    awg_config_t cfg = make_hp_config(0x5c);
+    uint8_t buf_a[256 + 64], buf_b[256 + 64], pad_a[64];
+    int dataoff = 256, n = 64, len_a, len_b, junk;
+
+    memset(buf_a, 0, sizeof(buf_a));
+    memset(buf_b, 0, sizeof(buf_b));
+    write32_le(buf_a + dataoff, WG_TRANSPORT_DATA);
+    write32_le(buf_b + dataoff, WG_TRANSPORT_DATA);
+
+    uint8_t *a = transform_outbound(buf_a, dataoff, n, &cfg, 12345, &len_a, &junk);
+    memcpy(pad_a, a, cfg.s4);
+    uint8_t *b = transform_outbound(buf_b, dataoff, n, &cfg, 12345, &len_b, &junk);
+
+    ASSERT(memcmp(pad_a, b, cfg.s4) != 0);
+}
+
+/* Golden vectors: packets built by amneziawg-go itself (device/send.go layout,
+ * golang.org/x/crypto/chacha20), so the tests are not just C talking to C. Key
+ * = make_hp_config(0x41), paddings 20/18/15/12, H values inside the ranges of
+ * that config, body byte i = i. */
+static void hp_check_golden(const char *hex, int wire_len, int pad, int body_len,
+                            uint32_t want_type) {
+    awg_config_t cfg = make_hp_config(0x41);
+    uint8_t wire[512];
+    int in_len;
+
+    ASSERT_EQ(hex_decode(hex, wire, (int)sizeof(wire)), wire_len);
+
+    uint8_t *r = transform_inbound(wire, wire_len, &cfg, &in_len);
+    ASSERT(r != NULL);
+    ASSERT_EQ(in_len, body_len);
+    ASSERT_EQ(read32_le(r), want_type);
+    for (int i = 4; i < body_len; i++)
+        ASSERT_EQ(r[i], (uint8_t)i);
+    ASSERT_EQ(pad, wire_len - body_len);
+}
+
+static void test_hp_golden_init_from_go(void) {
+    hp_check_golden(
+        "303b46515c67727d88939ea9b4bfcad5e0ebf601ee03841e430d7d98dc75a22d67ccedcad863ef72"
+        "6317870d083db5052b71d828886a53995968363411cc6f970e6454fec92b0620f2a42082e8007645"
+        "7a7956624513df6b97bc2b6db5e7640409cdc0e38c091dc97d732795df94bb4886a0ff3237bf614a"
+        "7c80b06d1843e0930ed807cbc23eacbe8f8ae9575faf5e781d0d1ddfe7866c6451a60d5186dc2b61"
+        "70ae468dc4b7fda1",
+        20 + WG_INIT_SIZE, 20, WG_INIT_SIZE, WG_HANDSHAKE_INIT);
+}
+
+static void test_hp_golden_response_from_go(void) {
+    hp_check_golden(
+        "505b66717c87929da8b3bec9d4dfeaf5000b5af7c6a8b86abd8228b984ba39f76b65a3167815755a"
+        "086e03b198b4d7b9bda09f79dc38f736d7e9a6f58abac4a07c0ab4a5cc758a99084a5754d4fd2ebc"
+        "b9aff9d44724fe9cbd1b93a717492254bc8c96fe4ed748624096e03b957e",
+        18 + WG_RESP_SIZE, 18, WG_RESP_SIZE, WG_HANDSHAKE_RESPONSE);
+}
+
+static void test_hp_golden_cookie_from_go(void) {
+    hp_check_golden(
+        "707b86919ca7b2bdc8d3dee9f4ff0a588d21d30f55aa31b80b5c9269c3978035d8042e9d68bd6f16"
+        "69598964725644fd2bf45199c9cf309864bdb7f31f095108c8a76f2fdc68701b252baf8f05cd58",
+        15 + WG_COOKIE_SIZE, 15, WG_COOKIE_SIZE, WG_COOKIE_REPLY);
+}
+
+static void test_hp_golden_transport_from_go(void) {
+    /* Only the 16-byte header is protected; the rest must pass through intact */
+    hp_check_golden(
+        "909ba6b1bcc7d2dde8f3fe09a4d46cd583d3225718dc2add39f97716101112131415161718191a1b"
+        "1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40414243"
+        "4445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b"
+        "6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f90919293"
+        "9495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babb"
+        "bcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3"
+        "e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b"
+        "0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b",
+        12 + 300, 12, 300, WG_TRANSPORT_DATA);
+}
+
+/* AWG 2.0 compatibility: a config without AWG_HP_KEY must produce exactly the
+ * pre-3.0 wire format — padding, H type, everything else byte-identical — and
+ * decode back. This is what guarantees existing v2 deployments keep working
+ * after the upgrade. */
+static void test_v2_wire_format_unchanged(void) {
+    awg_config_t cfg = make_hp_config(0x22);
+    cfg.has_hp = 0;
+    memset(cfg.hp_key, 0, sizeof(cfg.hp_key));
+    config_compute(&cfg);
+
+    const uint32_t types[4] = {
+        WG_HANDSHAKE_INIT, WG_HANDSHAKE_RESPONSE, WG_COOKIE_REPLY, WG_TRANSPORT_DATA
+    };
+    const int sizes[4] = { WG_INIT_SIZE, WG_RESP_SIZE, WG_COOKIE_SIZE, 220 };
+    const int pads[4] = { cfg.s1, cfg.s2, cfg.s3, cfg.s4 };
+    const hrange_t *ranges[4] = { &cfg.h1, &cfg.h2, &cfg.h3, &cfg.h4 };
+
+    for (int t = 0; t < 4; t++) {
+        uint8_t orig[512], buf[256 + 512];
+        int dataoff = 256, n = sizes[t], out_len, junk, in_len;
+
+        write32_le(orig, types[t]);
+        fill_seq(orig + 4, n - 4);
+        memset(buf, 0, sizeof(buf));
+        memcpy(buf + dataoff, orig, n);
+
+        uint8_t *out = transform_outbound(buf, dataoff, n, &cfg, 0x5150ULL + t,
+                                          &out_len, &junk);
+        ASSERT_EQ(out_len, pads[t] + n);
+        /* type replaced by an H value, in the clear */
+        ASSERT(hrange_contains(ranges[t], read32_le(out + pads[t])));
+        /* body untouched (MAC1 recompute is off: no peer keys in this config) */
+        ASSERT_MEM_EQ(out + pads[t] + 4, orig + 4, n - 4);
+
+        uint8_t *r = transform_inbound(out, out_len, &cfg, &in_len);
+        ASSERT(r != NULL);
+        ASSERT_EQ(in_len, n);
+        ASSERT_EQ(read32_le(r), types[t]);
+        ASSERT_MEM_EQ(r + 4, orig + 4, n - 4);
+    }
+}
+
+/* A v2 peer (no header protection) and a v3 config must not silently talk past
+ * each other: packets from a plain-v2 sender are rejected, not misparsed. */
+static void test_v2_packet_rejected_by_v3_config(void) {
+    awg_config_t v2 = make_hp_config(0x66);
+    v2.has_hp = 0;
+    memset(v2.hp_key, 0, sizeof(v2.hp_key));
+    config_compute(&v2);
+    awg_config_t v3 = make_hp_config(0x66);
+
+    uint8_t buf[256 + WG_INIT_SIZE];
+    int dataoff = 256, out_len, junk, in_len;
+
+    memset(buf, 0, sizeof(buf));
+    write32_le(buf + dataoff, WG_HANDSHAKE_INIT);
+    fill_seq(buf + dataoff + 4, WG_INIT_SIZE - 4);
+
+    uint8_t *out = transform_outbound(buf, dataoff, WG_INIT_SIZE, &v2, 9, &out_len, &junk);
+    ASSERT(transform_inbound(out, out_len, &v3, &in_len) == NULL);
+}
+
 /* A packet sealed with one key must not decode under another. */
 static void test_hp_wrong_key_is_rejected(void) {
     awg_config_t sender = make_hp_config(0x11);
@@ -1442,8 +1584,17 @@ int main(void) {
     RUN_TEST(hp_roundtrip_all_types);
     RUN_TEST(hp_header_is_encrypted);
     RUN_TEST(hp_nonce_is_fresh_per_packet);
+    RUN_TEST(hp_padding_is_not_derived_from_rand_val);
     RUN_TEST(hp_wrong_key_is_rejected);
     RUN_TEST(hp_disabled_leaves_header_plain);
     RUN_TEST(hp_requires_padding_of_12);
+    /* Golden vectors produced by amneziawg-go */
+    RUN_TEST(hp_golden_init_from_go);
+    RUN_TEST(hp_golden_response_from_go);
+    RUN_TEST(hp_golden_cookie_from_go);
+    RUN_TEST(hp_golden_transport_from_go);
+    /* AWG 2.0 configs keep working */
+    RUN_TEST(v2_wire_format_unchanged);
+    RUN_TEST(v2_packet_rejected_by_v3_config);
     TEST_MAIN_END();
 }

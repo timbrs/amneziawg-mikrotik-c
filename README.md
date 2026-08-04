@@ -609,6 +609,8 @@ AWG_S4=12
 AWG_HP_KEY=2FQ5nB1kQzq7Vz2p0mQ1w0eYq3pQ8Yy0hZ0Xk5r2sF8=
 ```
 
+Паддинг растёт в размере пакета: при `AWG_S4 = 12` каждый transport-пакет становится на 12 байт длиннее, поэтому MTU WireGuard-интерфейса на роутере стоит уменьшить на ту же величину, иначе на границе получите фрагментацию или чёрную дыру PMTU.
+
 Границы поддержки v3: прокси реализует **только защиту заголовков**. `ContentPaddingAddition` добавляется внутрь AEAD-шифрованной части пакета, а диапазонные `RekeyAfterTime`, `RekeyTimeout`, `RejectAfterTime`, `KeepaliveTimeout`, `MaxHandshakeAttempts` и `PersistentKeepalive` задаёт WireGuard-стек RouterOS -- прокси на них влиять не может. Резервный профиль (`AWG_FB_*`) с `AWG_HP_KEY` несовместим: он требует `AWG_S4=0`.
 
 #### Необязательные -- режим работы

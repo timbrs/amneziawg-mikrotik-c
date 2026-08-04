@@ -1,5 +1,6 @@
 #include "proxy.h"
 #include "cps.h"
+#include "csprng.h"
 #include "log.h"
 #include <string.h>
 #include <stdlib.h>
@@ -362,15 +363,12 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     /* src_port < 0 ("random"): local_port stays 0, no bind — the kernel
      * picks a fresh ephemeral port on every connect */
 
-    /* Init PRNG */
+    /* Init PRNG. The seed comes from the kernel through csprng: the old fallback
+     * (the address of a static struct in a non-PIE static binary) was a constant,
+     * so a container without /dev/urandom replayed the same sequence on every
+     * restart — with header protection that means reusing keystream. */
     uint64_t seed;
-    int ufd = open("/dev/urandom", O_RDONLY);
-    if (ufd >= 0) {
-        read(ufd, &seed, 8);
-        close(ufd);
-    } else {
-        seed = (uint64_t)(uintptr_t)p ^ 0xDEADBEEFCAFEULL;
-    }
+    csprng_bytes((uint8_t *)&seed, sizeof(seed));
     fastrand_init(&p->rng, seed);
 
     /* Pre-allocate junk buffers */
@@ -682,24 +680,23 @@ static void *c2s_thread_normal(void *arg) {
                 }
             }
 
-            /* Handshake slow path: flush batch first */
-            if (nsend > 0) {
-                send_batch_gso(p, remote_fd, p->send_c2s.msgs,
-                               p->send_c2s.iovecs, nsend, NULL);
-                nsend = 0;
-            }
+            /* Slow path: handshake, or any packet when header protection is on.
+             * The batch is NOT flushed here — with header protection every
+             * transport packet lands in this path, and an unconditional flush
+             * would mean one sendmmsg per packet and no GSO at all. It is
+             * flushed only where the ordering or the shared static buffer
+             * demands it (see below). */
+            uint32_t in_type = 0;
+            if (n >= 4)
+                memcpy(&in_type, data, 4);
 
             /* Detect WG handshake init from client */
-            if (n >= 4) {
-                uint32_t hin;
-                memcpy(&hin, data, 4);
-                if (hin == WG_HANDSHAKE_INIT &&
-                    !atomic_exchange_explicit(&p->fe_init_seen, 1, memory_order_relaxed)) {
-                    char nb[12];
-                    const char *parts[] = { "c2s: WG handshake init received from client (size=",
-                                            u32_to_str(nb, n), ")" };
-                    log_infon(parts, 3);
-                }
+            if (in_type == WG_HANDSHAKE_INIT &&
+                !atomic_exchange_explicit(&p->fe_init_seen, 1, memory_order_relaxed)) {
+                char nb[12];
+                const char *parts[] = { "c2s: WG handshake init received from client (size=",
+                                        u32_to_str(nb, n), ")" };
+                log_infon(parts, 3);
             }
 
             int out_len, sendJunk;
@@ -708,6 +705,12 @@ static void *c2s_thread_normal(void *arg) {
                                                &out_len, &sendJunk);
 
             if (sendJunk) {
+                /* Junk must arrive before the handshake it precedes */
+                if (nsend > 0) {
+                    send_batch_gso(p, remote_fd, p->send_c2s.msgs,
+                                   p->send_c2s.iovecs, nsend, NULL);
+                    nsend = 0;
+                }
                 log_debug("c2s: handshake init, sending junk");
                 send_junk_and_cps(p, remote_fd);
                 send_packet(remote_fd, out, out_len);
@@ -720,7 +723,23 @@ static void *c2s_thread_normal(void *arg) {
                 continue;
             }
 
-            /* Non-junk handshake */
+            if (in_type == WG_TRANSPORT_DATA &&
+                !atomic_exchange_explicit(&p->fe_transport_c2s, 1, memory_order_relaxed))
+                log_info("c2s: first transport packet to remote");
+
+            /* If the transform fell back to its shared static buffer, the next
+             * packet of this batch would overwrite it — send this one now. */
+            uint8_t *bufbase = p->recv_c2s.bufs[i];
+            if (out < bufbase || out >= bufbase + BUF_SIZE + AWG_PACKET_HEADROOM) {
+                if (nsend > 0) {
+                    send_batch_gso(p, remote_fd, p->send_c2s.msgs,
+                                   p->send_c2s.iovecs, nsend, NULL);
+                    nsend = 0;
+                }
+                send_packet(remote_fd, out, out_len);
+                continue;
+            }
+
             p->send_c2s.iovecs[nsend].iov_base = out;
             p->send_c2s.iovecs[nsend].iov_len = out_len;
             nsend++;
@@ -812,13 +831,10 @@ static void *c2s_thread_reverse(void *arg) {
                 }
             }
 
-            /* Handshake slow path: flush batch first */
-            if (nsend > 0) {
-                send_batch_gso(p, remote_fd, p->send_c2s.msgs,
-                               p->send_c2s.iovecs, nsend, NULL);
-                nsend = 0;
-            }
-
+            /* Slow path. No flush needed: transform_inbound always returns a
+             * pointer inside this packet's own buffer and sends nothing itself,
+             * so batching stays intact — which matters with header protection,
+             * where every transport packet comes through here. */
             int out_len;
             uint8_t *out = transform_inbound(pkt, n, cfg, &out_len);
             if (!out && cfg->profile_count > 1) {
@@ -921,7 +937,12 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
     /* Identify handshake type for diagnostics */
     uint32_t mtype = 0;
     if (out_len >= 4) memcpy(&mtype, out, 4);
-    if (g_log_level >= LOG_DEBUG) {
+    if (mtype == WG_TRANSPORT_DATA) {
+        /* With header protection transport data comes through here too — keep
+         * the first-packet marker, and stay out of the handshake debug log. */
+        if (!atomic_exchange_explicit(&p->fe_transport_s2c, 1, memory_order_relaxed))
+            log_info("s2c: first transport packet to client");
+    } else if (g_log_level >= LOG_DEBUG) {
         const char *type_str = "unknown";
         if (mtype == WG_HANDSHAKE_INIT) type_str = "init";
         else if (mtype == WG_HANDSHAKE_RESPONSE) type_str = "resp";
@@ -1046,6 +1067,15 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
     if (sendJunk) {
         log_debug("s2c: reverse: handshake init, sending junk");
         send_junk_and_cps_to(p, p->listen_fd, dest_addr);
+        send_packet_to(p->listen_fd, out, out_len, dest_addr);
+        return 1;
+    }
+
+    /* If the transform used its shared static buffer (headroom here is only S4,
+     * so any handshake with S1/S2/S3 > S4 ends up there), the next packet of the
+     * batch would overwrite it before sendmmsg runs — two peers rekeying in the
+     * same batch would each get the other's packet. Send it immediately. */
+    if (out < base || out >= base + BUF_SIZE + AWG_PACKET_HEADROOM) {
         send_packet_to(p->listen_fd, out, out_len, dest_addr);
         return 1;
     }

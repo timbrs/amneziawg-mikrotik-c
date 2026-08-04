@@ -1,5 +1,6 @@
 #include "proxy.h"
 #include "cps.h"
+#include "csprng.h"
 #include "log.h"
 #include "base64.h"
 #include <stdio.h>
@@ -167,6 +168,11 @@ int main(void) {
     const char *v;
     awg_config_t *cfg = &g_config;
     memset(cfg, 0, sizeof(*cfg));
+
+    /* Packet padding must be unpredictable (it is also the header-protection
+     * nonce), so fail early and loudly if the kernel gives us no entropy. */
+    if (csprng_init() < 0)
+        fatal("no entropy source: getrandom() unavailable and /dev/urandom missing");
 
     /* Required env vars */
     const char *listen_str = getenv_required("AWG_LISTEN", &errs);

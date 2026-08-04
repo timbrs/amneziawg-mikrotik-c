@@ -600,6 +600,8 @@ AWG_S4=12
 AWG_HP_KEY=2FQ5nB1kQzq7Vz2p0mQ1w0eYq3pQ8Yy0hZ0Xk5r2sF8=
 ```
 
+The padding adds to the packet size: with `AWG_S4 = 12` every transport packet grows by 12 bytes, so lower the MTU of the router's WireGuard interface by the same amount to avoid fragmentation or a PMTU black hole.
+
 Scope of v3 support: the proxy implements **header protection only**. `ContentPaddingAddition` goes inside the AEAD-encrypted part of the packet, and the ranged `RekeyAfterTime`, `RekeyTimeout`, `RejectAfterTime`, `KeepaliveTimeout`, `MaxHandshakeAttempts` and `PersistentKeepalive` are driven by the RouterOS WireGuard stack, which the proxy cannot influence. The fallback profile (`AWG_FB_*`) is incompatible with `AWG_HP_KEY` because it requires `AWG_S4=0`.
 
 #### Optional -- Operating Mode
