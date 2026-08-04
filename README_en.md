@@ -464,6 +464,7 @@ With 3+ clients, this is easier to automate with a script on the server.
 | `AWG_S3` | No | `0` | Cookie reply padding (v2) |
 | `AWG_S4` | No | `0` | Transport data padding (v2) |
 | `AWG_I1`--`AWG_I5` | No | -- | CPS templates (v1.5/v2) |
+| `AWG_HP_KEY` | No | -- | Header protection key (v3), base64 32 bytes = server's `HeaderProtectionKey`. Requires `AWG_S1`--`AWG_S4` >= 12 |
 | `AWG_MODE` | No | `normal` | Operating mode: `normal`, `reverse`, `server` |
 | `AWG_FB_H1`--`AWG_FB_H4` | No | -- | Fallback (v1) obfuscation profile: message types. Enables fallback (`normal`/`reverse` only); requires `AWG_S4=0` |
 | `AWG_FB_S1`, `AWG_FB_S2` | Yes** | -- | Init/response padding for the fallback profile |
@@ -485,7 +486,7 @@ With 3+ clients, this is easier to automate with a script on the server.
 
 `**` Required only when the fallback profile is enabled (`AWG_FB_H1` is set).
 
-The protocol version is detected automatically: **v2** if S3/S4 are set or H values are ranges, **v1.5** if CPS templates (I1-I5) are set, otherwise **v1**.
+The protocol version is detected automatically: **v3** if `AWG_HP_KEY` is set (header protection on top of v2), **v2** if S3/S4 are set or H values are ranges, **v1.5** if CPS templates (I1-I5) are set, otherwise **v1**.
 
 **Fallback profile (site-to-site backward compatibility / DPI resilience).** The primary profile (`AWG_S*`, `AWG_H*`, `AWG_I*`) may be v2, while `AWG_FB_*` defines a second, v1 profile (fixed H, no S3/S4/CPS). The initiator (`normal`) runs on the primary profile and, if the remote stays silent for longer than `AWG_FB_AFTER` seconds, rarely switches to the fallback and back until it finds a working one. The responder (`reverse`) accepts both profiles and replies with whichever one the handshake arrived on. For the site-to-site scenario the configurator generates identical primary+fallback profiles on both sides: if the primary obfuscation starts getting blocked, the tunnel automatically falls back to the secondary. Requires `AWG_S4=0`; not supported in `server` mode.
 
@@ -586,6 +587,20 @@ AWG_S4=16   # +16 bytes to each transport data packet
 ```
 AWG_I1=b:48656c6c6f,r:10,t:4,c:4
 ```
+
+#### Optional -- protocol v3 (header protection)
+
+**`AWG_HP_KEY`** -- AmneziaWG 3.0 header protection key, the same value as `HeaderProtectionKey` in the server config (base64, 32 bytes). When set, the proxy encrypts the low-entropy head of every packet with ChaCha20: the whole packet for handshake init/response/cookie, the 16-byte header (type, receiver index, counter) for transport data. The nonce is the first 12 bytes of the padding, so it is regenerated per packet and **all** of `AWG_S1`--`AWG_S4` must be at least 12 -- the same rule the server enforces. Empty means v2 behaviour with plaintext headers.
+
+```
+AWG_S1=20
+AWG_S2=18
+AWG_S3=15
+AWG_S4=12
+AWG_HP_KEY=2FQ5nB1kQzq7Vz2p0mQ1w0eYq3pQ8Yy0hZ0Xk5r2sF8=
+```
+
+Scope of v3 support: the proxy implements **header protection only**. `ContentPaddingAddition` goes inside the AEAD-encrypted part of the packet, and the ranged `RekeyAfterTime`, `RekeyTimeout`, `RejectAfterTime`, `KeepaliveTimeout`, `MaxHandshakeAttempts` and `PersistentKeepalive` are driven by the RouterOS WireGuard stack, which the proxy cannot influence. The fallback profile (`AWG_FB_*`) is incompatible with `AWG_HP_KEY` because it requires `AWG_S4=0`.
 
 #### Optional -- Operating Mode
 

@@ -242,6 +242,15 @@ int main(void) {
     if ((v = getenv("AWG_S3")) && v[0]) cfg->s3 = parse_int_str(v);
     if ((v = getenv("AWG_S4")) && v[0]) cfg->s4 = parse_int_str(v);
 
+    /* Optional v3 param: header protection key (HeaderProtectionKey on the
+     * server). Empty = v2 behaviour, packet headers stay in the clear. */
+    if ((v = getenv("AWG_HP_KEY")) && v[0]) {
+        int len = base64_decode(v, slen(v), cfg->hp_key, CHACHA20_KEY_SIZE);
+        if (len != CHACHA20_KEY_SIZE)
+            fatal("AWG_HP_KEY: must decode to 32 bytes");
+        cfg->has_hp = 1;
+    }
+
     {
         const char *cfg_err = NULL;
         if (config_validate(cfg, &cfg_err) < 0)
@@ -282,6 +291,8 @@ int main(void) {
     if (v && v[0]) {
         if (cfg->mode == AWG_MODE_SERVER)
             fatal("AWG_FB_* fallback is not supported in server mode");
+        if (cfg->has_hp)
+            fatal("AWG_FB_* fallback is not supported with AWG_HP_KEY (v1 profile has no padding)");
         if (cfg->s4 != 0)
             fatal("AWG_FB_* fallback requires AWG_S4=0");
         awg_profile_t *fb = &cfg->profiles[1];

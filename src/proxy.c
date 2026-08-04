@@ -661,8 +661,9 @@ static void *c2s_thread_normal(void *arg) {
 
             uint8_t *data = p->recv_c2s.bufs[i] + prefix;
 
-            /* Transport data fast-path */
-            if (n >= WG_TRANSPORT_MIN) {
+            /* Transport data fast-path (header protection needs the full
+             * transform: fresh nonce per packet + ChaCha20 over the header) */
+            if (!cfg->has_hp && n >= WG_TRANSPORT_MIN) {
                 uint32_t h;
                 memcpy(&h, data, 4);
                 if (h == WG_TRANSPORT_DATA) {
@@ -788,8 +789,9 @@ static void *c2s_thread_reverse(void *arg) {
 
             uint8_t *pkt = p->recv_c2s.bufs[i];
 
-            /* Transport fast-path: strip S4 prefix, restore type */
-            if (n >= s4 + WG_TRANSPORT_MIN) {
+            /* Transport fast-path: strip S4 prefix, restore type
+             * (skipped with header protection — the type is encrypted) */
+            if (!cfg->has_hp && n >= s4 + WG_TRANSPORT_MIN) {
                 if (!cfg->transport_size_ambiguous ||
                     (n != cfg->init_total && n != cfg->resp_total && n != cfg->cookie_total)) {
                     uint32_t h;
@@ -886,8 +888,9 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
     awg_config_t *cfg = p->cfg;
     int s4 = cfg->s4;
 
-    /* Transport fast-path with precomputed ambiguity check */
-    if (n >= s4 + WG_TRANSPORT_MIN) {
+    /* Transport fast-path with precomputed ambiguity check
+     * (skipped with header protection — the type is encrypted) */
+    if (!cfg->has_hp && n >= s4 + WG_TRANSPORT_MIN) {
         if (!cfg->transport_size_ambiguous ||
             (n != cfg->init_total && n != cfg->resp_total && n != cfg->cookie_total)) {
             uint32_t h;
@@ -999,8 +1002,8 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
         dest_addr = &p->client_addr;
     }
 
-    /* Transport fast-path */
-    if (n >= WG_TRANSPORT_MIN) {
+    /* Transport fast-path (header protection needs the full transform) */
+    if (!cfg->has_hp && n >= WG_TRANSPORT_MIN) {
         uint32_t h;
         memcpy(&h, pkt, 4);
         if (h == WG_TRANSPORT_DATA) {

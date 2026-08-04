@@ -1226,6 +1226,167 @@ static void test_mac1_reverse_mode(void) {
     ASSERT(verify_mac1_init(pkt, cfg.mac1key_client));
 }
 
+/* ---- AWG 3.0 header protection ---- */
+
+/* v3 config: every padding >= 12 (the ChaCha20 nonce lives in it). */
+static awg_config_t make_hp_config(uint8_t key_seed) {
+    awg_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.jc = 3; cfg.jmin = 30; cfg.jmax = 500;
+    cfg.s1 = 20; cfg.s2 = 18; cfg.s3 = 15; cfg.s4 = 12;
+    cfg.h1 = (hrange_t){100000, 200000};
+    cfg.h2 = (hrange_t){300000, 400000};
+    cfg.h3 = (hrange_t){500000, 600000};
+    cfg.h4 = (hrange_t){700000, 800000};
+    for (int i = 0; i < CHACHA20_KEY_SIZE; i++)
+        cfg.hp_key[i] = (uint8_t)(key_seed + i * 3);
+    cfg.has_hp = 1;
+    config_compute(&cfg);
+    return cfg;
+}
+
+/* Every message type must survive outbound -> inbound with the header encrypted
+ * in between. */
+static void test_hp_roundtrip_all_types(void) {
+    awg_config_t cfg = make_hp_config(0x41);
+    const uint32_t types[4] = {
+        WG_HANDSHAKE_INIT, WG_HANDSHAKE_RESPONSE, WG_COOKIE_REPLY, WG_TRANSPORT_DATA
+    };
+    const int sizes[4] = { WG_INIT_SIZE, WG_RESP_SIZE, WG_COOKIE_SIZE, 300 };
+    const int pads[4] = { cfg.s1, cfg.s2, cfg.s3, cfg.s4 };
+
+    for (int t = 0; t < 4; t++) {
+        uint8_t orig[512], buf[256 + 512];
+        int dataoff = 256, n = sizes[t];
+
+        write32_le(orig, types[t]);
+        fill_seq(orig + 4, n - 4);
+        memset(buf, 0, sizeof(buf));
+        memcpy(buf + dataoff, orig, n);
+
+        int out_len, sendJunk;
+        uint8_t *out = transform_outbound(buf, dataoff, n, &cfg,
+                                          0x1122334455667788ULL + t,
+                                          &out_len, &sendJunk);
+        ASSERT_EQ(out_len, pads[t] + n);
+
+        int in_len;
+        uint8_t *r = transform_inbound(out, out_len, &cfg, &in_len);
+        ASSERT(r != NULL);
+        ASSERT_EQ(in_len, n);
+        ASSERT_EQ(read32_le(r), types[t]);
+        ASSERT_MEM_EQ(r + 4, orig + 4, n - 4);
+    }
+}
+
+/* On the wire the type field must be ciphertext: neither the WireGuard type nor
+ * the H value may be readable. For transport only the 16-byte header is
+ * protected — the payload must stay untouched. */
+static void test_hp_header_is_encrypted(void) {
+    awg_config_t cfg = make_hp_config(0x7e);
+    uint8_t orig[300], buf[256 + 300];
+    int dataoff = 256, n = 300;
+
+    write32_le(orig, WG_TRANSPORT_DATA);
+    fill_seq(orig + 4, n - 4);
+    memset(buf, 0, sizeof(buf));
+    memcpy(buf + dataoff, orig, n);
+
+    int out_len, sendJunk;
+    uint8_t *out = transform_outbound(buf, dataoff, n, &cfg, 0xdeadbeefULL,
+                                      &out_len, &sendJunk);
+
+    uint32_t wire_type = read32_le(out + cfg.s4);
+    ASSERT(wire_type != WG_TRANSPORT_DATA);
+    ASSERT(!hrange_contains(&cfg.h4, wire_type));
+    /* Header encrypted, payload as-is */
+    ASSERT(memcmp(out + cfg.s4, orig, WG_TRANSPORT_HDR) != 0);
+    ASSERT_MEM_EQ(out + cfg.s4 + WG_TRANSPORT_HDR, orig + WG_TRANSPORT_HDR,
+                  n - WG_TRANSPORT_HDR);
+}
+
+/* The padding doubles as the nonce, so it must be regenerated per packet —
+ * otherwise identical headers would encrypt to identical bytes. */
+static void test_hp_nonce_is_fresh_per_packet(void) {
+    awg_config_t cfg = make_hp_config(0x0a);
+    uint8_t buf_a[256 + 64], buf_b[256 + 64];
+    uint8_t wire_a[64 + 32], wire_b[64 + 32];
+    int dataoff = 256, n = 64, len_a, len_b, junk;
+
+    memset(buf_a, 0, sizeof(buf_a));
+    memset(buf_b, 0, sizeof(buf_b));
+    write32_le(buf_a + dataoff, WG_TRANSPORT_DATA);
+    write32_le(buf_b + dataoff, WG_TRANSPORT_DATA);
+    fill_seq(buf_a + dataoff + 4, n - 4);
+    memcpy(buf_b + dataoff, buf_a + dataoff, n);
+
+    uint8_t *a = transform_outbound(buf_a, dataoff, n, &cfg, 111, &len_a, &junk);
+    memcpy(wire_a, a, len_a);
+    uint8_t *b = transform_outbound(buf_b, dataoff, n, &cfg, 222, &len_b, &junk);
+    memcpy(wire_b, b, len_b);
+
+    ASSERT_EQ(len_a, len_b);
+    /* different nonce ... */
+    ASSERT(memcmp(wire_a, wire_b, CHACHA20_NONCE_SIZE) != 0);
+    /* ... hence different ciphertext for the same header */
+    ASSERT(memcmp(wire_a + cfg.s4, wire_b + cfg.s4, WG_TRANSPORT_HDR) != 0);
+}
+
+/* A packet sealed with one key must not decode under another. */
+static void test_hp_wrong_key_is_rejected(void) {
+    awg_config_t sender = make_hp_config(0x11);
+    awg_config_t receiver = make_hp_config(0x99);
+    uint8_t buf[256 + WG_INIT_SIZE];
+    int dataoff = 256, out_len, junk, in_len;
+
+    memset(buf, 0, sizeof(buf));
+    write32_le(buf + dataoff, WG_HANDSHAKE_INIT);
+    fill_seq(buf + dataoff + 4, WG_INIT_SIZE - 4);
+
+    uint8_t *out = transform_outbound(buf, dataoff, WG_INIT_SIZE, &sender, 7,
+                                      &out_len, &junk);
+    ASSERT(transform_inbound(out, out_len, &receiver, &in_len) == NULL);
+}
+
+/* Regression guard for v2 deployments: without a key nothing is encrypted and
+ * the type on the wire is the plain H value, as before. */
+static void test_hp_disabled_leaves_header_plain(void) {
+    awg_config_t cfg = make_hp_config(0x33);
+    cfg.has_hp = 0;
+    memset(cfg.hp_key, 0, sizeof(cfg.hp_key));
+    config_compute(&cfg);
+
+    uint8_t buf[256 + 128];
+    int dataoff = 256, n = 128, out_len, junk;
+
+    memset(buf, 0, sizeof(buf));
+    write32_le(buf + dataoff, WG_TRANSPORT_DATA);
+    fill_seq(buf + dataoff + 4, n - 4);
+
+    uint8_t *out = transform_outbound(buf, dataoff, n, &cfg, 5, &out_len, &junk);
+    ASSERT(hrange_contains(&cfg.h4, read32_le(out + cfg.s4)));
+}
+
+/* The server refuses S < 12 with header protection on; so must the proxy. */
+static void test_hp_requires_padding_of_12(void) {
+    awg_config_t cfg = make_hp_config(0x55);
+    const char *err = NULL;
+
+    ASSERT_EQ(config_validate(&cfg, &err), 0);
+
+    cfg.s4 = AWG_HP_MIN_PADDING - 1;
+    ASSERT(config_validate(&cfg, &err) < 0);
+    ASSERT(err != NULL);
+
+    cfg.s4 = AWG_HP_MIN_PADDING;
+    cfg.s3 = 4;
+    ASSERT(config_validate(&cfg, &err) < 0);
+
+    /* Same paddings are fine once header protection is off */
+    cfg.has_hp = 0;
+    ASSERT_EQ(config_validate(&cfg, &err), 0);
+}
+
 int main(void) {
     fprintf(stderr, "=== transform tests ===\n");
     RUN_TEST(outbound_handshake_init);
@@ -1277,5 +1438,12 @@ int main(void) {
     RUN_TEST(mac1_roundtrip_normal);
     RUN_TEST(mac1_roundtrip_server);
     RUN_TEST(mac1_reverse_mode);
+    /* AWG 3.0 header protection */
+    RUN_TEST(hp_roundtrip_all_types);
+    RUN_TEST(hp_header_is_encrypted);
+    RUN_TEST(hp_nonce_is_fresh_per_packet);
+    RUN_TEST(hp_wrong_key_is_rejected);
+    RUN_TEST(hp_disabled_leaves_header_plain);
+    RUN_TEST(hp_requires_padding_of_12);
     TEST_MAIN_END();
 }

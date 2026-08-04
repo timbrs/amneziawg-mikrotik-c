@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "chacha20.h"
 
 /* WireGuard message types (LE uint32 in first 4 bytes) */
 #define WG_HANDSHAKE_INIT      1
@@ -15,6 +16,11 @@
 #define WG_RESP_SIZE      92
 #define WG_COOKIE_SIZE    64
 #define WG_TRANSPORT_MIN  32
+#define WG_TRANSPORT_HDR  16   /* type + receiver index + counter */
+
+/* AWG 3.0 header protection: the padding doubles as the ChaCha20 nonce, so
+ * every S value must be at least as long as that nonce. */
+#define AWG_HP_MIN_PADDING CHACHA20_NONCE_SIZE
 
 /* Shared fixed buffer sizes used by the proxy data paths */
 #define AWG_PACKET_BUF_SIZE 1500
@@ -87,6 +93,11 @@ typedef struct {
     hrange_t h1, h2, h3, h4;
 
     cps_template_t *cps[5]; /* I1-I5, NULL if not configured */
+
+    /* AWG 3.0 header protection. The key is shared with the peer (server-side
+     * HeaderProtectionKey); empty key = AWG 2.0 behaviour, nothing encrypted. */
+    uint8_t hp_key[CHACHA20_KEY_SIZE];
+    int has_hp;
 
     uint8_t server_pub[32];
     uint8_t client_pub[32];

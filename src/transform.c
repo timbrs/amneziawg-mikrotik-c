@@ -3,9 +3,22 @@
 #include "fastrand.h"
 #include <string.h>
 
-/* Static buffer for handshake packets when headroom is insufficient.
- * Handshakes are rare (1-2 per connection), so static is fine. */
-static __thread uint8_t hs_buf[AWG_PACKET_BUF_SIZE];
+/* Static buffer for packets that need a padding prefix but have no headroom.
+ * Handshakes are rare (1-2 per connection); with header protection enabled a
+ * transport packet can land here too, hence the extra headroom in the size. */
+static __thread uint8_t hs_buf[AWG_PACKET_BUF_SIZE + AWG_PACKET_HEADROOM];
+
+/* AWG 3.0 header protection. `wire` points at the packet as it goes on the
+ * wire — padding first, WireGuard packet at `wire + pad`. The ChaCha20 nonce is
+ * the first 12 bytes of that padding and the keystream position is counted from
+ * the start of the WireGuard packet, so the same call both seals and unseals:
+ * handshakes protect the whole packet, transport data only its 16-byte header
+ * (see amneziawg-go: device/send.go and device/receive.go). */
+static inline void hp_apply(const awg_config_t *cfg, uint8_t *wire, int pad, int area) {
+    chacha20_t c;
+    chacha20_init(&c, cfg->hp_key, wire);
+    chacha20_xor(&c, wire + pad, (size_t)area);
+}
 
 static int hrange_overlaps(const hrange_t *a, const hrange_t *b) {
     return a->min <= b->max && b->min <= a->max;
@@ -47,7 +60,20 @@ int config_validate(const awg_config_t *cfg, const char **err_msg) {
         .s1 = cfg->s1, .s2 = cfg->s2, .s3 = cfg->s3, .s4 = cfg->s4,
         .h1 = cfg->h1, .h2 = cfg->h2, .h3 = cfg->h3, .h4 = cfg->h4,
     };
-    return config_validate_profile(&pr, err_msg);
+    if (config_validate_profile(&pr, err_msg) != 0)
+        return -1;
+
+    /* Header protection takes its nonce from the padding, so every padding must
+     * be at least nonce-sized — the same rule the server enforces (amneziawg-go:
+     * device/uapi.go, "Sx must be more then 12 to use headerProtection"). */
+    if (cfg->has_hp &&
+        (cfg->s1 < AWG_HP_MIN_PADDING || cfg->s2 < AWG_HP_MIN_PADDING ||
+         cfg->s3 < AWG_HP_MIN_PADDING || cfg->s4 < AWG_HP_MIN_PADDING)) {
+        *err_msg = "AWG_S1..AWG_S4: must be at least 12 when AWG_HP_KEY is set";
+        return -1;
+    }
+
+    return 0;
 }
 
 void config_compute_profile(awg_profile_t *pr) {
@@ -155,19 +181,22 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
             recompute_mac1(data, out_key);
         *sendJunk = (cfg->jc > 0);
         if (cfg->s1 > 0) {
+            uint8_t *out;
             if (dataoff >= cfg->s1) {
-                uint8_t *out = data - cfg->s1;
+                out = data - cfg->s1;
                 fastrand_t tmp; fastrand_init(&tmp, rand_val);
                 fastrand_fill(&tmp, out, cfg->s1);
-                *out_len = cfg->s1 + n;
-                return out;
+            } else {
+                /* Headroom insufficient: use static buffer (handshakes are rare) */
+                fastrand_t tmp; fastrand_init(&tmp, rand_val);
+                fastrand_fill(&tmp, hs_buf, cfg->s1);
+                memcpy(hs_buf + cfg->s1, data, n);
+                out = hs_buf;
             }
-            /* Headroom insufficient: use static buffer (handshakes are rare) */
-            fastrand_t tmp; fastrand_init(&tmp, rand_val);
-            fastrand_fill(&tmp, hs_buf, cfg->s1);
-            memcpy(hs_buf + cfg->s1, data, n);
+            if (cfg->has_hp)
+                hp_apply(cfg, out, cfg->s1, n);
             *out_len = cfg->s1 + n;
-            return hs_buf;
+            return out;
         }
         *out_len = n;
         return data;
@@ -178,18 +207,21 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
         if (out_key)
             recompute_mac1_response(data, out_key);
         if (cfg->s2 > 0) {
+            uint8_t *out;
             if (dataoff >= cfg->s2) {
-                uint8_t *out = data - cfg->s2;
+                out = data - cfg->s2;
                 fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x12345);
                 fastrand_fill(&tmp, out, cfg->s2);
-                *out_len = cfg->s2 + n;
-                return out;
+            } else {
+                fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x12345);
+                fastrand_fill(&tmp, hs_buf, cfg->s2);
+                memcpy(hs_buf + cfg->s2, data, n);
+                out = hs_buf;
             }
-            fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x12345);
-            fastrand_fill(&tmp, hs_buf, cfg->s2);
-            memcpy(hs_buf + cfg->s2, data, n);
+            if (cfg->has_hp)
+                hp_apply(cfg, out, cfg->s2, n);
             *out_len = cfg->s2 + n;
-            return hs_buf;
+            return out;
         }
         *out_len = n;
         return data;
@@ -198,18 +230,21 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
     if (msgType == WG_COOKIE_REPLY && n == WG_COOKIE_SIZE) {
         write32_le(data, hrange_pick(&cfg->h3, rand_val));
         if (cfg->s3 > 0) {
+            uint8_t *out;
             if (dataoff >= cfg->s3) {
-                uint8_t *out = data - cfg->s3;
+                out = data - cfg->s3;
                 fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x67890);
                 fastrand_fill(&tmp, out, cfg->s3);
-                *out_len = cfg->s3 + n;
-                return out;
+            } else {
+                fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x67890);
+                fastrand_fill(&tmp, hs_buf, cfg->s3);
+                memcpy(hs_buf + cfg->s3, data, n);
+                out = hs_buf;
             }
-            fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0x67890);
-            fastrand_fill(&tmp, hs_buf, cfg->s3);
-            memcpy(hs_buf + cfg->s3, data, n);
+            if (cfg->has_hp)
+                hp_apply(cfg, out, cfg->s3, n);
             *out_len = cfg->s3 + n;
-            return hs_buf;
+            return out;
         }
         *out_len = n;
         return data;
@@ -225,9 +260,28 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
         else
             write32_le(data, hrange_pick(&cfg->h4, rand_val));
         if (cfg->s4 > 0 && dataoff >= cfg->s4) {
+            uint8_t *out = buf + dataoff - cfg->s4;
+            if (cfg->has_hp) {
+                /* The padding is the ChaCha20 nonce, so it must be fresh for
+                 * every packet — the caller's one-time fill would repeat it. */
+                fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0xabcdeULL);
+                fastrand_fill(&tmp, out, cfg->s4);
+                hp_apply(cfg, out, cfg->s4, WG_TRANSPORT_HDR);
+            }
             /* Zero-alloc: use headroom. Caller fills random into headroom. */
             *out_len = cfg->s4 + n;
-            return buf + dataoff - cfg->s4;
+            return out;
+        }
+        if (cfg->has_hp && cfg->s4 > 0 && cfg->s4 + n <= (int)sizeof(hs_buf)) {
+            /* No headroom, but with header protection the padding is mandatory:
+             * fall back to the static buffer instead of sending a bare packet
+             * the peer would drop. */
+            fastrand_t tmp; fastrand_init(&tmp, rand_val ^ 0xabcdeULL);
+            fastrand_fill(&tmp, hs_buf, cfg->s4);
+            memcpy(hs_buf + cfg->s4, data, n);
+            hp_apply(cfg, hs_buf, cfg->s4, WG_TRANSPORT_HDR);
+            *out_len = cfg->s4 + n;
+            return hs_buf;
         }
         *out_len = n;
         return data;
@@ -273,10 +327,24 @@ uint8_t *transform_inbound(uint8_t *buf, int n, const awg_config_t *cfg, int *ou
         }
     }
 
+    /* With header protection the message type is encrypted, so it has to be
+     * decoded before the H-range checks below. The peer builds the type hash
+     * the same way: the first four keystream bytes, nonce = padding head.
+     * type_hash stays 0 without header protection, making the XOR a no-op. */
+    chacha20_t hp;
+    uint32_t type_hash = 0;
+    if (cfg->has_hp) {
+        if (n < AWG_HP_MIN_PADDING + 4) return NULL;
+        chacha20_init(&hp, cfg->hp_key, buf);
+        type_hash = chacha20_type_hash(&hp);
+    }
+
     /* Size-based dispatch: handshake first, transport last */
     if (n == cfg->init_total) {
-        uint32_t h = read32_le(buf + cfg->s1);
+        uint32_t h = read32_le(buf + cfg->s1) ^ type_hash;
         if (hrange_contains(&cfg->h1, h)) {
+            if (cfg->has_hp)
+                chacha20_xor(&hp, buf + cfg->s1, WG_INIT_SIZE);
             write32_le(buf + cfg->s1, WG_HANDSHAKE_INIT);
             if (cfg->mac1key_in)
                 recompute_mac1(buf + cfg->s1, cfg->mac1key_in);
@@ -286,8 +354,10 @@ uint8_t *transform_inbound(uint8_t *buf, int n, const awg_config_t *cfg, int *ou
     }
 
     if (n == cfg->resp_total) {
-        uint32_t h = read32_le(buf + cfg->s2);
+        uint32_t h = read32_le(buf + cfg->s2) ^ type_hash;
         if (hrange_contains(&cfg->h2, h)) {
+            if (cfg->has_hp)
+                chacha20_xor(&hp, buf + cfg->s2, WG_RESP_SIZE);
             write32_le(buf + cfg->s2, WG_HANDSHAKE_RESPONSE);
             if (cfg->mac1key_in)
                 recompute_mac1_response(buf + cfg->s2, cfg->mac1key_in);
@@ -297,8 +367,10 @@ uint8_t *transform_inbound(uint8_t *buf, int n, const awg_config_t *cfg, int *ou
     }
 
     if (n == cfg->cookie_total) {
-        uint32_t h = read32_le(buf + cfg->s3);
+        uint32_t h = read32_le(buf + cfg->s3) ^ type_hash;
         if (hrange_contains(&cfg->h3, h)) {
+            if (cfg->has_hp)
+                chacha20_xor(&hp, buf + cfg->s3, WG_COOKIE_SIZE);
             write32_le(buf + cfg->s3, WG_COOKIE_REPLY);
             *out_len = n - cfg->s3;
             return buf + cfg->s3;
@@ -307,8 +379,10 @@ uint8_t *transform_inbound(uint8_t *buf, int n, const awg_config_t *cfg, int *ou
 
     /* Transport data: variable size, checked last */
     if (n >= cfg->s4 + WG_TRANSPORT_MIN) {
-        uint32_t h = read32_le(buf + cfg->s4);
+        uint32_t h = read32_le(buf + cfg->s4) ^ type_hash;
         if (hrange_contains(&cfg->h4, h)) {
+            if (cfg->has_hp)
+                chacha20_xor(&hp, buf + cfg->s4, WG_TRANSPORT_HDR);
             write32_le(buf + cfg->s4, WG_TRANSPORT_DATA);
             *out_len = n - cfg->s4;
             return buf + cfg->s4;

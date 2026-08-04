@@ -2,27 +2,31 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE_NAME = awg-proxy
 BUILD_DIR = ../builds
 
-SRCS = src/main.c src/proxy.c src/transform.c src/blake2s.c src/cps.c src/fastrand.c src/base64.c src/log.c
+SRCS = src/main.c src/proxy.c src/transform.c src/blake2s.c src/chacha20.c src/cps.c src/fastrand.c src/base64.c src/log.c
 CFLAGS = -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE -ffunction-sections -fdata-sections -flto -DVERSION=\"$(VERSION)\"
 LDFLAGS = -static -Wl,--gc-sections -flto -s -lpthread
 
-.PHONY: build clean test test-blake2s test-cps test-transform test-base64 test-session test-dns test-stress \
+.PHONY: build clean test test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns test-stress \
 	docker-arm64 docker-arm docker-armv5 docker-amd64 docker-all \
 	docker-arm64-7.20-docker docker-arm-7.20-docker docker-armv5-7.20-docker docker-amd64-7.20-docker docker-all-7.20-docker
 
-TEST_SRCS = src/blake2s.c src/cps.c src/transform.c src/fastrand.c src/base64.c src/log.c
+TEST_SRCS = src/blake2s.c src/chacha20.c src/cps.c src/transform.c src/fastrand.c src/base64.c src/log.c
 TEST_CFLAGS = -g -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE
 
 build:
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(IMAGE_NAME) $(SRCS)
 
-test: test-blake2s test-cps test-transform test-base64 test-session test-dns
+test: test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns
 	@echo "All tests passed"
 
 test-blake2s: src/test_blake2s.c $(TEST_SRCS)
 	$(CC) $(TEST_CFLAGS) -o /tmp/test_blake2s $^
 	/tmp/test_blake2s
+
+test-chacha20: src/test_chacha20.c $(TEST_SRCS)
+	$(CC) $(TEST_CFLAGS) -o /tmp/test_chacha20 $^
+	/tmp/test_chacha20
 
 test-cps: src/test_cps.c $(TEST_SRCS)
 	$(CC) $(TEST_CFLAGS) -o /tmp/test_cps $^
