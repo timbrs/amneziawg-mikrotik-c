@@ -1435,7 +1435,7 @@
     // Field definitions
     // ============================================================
     var IFACE_REQUIRED = ['PrivateKey', 'Address', 'Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
-    var IFACE_OPTIONAL = ['DNS', 'S3', 'S4', 'I1', 'I2', 'I3', 'I4', 'I5'];
+    var IFACE_OPTIONAL = ['DNS', 'S3', 'S4', 'I1', 'I2', 'I3', 'I4', 'I5', 'HeaderProtectionKey'];
     var PEER_REQUIRED = ['PublicKey', 'Endpoint', 'AllowedIPs'];
     var PEER_OPTIONAL = ['PresharedKey', 'PersistentKeepalive'];
 
@@ -1447,7 +1447,8 @@
         var badgeColors = {
             'v1':   'background:#e5e7eb;color:#374151',
             'v1.5': 'background:#fef3c7;color:#92400e',
-            'v2':   'background:#dbeafe;color:#1e40af'
+            'v2':   'background:#dbeafe;color:#1e40af',
+            'v3':   'background:#dcfce7;color:#166534'
         };
         var protoBadge = '<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600;' + badgeColors[proto] + ';margin-left:8px">AWG ' + proto + '</span>';
         var html = '<div style="margin-bottom:8px;font-size:0.8rem;color:var(--text-muted)">' + esc(t('ifaceSec')) + protoBadge + '</div>';
@@ -1653,6 +1654,7 @@
             (iface.H2 && iface.H2.indexOf('-') >= 0) ||
             (iface.H3 && iface.H3.indexOf('-') >= 0) ||
             (iface.H4 && iface.H4.indexOf('-') >= 0);
+        if (iface.HeaderProtectionKey) return 'v3';
         if (iface.S3 || iface.S4 || hasHRange) return 'v2';
         if (iface.I1 || iface.I2 || iface.I3 || iface.I4 || iface.I5) return 'v1.5';
         return 'v1';
@@ -1723,6 +1725,18 @@
             errors.push('[Interface] S3 -- must be a non-negative integer');
         if (iface.S4 && !isNonNegativeInt(iface.S4))
             errors.push('[Interface] S4 -- must be a non-negative integer');
+
+        // v3: header protection takes its nonce from the padding, so every S
+        // must be at least 12 bytes -- the server enforces the same rule
+        if (iface.HeaderProtectionKey) {
+            if (!isValidBase64Key(iface.HeaderProtectionKey))
+                errors.push('[Interface] HeaderProtectionKey -- invalid base64 key (expected 44 chars, 32 bytes)');
+            ['S1', 'S2', 'S3', 'S4'].forEach(function (k) {
+                var v = parseInt(iface[k], 10);
+                if (!(v >= 12))
+                    errors.push('[Interface] ' + k + ' -- must be at least 12 when HeaderProtectionKey is set');
+            });
+        }
 
         if (!isHValue(iface.H1))
             errors.push('[Interface] H1 -- must be uint32 or range MIN-MAX');
@@ -2645,6 +2659,7 @@
 
         if (i.S3) lines.push('/container/envs/add list=' + prefix + '-env key=AWG_S3 value="' + i.S3 + '"');
         if (i.S4) lines.push('/container/envs/add list=' + prefix + '-env key=AWG_S4 value="' + i.S4 + '"');
+        if (i.HeaderProtectionKey) lines.push('/container/envs/add list=' + prefix + '-env key=AWG_HP_KEY value="' + i.HeaderProtectionKey + '"');
         ['I1','I2','I3','I4','I5'].forEach(function(k) {
             if (i[k]) lines.push('/container/envs/add list=' + prefix + '-env key=AWG_' + k + ' value="' + i[k] + '"');
         });
@@ -2785,7 +2800,8 @@
                 '  :put ""',
                 '  :put "  [WARNING]: Your config uses AWG ' + detectedProto + '. For better obfuscation,"',
                 '  :put "  update AmneziaVPN (v2) to the latest version and regenerate the config."',
-                '  :put "  Latest version supports AWG v2 with H-ranges and S3/S4 padding."',
+                '  :put "  Latest version supports AWG v3: header protection (AWG_HP_KEY),"',
+                '  :put "  H-ranges and S3/S4 padding."',
                 '  :put "  https://github.com/amnezia-vpn/amnezia-client/releases"',
             ]);
         }
@@ -2908,6 +2924,7 @@
 
         if (i.S3) lines.push('  :put "export AWG_S3=\\"' + i.S3 + '\\""');
         if (i.S4) lines.push('  :put "export AWG_S4=\\"' + i.S4 + '\\""');
+        if (i.HeaderProtectionKey) lines.push('  :put "export AWG_HP_KEY=\\"' + i.HeaderProtectionKey + '\\""');
         ['I1','I2','I3','I4','I5'].forEach(function(k) {
             if (i[k]) lines.push('  :put "export AWG_' + k + '=\\"' + i[k] + '\\""');
         });
