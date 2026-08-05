@@ -2059,6 +2059,15 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
         return 1;
     }
 
+    /* If the transform fell back to its shared buffer — here the headroom is
+     * only max_s4, so every handshake with S1/S2/S3 above that lands there —
+     * the next packet of the batch overwrites it before sendmmsg runs, and two
+     * peers rekeying in one batch each get the other's packet. Send it now. */
+    if (transform_is_shared_buf(out)) {
+        send_packet_to(p->listen_fd, out, out_len, dest_addr);
+        return 1;
+    }
+
     int idx = *nsend;
     send_iovecs[idx].iov_base = out;
     send_iovecs[idx].iov_len = out_len;

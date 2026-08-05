@@ -9,6 +9,10 @@
  * Handshakes are rare (1-2 per connection), so static is fine. */
 static __thread uint8_t hs_buf[AWG_PACKET_BUF_SIZE];
 
+int transform_is_shared_buf(const uint8_t *p) {
+    return p >= hs_buf && p < hs_buf + sizeof(hs_buf);
+}
+
 static int hrange_overlaps(const hrange_t *a, const hrange_t *b) {
     return a->min <= b->max && b->min <= a->max;
 }

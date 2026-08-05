@@ -1580,6 +1580,55 @@ static void test_padding_is_not_a_prng_chain(void) {
     }
 }
 
+/* When the caller's headroom is smaller than the padding, the transform falls
+ * back to a buffer shared by the whole thread. Two packets in a row therefore
+ * land on the same address and the first one's bytes are gone — which is why a
+ * caller that queues packets has to send such a packet immediately. The
+ * predicate is what proxy.c keys that decision on, so pin both halves. */
+static void test_shared_buf_is_reported_and_reused(void) {
+    awg_config_t cfg = make_v3_config();
+    ASSERT(cfg.s1 > 8);
+
+    uint8_t buf_a[AWG_PACKET_BUF_SIZE + AWG_PACKET_HEADROOM];
+    uint8_t buf_b[AWG_PACKET_BUF_SIZE + AWG_PACKET_HEADROOM];
+    int dataoff = 4;                       /* below S1: forces the fallback */
+    ASSERT(dataoff < cfg.s1);
+
+    memset(buf_a + dataoff, 0xA1, WG_INIT_SIZE);
+    write32_le(buf_a + dataoff, WG_HANDSHAKE_INIT);
+    memset(buf_b + dataoff, 0xB2, WG_INIT_SIZE);
+    write32_le(buf_b + dataoff, WG_HANDSHAKE_INIT);
+
+    int len_a = 0, len_b = 0, junk = 0;
+    uint8_t *out_a = transform_outbound(buf_a, dataoff, WG_INIT_SIZE, &cfg,
+                                        0x1111ull, &len_a, &junk);
+    ASSERT(out_a != NULL);
+    ASSERT(transform_is_shared_buf(out_a));
+    ASSERT_EQ(len_a, cfg.s1 + WG_INIT_SIZE);
+
+    uint8_t first[AWG_PACKET_BUF_SIZE];
+    memcpy(first, out_a, (size_t)len_a);
+
+    uint8_t *out_b = transform_outbound(buf_b, dataoff, WG_INIT_SIZE, &cfg,
+                                        0x2222ull, &len_b, &junk);
+    ASSERT(out_b != NULL);
+    ASSERT(transform_is_shared_buf(out_b));
+    ASSERT(out_a == out_b);
+    ASSERT(memcmp(first, out_a, (size_t)len_a) != 0);
+
+    /* With enough headroom the packet stays in its own buffer, so the batching
+     * path is not disturbed for the common case. */
+    uint8_t buf_c[AWG_PACKET_BUF_SIZE + AWG_PACKET_HEADROOM];
+    int roomy = AWG_PACKET_HEADROOM;
+    memset(buf_c + roomy, 0xC3, WG_INIT_SIZE);
+    write32_le(buf_c + roomy, WG_HANDSHAKE_INIT);
+    int len_c = 0;
+    uint8_t *out_c = transform_outbound(buf_c, roomy, WG_INIT_SIZE, &cfg,
+                                        0x3333ull, &len_c, &junk);
+    ASSERT(out_c != NULL);
+    ASSERT(!transform_is_shared_buf(out_c));
+}
+
 /* Two packets drawn from the same generator must never share a nonce. */
 static void test_hp_nonce_differs_between_packets(void) {
     awg_config_t cfg = make_v3_config();
@@ -2151,6 +2200,7 @@ int main(void) {
     RUN_TEST(hp_padding_is_not_a_clone_of_caller_prng);
     RUN_TEST(hp_nonce_differs_between_packets);
     RUN_TEST(padding_is_not_a_prng_chain);
+    RUN_TEST(shared_buf_is_reported_and_reused);
     RUN_TEST(reference_accepts_v1);
     RUN_TEST(reference_accepts_v1_5);
     RUN_TEST(reference_accepts_v2);

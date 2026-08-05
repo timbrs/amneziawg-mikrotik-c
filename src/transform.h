@@ -244,6 +244,12 @@ uint8_t *transform_outbound_profile(uint8_t *buf, int dataoff, int n,
                                     uint64_t rand_val,
                                     int *out_len, int *sendJunk);
 
+/* True if p points into the thread-local buffer transform_outbound* falls back
+ * to when the caller's headroom is smaller than the padding. That buffer is
+ * shared by every packet of the thread, so a caller that queues packets (a
+ * sendmmsg batch) must send such a packet before transforming the next one. */
+int transform_is_shared_buf(const uint8_t *p);
+
 /* Same, on the active profile. */
 uint8_t *transform_outbound(uint8_t *buf, int dataoff, int n,
                              const awg_config_t *cfg, uint64_t rand_val,
