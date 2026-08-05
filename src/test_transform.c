@@ -1548,6 +1548,38 @@ static void test_hp_padding_is_not_a_clone_of_caller_prng(void) {
     ASSERT(memcmp(out, next, CHACHA20_NONCE_SIZE) != 0);
 }
 
+/* The padding is the one field an observer sees raw, so it must not be the
+ * output of a generator whose state it reveals. xorshift64 was exactly that:
+ * the second 8 bytes are one step of the generator applied to the first 8, so
+ * a censor confirmed awg-proxy from a single packet. */
+static void test_padding_is_not_a_prng_chain(void) {
+    awg_config_t cfg = make_v3_config();
+    fastrand_t rng;
+    fastrand_init(&rng, 0x5EED5EED5EED5EEDull);
+
+    for (int i = 0; i < 16; i++) {
+        uint8_t buf[AWG_PACKET_BUF_SIZE];
+        int dataoff = AWG_PACKET_HEADROOM;
+        uint8_t *data = buf + dataoff;
+        memset(data, 0xAA, WG_INIT_SIZE);
+        write32_le(data, WG_HANDSHAKE_INIT);
+
+        int out_len = 0, sendJunk = 0;
+        uint8_t *out = transform_outbound(buf, dataoff, WG_INIT_SIZE, &cfg,
+                                          fastrand_u64(&rng), &out_len, &sendJunk);
+        ASSERT(out != NULL);
+        ASSERT(cfg.s1 >= 16);
+
+        uint64_t first;
+        memcpy(&first, out, 8);
+        uint64_t step = first;
+        step ^= step << 13;
+        step ^= step >> 7;
+        step ^= step << 17;
+        ASSERT(memcmp(out + 8, &step, 8) != 0);
+    }
+}
+
 /* Two packets drawn from the same generator must never share a nonce. */
 static void test_hp_nonce_differs_between_packets(void) {
     awg_config_t cfg = make_v3_config();
@@ -1720,7 +1752,10 @@ static void test_hp_off_matches_v2(void) {
         uint8_t *ob = transform_outbound(b, dataoff, cases[c].len, &keyed, 777, &lb, &jb);
         ASSERT_EQ(la, lb);
         ASSERT_EQ(ja, jb);
-        ASSERT_MEM_EQ(oa, ob, (size_t)la);
+        /* The padding itself is random bytes, so only the message after it can
+         * be compared — that is where a stray ChaCha20 pass would show up. */
+        int pad = la - cases[c].len;
+        ASSERT_MEM_EQ(oa + pad, ob + pad, (size_t)cases[c].len);
 
         /* And inbound agrees too */
         int ia, ib;
@@ -2115,6 +2150,7 @@ int main(void) {
     RUN_TEST(hp_roundtrip_init);
     RUN_TEST(hp_padding_is_not_a_clone_of_caller_prng);
     RUN_TEST(hp_nonce_differs_between_packets);
+    RUN_TEST(padding_is_not_a_prng_chain);
     RUN_TEST(reference_accepts_v1);
     RUN_TEST(reference_accepts_v1_5);
     RUN_TEST(reference_accepts_v2);

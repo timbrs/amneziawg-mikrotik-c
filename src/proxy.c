@@ -1,6 +1,7 @@
 #include "proxy.h"
 #include "cps.h"
 #include "log.h"
+#include "csprng.h"
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -1042,18 +1043,16 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     /* src_port < 0 ("random"): local_port stays 0, no bind — the kernel
      * picks a fresh ephemeral port on every connect */
 
-    /* Init PRNG */
+    /* Init PRNG. fastrand still picks H values and junk sizes; what goes on the
+     * wire byte for byte comes from csprng_bytes(). The old seeding read
+     * /dev/urandom without checking the result and fell back to the address of
+     * a static struct in a static non-PIE binary — a constant, so a container
+     * without /dev/urandom replayed the same stream after every restart. */
     uint64_t seed;
-    int ufd = open("/dev/urandom", O_RDONLY);
-    if (ufd >= 0) {
-        read(ufd, &seed, 8);
-        close(ufd);
-    } else {
-        seed = (uint64_t)(uintptr_t)p ^ 0xDEADBEEFCAFEULL;
-    }
+    csprng_bytes((uint8_t *)&seed, sizeof(seed));
     fastrand_init(&p->rng, seed);
-    /* The two directions must never emit the same padding bytes at the same
-     * time, so they run independent streams from independent seeds. */
+    /* The two directions must never emit the same values at the same time, so
+     * they run independent streams from independent seeds. */
     fastrand_init(&p->rng_c2s, seed ^ 0x9E3779B97F4A7C15ULL);
     fastrand_init(&p->rng_s2c, seed ^ 0xBF58476D1CE4E5B9ULL);
 
@@ -1339,7 +1338,7 @@ static void send_junk_and_cps_to(proxy_t *p, int fd, cliaddr_t *addr) {
         if (junk_layout_sizes(cfg, &junk_bytes, &junk_sizes_bytes) < 0)
             return;
         (void)junk_sizes_bytes;
-        fastrand_fill(&p->rng_s2c, p->junk_buf, junk_bytes);
+        csprng_bytes(p->junk_buf, junk_bytes);
         int njunk = generate_junk(cfg, p->junk_buf, p->junk_sizes);
         size_t off = 0;
         for (int i = 0; i < njunk; i++) {
@@ -1368,7 +1367,7 @@ static void send_junk_and_cps(proxy_t *p, int fd) {
         if (junk_layout_sizes(cfg, &junk_bytes, &junk_sizes_bytes) < 0)
             return;
         (void)junk_sizes_bytes;
-        fastrand_fill(&p->rng_c2s, p->junk_buf, junk_bytes);
+        csprng_bytes(p->junk_buf, junk_bytes);
         int njunk = generate_junk(cfg, p->junk_buf, p->junk_sizes);
         size_t off = 0;
         for (int i = 0; i < njunk; i++) {
@@ -1603,7 +1602,7 @@ static void *c2s_thread_normal(void *arg) {
                     int total = n;
                     if (s4 > 0) {
                         base = data - s4;
-                        fastrand_fill(&p->rng_c2s, base, (size_t)s4);
+                        csprng_bytes(base, (size_t)s4);
                         total = s4 + n;
                     }
                     if (hp)
@@ -2002,7 +2001,7 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
             int total = n;
             if (pr->s4 > 0 && prefix >= pr->s4) {
                 out = pkt - pr->s4;
-                fastrand_fill(&p->rng_s2c, out, (size_t)pr->s4);
+                csprng_bytes(out, (size_t)pr->s4);
                 total = pr->s4 + n;
                 if (pr->hp_on)
                     chacha20_xor(cfg->hp_key, out, pkt, AWG_HP_TRANSPORT_HDR);

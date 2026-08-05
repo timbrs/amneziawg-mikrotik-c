@@ -77,6 +77,52 @@ static void test_generate_random_digits(void) {
     }
 }
 
+/* The random segments used to come from xorshift64 seeded with
+ * counter ^ constant, so the Nth CPS packet after start was byte-identical on
+ * every run of every instance — a ready-made static signature on the packet
+ * whose whole job is to look like someone else's protocol. Same counter must
+ * now give different bytes. */
+static void test_random_segments_differ_for_same_counter(void) {
+    cps_template_t tmpl;
+    uint8_t a[64], b[64];
+
+    ASSERT_EQ(cps_parse("<b 0xf1e2><r 16>", &tmpl), 0);
+    ASSERT_EQ(cps_generate(&tmpl, 0, a, sizeof(a)), 18);
+    ASSERT_EQ(cps_generate(&tmpl, 0, b, sizeof(b)), 18);
+    ASSERT_EQ(a[0], 0xf1);
+    ASSERT_EQ(b[0], 0xf1);           /* static part still fixed */
+    ASSERT(memcmp(a + 2, b + 2, 16) != 0);
+
+    /* Same for the character and digit forms. */
+    ASSERT_EQ(cps_parse("<rc 24>", &tmpl), 0);
+    ASSERT_EQ(cps_generate(&tmpl, 7, a, sizeof(a)), 24);
+    ASSERT_EQ(cps_generate(&tmpl, 7, b, sizeof(b)), 24);
+    ASSERT(memcmp(a, b, 24) != 0);
+
+    ASSERT_EQ(cps_parse("<rd 24>", &tmpl), 0);
+    ASSERT_EQ(cps_generate(&tmpl, 7, a, sizeof(a)), 24);
+    ASSERT_EQ(cps_generate(&tmpl, 7, b, sizeof(b)), 24);
+    ASSERT(memcmp(a, b, 24) != 0);
+}
+
+/* And the bytes must not be a step of the old generator applied to their own
+ * first eight — the check a censor would run. */
+static void test_random_segment_is_not_a_prng_chain(void) {
+    cps_template_t tmpl;
+    uint8_t buf[64];
+    ASSERT_EQ(cps_parse("<r 32>", &tmpl), 0);
+
+    for (int round = 0; round < 16; round++) {
+        ASSERT_EQ(cps_generate(&tmpl, (uint32_t)round, buf, sizeof(buf)), 32);
+        uint64_t v;
+        memcpy(&v, buf, 8);
+        v ^= v << 13;
+        v ^= v >> 7;
+        v ^= v << 17;
+        ASSERT(memcmp(buf + 8, &v, 8) != 0);
+    }
+}
+
 static void test_parse_mixed_rc_rd(void) {
     cps_template_t tmpl;
     uint8_t buf[64];
@@ -309,5 +355,7 @@ int main(void) {
     RUN_TEST(parse_d_tags);
     RUN_TEST(randchars_letters_only);
     RUN_TEST(timestamp_big_endian);
+    RUN_TEST(random_segments_differ_for_same_counter);
+    RUN_TEST(random_segment_is_not_a_prng_chain);
     TEST_MAIN_END();
 }
