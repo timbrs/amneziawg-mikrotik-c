@@ -441,7 +441,19 @@ static void make_wg_init(uint8_t *buf, uint32_t sender_index) {
         buf[i] = (uint8_t)(i ^ (sender_index & 0xFF));
 }
 
-/* make_wg_response not needed — proxy doesn't validate response crypto */
+/* WG handshake response: type, sender_index, receiver_index. The proxy routes
+ * it by receiver_index and does not validate the crypto, so the rest is filler
+ * keyed on sender_index — that is what tells two responses apart on arrival. */
+static void make_wg_response(uint8_t *buf, uint32_t sender_index,
+                             uint32_t receiver_index) {
+    memset(buf, 0, WG_RESP_SIZE);
+    uint32_t t = WG_HANDSHAKE_RESPONSE;
+    memcpy(buf, &t, 4);
+    memcpy(buf + 4, &sender_index, 4);
+    memcpy(buf + 8, &receiver_index, 4);
+    for (int i = 12; i < WG_RESP_SIZE; i++)
+        buf[i] = (uint8_t)(i ^ (sender_index & 0xFF));
+}
 
 static void make_wg_transport(uint8_t *buf, uint32_t receiver_index,
                                uint64_t counter, int total_size) {
@@ -1020,6 +1032,110 @@ static void test_concurrent_handshakes(void) {
 
     for (int i = 0; i < nthreads; i++) close(args[i].fd);
     stop_proxy(proxy);
+    close(server_fd);
+}
+
+/* ---- Scenario 5b: two handshakes for different peers in one batch ----
+ *
+ * In server/reverse mode the s2c headroom is only max_s4, so any handshake with
+ * S1/S2/S3 above that is built in the transform's shared buffer. Queueing such a
+ * packet in the sendmmsg batch and then transforming the next one overwrites it
+ * before the batch is sent: with two peers rekeying at the same moment each gets
+ * the other's packet and its own handshake is lost. Here S2=15 and S4=0, so
+ * every response takes that path. */
+static void test_server_handshake_batch(void) {
+    int listen_port = find_free_port();
+    int remote_port = find_free_port();
+    ASSERT(listen_port > 0);
+    ASSERT(remote_port > 0);
+
+    int server_fd = make_udp_socket(remote_port);
+    ASSERT(server_fd >= 0);
+
+    pid_t proxy = start_proxy("server", listen_port, remote_port);
+    ASSERT(proxy > 0);
+
+    struct sockaddr_in proxy_addr = make_addr(listen_port);
+    const uint32_t idx_a = 0x7100, idx_b = 0x7200;
+    int fd_a = make_client_socket();
+    int fd_b = make_client_socket();
+    ASSERT(fd_a >= 0 && fd_b >= 0);
+
+    /* Both clients establish a session so the proxy can route responses. */
+    uint8_t awg_init[TEST_S1 + WG_INIT_SIZE];
+    make_awg_init(awg_init, idx_a);
+    sendto(fd_a, awg_init, sizeof(awg_init), 0,
+           (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+    make_awg_init(awg_init, idx_b);
+    sendto(fd_b, awg_init, sizeof(awg_init), 0,
+           (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+    usleep(300000);
+
+    /* Learn the proxy's source address as the server sees it, then drain. */
+    struct sockaddr_in proxy_remote_addr;
+    memset(&proxy_remote_addr, 0, sizeof(proxy_remote_addr));
+    {
+        uint8_t tmp[2048];
+        struct sockaddr_in from;
+        socklen_t fromlen = sizeof(from);
+        int got = 0;
+        for (int i = 0; i < 2 * (TEST_JC + 2); i++) {
+            ssize_t n = recvfrom(server_fd, tmp, sizeof(tmp), MSG_DONTWAIT,
+                                 (struct sockaddr *)&from, &fromlen);
+            if (n > 0) { proxy_remote_addr = from; got = 1; }
+        }
+        ASSERT(got);
+    }
+
+    /* Rounds of two back-to-back responses, one per peer. Sending them without a
+     * gap is what puts both in the same recvmmsg batch; several rounds cover the
+     * case where the kernel splits a pair. */
+    const int rounds = 25;
+    int delivered_a = 0, delivered_b = 0, crossed = 0;
+
+    for (int r = 0; r < rounds; r++) {
+        uint32_t mark_a = 0xA0000000u + (uint32_t)r;
+        uint32_t mark_b = 0xB0000000u + (uint32_t)r;
+        uint8_t resp[WG_RESP_SIZE];
+
+        make_wg_response(resp, mark_a, idx_a);
+        sendto(server_fd, resp, sizeof(resp), 0,
+               (struct sockaddr *)&proxy_remote_addr, sizeof(proxy_remote_addr));
+        make_wg_response(resp, mark_b, idx_b);
+        sendto(server_fd, resp, sizeof(resp), 0,
+               (struct sockaddr *)&proxy_remote_addr, sizeof(proxy_remote_addr));
+
+        /* Each client must get its own response: same size, H2 type, and the
+         * marker this round put in that peer's packet. */
+        struct { int fd; uint32_t mine, theirs; int *hit; } peers[2] = {
+            { fd_a, mark_a, mark_b, &delivered_a },
+            { fd_b, mark_b, mark_a, &delivered_b },
+        };
+        for (int p = 0; p < 2; p++) {
+            uint8_t rbuf[2048];
+            for (int attempt = 0; attempt < 4; attempt++) {
+                int n = recv_one(peers[p].fd, rbuf, sizeof(rbuf), 300);
+                if (n != TEST_S2 + WG_RESP_SIZE) continue;
+                uint32_t h, mark;
+                memcpy(&h, rbuf + TEST_S2, 4);
+                if (h != TEST_H2) continue;
+                memcpy(&mark, rbuf + TEST_S2 + 4, 4);
+                if (mark == peers[p].mine) (*peers[p].hit)++;
+                else if (mark == peers[p].theirs) crossed++;
+                break;
+            }
+        }
+    }
+
+    fprintf(stderr, "          (own: %d+%d/%d, crossed: %d)\n",
+            delivered_a, delivered_b, 2 * rounds, crossed);
+
+    ASSERT_EQ(crossed, 0);
+    ASSERT(delivered_a + delivered_b >= 2 * rounds * 9 / 10);
+
+    stop_proxy(proxy);
+    close(fd_a);
+    close(fd_b);
     close(server_fd);
 }
 
@@ -3105,6 +3221,7 @@ int main(void) {
     RUN_TEST(server_multiclient);
     RUN_TEST(server_rekey);
     RUN_TEST(concurrent_handshakes);
+    RUN_TEST(server_handshake_batch);
     RUN_TEST(scale);
     RUN_TEST(gso_connected);
     RUN_TEST(gro_bidirectional);
