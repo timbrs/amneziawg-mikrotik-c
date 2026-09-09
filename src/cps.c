@@ -1,5 +1,5 @@
 #include "cps.h"
-#include "fastrand.h"
+#include "csprng.h"
 #include <string.h>
 #include <time.h>
 
@@ -154,9 +154,11 @@ int cps_max_size(const cps_template_t *tmpl) {
 
 int cps_generate(const cps_template_t *tmpl, uint32_t counter, uint8_t *buf, int bufsize) {
     int off = 0;
-    fastrand_t rng;
-    fastrand_init(&rng, counter ^ 0xDEADBEEF);
 
+    /* The random segments go on the wire raw, so they come from the CSPRNG —
+     * as in the reference (device/obf_rand.go, obf_randchars.go: rand.Read).
+     * They used to be xorshift64 seeded with counter ^ constant, which made the
+     * bytes of the Nth CPS packet identical on every run of every instance. */
     for (int i = 0; i < tmpl->nseg; i++) {
         const cps_segment_t *seg = &tmpl->segs[i];
         switch (seg->kind) {
@@ -167,13 +169,14 @@ int cps_generate(const cps_template_t *tmpl, uint32_t counter, uint8_t *buf, int
             break;
         case CPS_RANDOM:
             if (off + seg->size > bufsize) return off;
-            fastrand_fill(&rng, buf + off, seg->size);
+            csprng_bytes(buf + off, (size_t)seg->size);
             off += seg->size;
             break;
         case CPS_RANDOM_CHARS:
             if (off + seg->size > bufsize) return off;
+            csprng_bytes(buf + off, (size_t)seg->size);
             for (int j = 0; j < seg->size; j++)
-                buf[off + j] = chars52[fastrand_intn(&rng, CHARS52_LEN)];
+                buf[off + j] = chars52[buf[off + j] % CHARS52_LEN];
             off += seg->size;
             break;
         case CPS_ZEROS:
@@ -183,8 +186,9 @@ int cps_generate(const cps_template_t *tmpl, uint32_t counter, uint8_t *buf, int
             break;
         case CPS_RANDOM_DIGITS:
             if (off + seg->size > bufsize) return off;
+            csprng_bytes(buf + off, (size_t)seg->size);
             for (int j = 0; j < seg->size; j++)
-                buf[off + j] = '0' + fastrand_intn(&rng, 10);
+                buf[off + j] = (uint8_t)('0' + buf[off + j] % 10);
             off += seg->size;
             break;
         case CPS_TIMESTAMP: {

@@ -2,6 +2,7 @@
 #include "cps.h"
 #include "log.h"
 #include "base64.h"
+#include "csprng.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -308,6 +309,13 @@ int main(void) {
     const char *v;
     awg_config_t *cfg = &g_config;
     memset(cfg, 0, sizeof(*cfg));
+
+    /* Padding, junk and CPS bodies all come from the kernel CSPRNG. If there is
+     * no entropy source (a container built without /dev and on a kernel without
+     * getrandom(2)), fail here rather than put a predictable pattern on the
+     * wire for the lifetime of the tunnel. */
+    if (csprng_init() < 0)
+        fatal("no entropy source: getrandom(2) and /dev/urandom both unavailable");
 
     /* Required env vars */
     const char *listen_str = getenv_required("AWG_LISTEN", &errs);

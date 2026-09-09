@@ -2,11 +2,16 @@
 #include "blake2s.h"
 #include "chacha20.h"
 #include "fastrand.h"
+#include "csprng.h"
 #include <string.h>
 
 /* Static buffer for handshake packets when headroom is insufficient.
  * Handshakes are rare (1-2 per connection), so static is fine. */
 static __thread uint8_t hs_buf[AWG_PACKET_BUF_SIZE];
+
+int transform_is_shared_buf(const uint8_t *p) {
+    return p >= hs_buf && p < hs_buf + sizeof(hs_buf);
+}
 
 static int hrange_overlaps(const hrange_t *a, const hrange_t *b) {
     return a->min <= b->max && b->min <= a->max;
@@ -191,30 +196,27 @@ static inline void write32_le(uint8_t *p, uint32_t v) {
     memcpy(p, &v, 4);
 }
 
-/* Fill the S padding that precedes a message, deriving it from rand_val.
- * With header protection the first 12 bytes double as the ChaCha20 nonce, so
- * they must be fresh for every packet — fastrand is a bijection on its state,
- * which guarantees that.
+/* Fill the S padding that precedes a message.
  *
- * The seed must be mixed first. Callers pass their live PRNG state (the value
- * fastrand_u64() just returned), and fastrand_init() assigns the seed straight
- * to that same state word — so seeding directly would make this generator a
- * byte-exact clone of the caller's, and the padding here would equal the bytes
- * the caller emits next. Under v3 that means the handshake nonce reappears as
- * the very next transport packet's nonce: same key, same nonce, same counter,
- * which XORs the two protected headers into plaintext. It also gave the junk
- * packet ahead of an init the same 8-byte prefix as the init itself. */
+ * The padding goes on the wire raw, so it has to be indistinguishable from
+ * random to an observer — that is its entire job. xorshift64 is not: its output
+ * is its state, so eight observed bytes give the next eight exactly, and a
+ * censor confirms "this is awg-proxy" from a single packet. Under v3 the first
+ * 12 bytes are also the ChaCha20 nonce. amneziawg-go fills the same field with
+ * crypto/rand (device/send.go), and so do we. */
+static inline void fill_padding(uint8_t *dst, int len) {
+    csprng_bytes(dst, (size_t)len);
+}
+
+/* A cheap mixer for values the observer sees only as a consequence, not as
+ * bytes: it turns a live fastrand state word into a number that no longer
+ * equals the caller's next output. Padding no longer goes through it — that
+ * is csprng_bytes() now — but the AWG 3.1 trailer length still does. */
 static inline uint64_t mix64(uint64_t x) {
     x += 0x9E3779B97F4A7C15ull;
     x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
     x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
     return x ^ (x >> 31);
-}
-
-static inline void fill_padding(uint8_t *dst, int len, uint64_t seed) {
-    fastrand_t tmp;
-    fastrand_init(&tmp, mix64(seed));
-    fastrand_fill(&tmp, dst, (size_t)len);
 }
 
 /* AWG 3.1: length of the random trailer for an outbound handshake, mirroring
@@ -237,7 +239,7 @@ static inline int append_trailer(const awg_config_t *cfg, const awg_profile_t *p
                                  uint8_t *pkt, int size, uint64_t seed) {
     int tl = trailer_len(cfg, pr, size, seed);
     if (tl > 0)
-        fill_padding(pkt + size, tl, seed ^ 0xFEED1ull);
+        fill_padding(pkt + size, tl);
     return size + tl;
 }
 
@@ -276,7 +278,7 @@ uint8_t *transform_outbound_profile(uint8_t *buf, int dataoff, int n,
                 memcpy(hs_buf + pr->s1, data, (size_t)n);
                 out = hs_buf;
             }
-            fill_padding(out, pr->s1, rand_val);
+            fill_padding(out, pr->s1);
             if (hp) chacha20_xor(cfg->hp_key, out, out + pr->s1, n);
             *out_len = append_trailer(cfg, pr, out, pr->s1 + n, rand_val);
             return out;
@@ -297,7 +299,7 @@ uint8_t *transform_outbound_profile(uint8_t *buf, int dataoff, int n,
                 memcpy(hs_buf + pr->s2, data, (size_t)n);
                 out = hs_buf;
             }
-            fill_padding(out, pr->s2, rand_val ^ 0x12345);
+            fill_padding(out, pr->s2);
             if (hp) chacha20_xor(cfg->hp_key, out, out + pr->s2, n);
             *out_len = append_trailer(cfg, pr, out, pr->s2 + n, rand_val ^ 0x12345);
             return out;
@@ -322,7 +324,7 @@ uint8_t *transform_outbound_profile(uint8_t *buf, int dataoff, int n,
                 memcpy(hs_buf + pr->s3, data, (size_t)n);
                 out = hs_buf;
             }
-            fill_padding(out, pr->s3, rand_val ^ 0x67890);
+            fill_padding(out, pr->s3);
             if (hp) chacha20_xor(cfg->hp_key, out, out + pr->s3, n);
             *out_len = append_trailer(cfg, pr, out, pr->s3 + n, rand_val ^ 0x67890);
             return out;
@@ -342,7 +344,7 @@ uint8_t *transform_outbound_profile(uint8_t *buf, int dataoff, int n,
             write32_le(data, hrange_pick(&pr->h4, rand_val));
         if (pr->s4 > 0 && dataoff >= pr->s4) {
             uint8_t *out = data - pr->s4;
-            fill_padding(out, pr->s4, rand_val ^ 0xABCDE);
+            fill_padding(out, pr->s4);
             if (hp) chacha20_xor(cfg->hp_key, out, data, AWG_HP_TRANSPORT_HDR);
             *out_len = pr->s4 + n;
             return out;
