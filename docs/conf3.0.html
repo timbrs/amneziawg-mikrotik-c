@@ -3303,6 +3303,25 @@
         src.push('      }');
         src.push('    }');
 
+        // --- разовое включение привилегированного режима для уже поставленных
+        // Смысл в приёмном буфере: без привилегий он упирается в 416 КБ, и на
+        // отдаче пакеты теряются раньше, чем прокси успевает их забрать.
+        // /container/set перезапускает контейнер, поэтому строго один раз:
+        // если режим уже включён, сюда мы больше не заходим. На RouterOS до
+        // 7.24 поля нет - :parse и on-error оставляют всё как было.
+        src.push('    :local priv true');
+        src.push('    :do { :set priv [[:parse ":return [/container/get $cid privileged]"]] } on-error={}');
+        src.push('    :if ($priv != true && $wantRunning && $healthy) do={');
+        src.push('      :put "Enabling privileged mode once - it lifts the socket receive buffer cap"');
+        src.push('      :log info "' + prefix + ': enabling privileged mode"');
+        src.push('      :do { /container/stop $cid } on-error={}');
+        src.push('      :delay 12s');
+        src.push('      :do { [:parse "/container/set $cid privileged=yes"] } on-error={}');
+        src.push('      :do { /container/start $cid } on-error={}');
+        src.push('      :delay 8s');
+        src.push('      :do { :if ([/container/get $cid stopped] = true) do={ :set healthy false } } on-error={}');
+        src.push('    }');
+
         // --- a file install can still be repaired, and that repair is the migration
         src.push('    :if ($img = "" && $minor >= 22 && !$healthy) do={');
         src.push('      :local imgTag "latest"');
@@ -3434,6 +3453,9 @@
         src.push('              :do { /container/set [:pick $newCids ([:len $newCids] - 1)] shm-size=4M } on-error={}');
         src.push('              :do { [:parse "/container/set [find where interface=' + veth + '] ignore-remote-image-change=yes"] } on-error={}');
         src.push('              :do { [:parse "/container/set [find where interface=' + veth + '] restart-policy=on-failure restart-interval=30s restart-max-count=10"] } on-error={}');
+        // Пересборка не должна терять привилегированный режим - без него
+        // приёмный буфер снова упрётся в 416 КБ. См. установочный скрипт.
+        src.push('              :do { [:parse "/container/set [find where interface=' + veth + '] privileged=yes"] } on-error={}');
         src.push('              :do { /container/start [:pick $newCids ([:len $newCids] - 1)] } on-error={}');
         src.push('              :delay 8s');
         src.push('              :do { :if ([/container/get [:pick $newCids ([:len $newCids] - 1)] stopped] != true) do={ :set backUp true } } on-error={}');
@@ -5967,6 +5989,15 @@
         // до выполнения, иначе скрипт не прочитается целиком на старых версиях.
         lines.push('  :do { [:parse "/container/set [find where interface=veth-' + prefix + '] ignore-remote-image-change=yes"] } on-error={}');
         lines.push('  :do { [:parse "/container/set [find where interface=veth-' + prefix + '] restart-policy=on-failure restart-interval=30s restart-max-count=10"] } on-error={}');
+        // Приёмный буфер сокета в контейнере упирается в 416 КБ - это около
+        // миллисекунды трафика, и на отдаче пакеты начинают теряться раньше,
+        // чем прокси успевает их забрать. Поднять потолок изнутри нельзя:
+        // /proc/sys/net/core в контейнере отсутствует. Привилегированный режим
+        // (7.24+) снимает ровно одну проверку - SO_RCVBUFFORCE начинает
+        // работать, и буфер вырастает до 32 МБ. Больше ничего по сети он не
+        // меняет: сырые сокеты, netlink и SO_MARK были доступны и без него.
+        // Параметра нет до 7.24, поэтому :parse и on-error.
+        lines.push('  :do { [:parse "/container/set [find where interface=veth-' + prefix + '] privileged=yes"] } on-error={}');
         // Only remove what this script downloaded: an archive the user dropped on the
         // router by hand is their offline copy.
         lines.push('  :if ($fetched) do={ /file/remove $filePath }');

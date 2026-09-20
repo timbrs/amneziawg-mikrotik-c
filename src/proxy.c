@@ -12,6 +12,8 @@
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/syscall.h>
+#include <dirent.h>
 #include <time.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -419,18 +421,121 @@ static void set_thread_affinity(int cpu, const char *name) {
     }
 }
 
-static void log_socket_buffers(int fd, const awg_config_t *cfg, const char *label) {
+/* Real-time приоритет для потока ввода-вывода.
+ *
+ * С буфером сокета в 32 МБ переполнение очереди перестаёт быть причиной
+ * потерь, и оставшиеся дропы приходят не размазанными, а пачкой в одно окно —
+ * подпись того, что поток просто не получал процессор десятки миллисекунд.
+ * SCHED_RR ставит его выше обычных задач и убирает именно эту задержку.
+ *
+ * RR, а не FIFO: RR квантуется, поэтому поток, который по ошибке начнёт
+ * крутиться, не заберёт ядро целиком. На роутере это важнее пары микросекунд.
+ *
+ * Требует CAP_NET_ADMIN/CAP_SYS_NICE в init-namespace, то есть контейнера с
+ * privileged=yes; без него ядро отвечает EPERM, и это не ошибка, а штатный
+ * случай — просто молча работаем как раньше.
+ *
+ * musl намеренно заглушает sched_setscheduler и возвращает ENOSYS, поэтому
+ * зовём ядро напрямую. */
+/* RPS на приёмной очереди veth контейнера.
+ *
+ * Один WG-туннель — это один поток, и ядро держит его приём на одном
+ * процессоре. RPS раскидывает обработку по маске, отдавая соседние ядра, если
+ * они простаивают. Имя интерфейса не угадываем: в контейнере RouterOS оно
+ * совпадает с именем veth на роутере, поэтому перечисляем /sys/class/net и
+ * берём единственный не-lo.
+ *
+ * Запись в /sys доступна только привилегированному контейнеру; без него
+ * молча пропускаем. */
+static void set_rps(const char *mask) {
+    if (!mask || !mask[0]) return;
+    DIR *d = opendir("/sys/class/net");
+    if (!d) { log_info("rps: /sys/class/net unavailable"); return; }
+    struct dirent *e;
+    char ifn[32];
+    ifn[0] = 0;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.' || !strcmp(e->d_name, "lo")) continue;
+        size_t n = strlen(e->d_name);
+        if (n >= sizeof(ifn)) n = sizeof(ifn) - 1;
+        memcpy(ifn, e->d_name, n);
+        ifn[n] = 0;
+        break;
+    }
+    closedir(d);
+    if (!ifn[0]) { log_info("rps: no interface found"); return; }
+
+    /* "/sys/class/net/" + ifn + "/queues/rx-0/rps_cpus" — собираем вручную,
+     * проект намеренно не линкует stdio ради размера бинарника. */
+    static const char pre[] = "/sys/class/net/";
+    static const char post[] = "/queues/rx-0/rps_cpus";
+    char path[sizeof(pre) + sizeof(ifn) + sizeof(post)];
+    size_t k = sizeof(pre) - 1;
+    memcpy(path, pre, k);
+    size_t il = strlen(ifn);
+    memcpy(path + k, ifn, il);
+    k += il;
+    memcpy(path + k, post, sizeof(post));   /* вместе с нулём */
+
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        log_info3("rps: ", ifn, " not writable, skipped");
+        return;
+    }
+    ssize_t n = write(fd, mask, strlen(mask));
+    close(fd);
+    log_info3("rps: ", ifn, n > 0 ? " mask applied" : " write failed");
+}
+
+/* 0 — ещё не писали, 1 — сообщили об успехе, 2 — об отказе. */
+static _Atomic int g_rt_logged = 0;
+
+static void set_thread_rt(int prio, const char *name) {
+    if (prio <= 0) return;
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = prio;
+    long rc = syscall(SYS_sched_setscheduler, 0, SCHED_RR, &sp);
+    /* Оба потока получают одно и то же, поэтому говорим об этом один раз.
+     * Вторая строка появится только если они разошлись — вот это уже стоит
+     * увидеть, и имя потока в ней подскажет, который именно. */
+    int outcome = rc == 0 ? 1 : 2;
+    if (atomic_exchange_explicit(&g_rt_logged, outcome, memory_order_relaxed) == outcome)
+        return;
+    char buf[12];
+    if (rc == 0) {
+        const char *parts[] = { name, ": realtime SCHED_RR prio ", u32_to_str(buf, prio) };
+        log_infon(parts, 3);
+    } else {
+        const char *parts[] = { name, ": realtime refused (", strerror(errno), ")" };
+        log_infon(parts, 4);
+    }
+}
+
+static void sock_buf_kb(int fd, unsigned *rd, unsigned *wr) {
     int r = 0, w = 0;
     socklen_t len = sizeof(r);
     getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &r, &len);
     len = sizeof(w);
     getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &w, &len);
-    char rb[12], wb[12], reqb[12];
-    const char *parts[] = { label, " socket buf: requested=",
-        u32_to_str(reqb, cfg->socket_buf / 1024), "KB, actual read=",
-        u32_to_str(rb, r / 1024), "KB write=",
-        u32_to_str(wb, w / 1024), "KB" };
-    log_infon(parts, 8);
+    *rd = (unsigned)(r / 1024);
+    *wr = (unsigned)(w / 1024);
+}
+
+/* Оба сокета — одной строкой. RouterOS обрезает сообщение контейнера на 179
+ * символах и держит в памяти всего 1000 строк, так что каждая должна себя
+ * оправдывать. Просили одинаково для обоих, поэтому запрошенное пишем один раз,
+ * а фактическое — по сокету: разойтись они могут только если ядро отказало. */
+static void log_socket_buffers(int listen_fd, int remote_fd, const awg_config_t *cfg) {
+    unsigned lr, lw, rr, rw;
+    sock_buf_kb(listen_fd, &lr, &lw);
+    sock_buf_kb(remote_fd, &rr, &rw);
+    char b[5][12];
+    const char *parts[] = { "socket buf KB: want=",
+        u32_to_str(b[0], (unsigned)(cfg->socket_buf / 1024)),
+        " listen=", u32_to_str(b[1], lr), "/", u32_to_str(b[2], lw),
+        " remote=", u32_to_str(b[3], rr), "/", u32_to_str(b[4], rw) };
+    log_infon(parts, 10);
 }
 
 /* Warn once per connection when the tunnel actually runs over IPv6: the 40-byte
@@ -1013,21 +1118,53 @@ static int recv_gro(proxy_t *p, int fd, int *seg_size) {
     return (int)n;
 }
 
-/* send_gso: send a prefix of same-size packets via one sendmsg with UDP_SEGMENT.
- * Returns number of packets sent, or negative errno on error. */
-static int send_gso(int fd, struct iovec *iovecs, int count,
-                    cliaddr_t *addr) {
+/* gso_run_len: how many packets from the head of a batch one UDP_SEGMENT
+ * sendmsg can carry.
+ *
+ * The kernel slices the buffer into fixed gso_size chunks, so a run is a
+ * prefix of equal-length packets plus — optionally — one shorter packet at
+ * the end, which is what the last chunk of a segmented buffer looks like. A
+ * *longer* packet ends the run: it cannot be expressed as a chunk of gso_size.
+ *
+ * addrs non-NULL means the socket is unconnected and every segment of the run
+ * lands at addrs[0], so a change of destination ends the run too. That is what
+ * lets server mode — many clients on one listening socket — use GSO at all.
+ *
+ * Returns 0 when nothing can be coalesced; the caller then sends normally.
+ * Non-static: the corner cases here (64-segment cap, 64 KiB cap, tail rules)
+ * are the whole point of test_gso.c. */
+int gso_run_len(const struct iovec *iov, const cliaddr_t *addrs, int count) {
     if (count <= 1) return 0;
 
-    /* Find longest prefix of same-size packets */
-    int seg_size = (int)iovecs[0].iov_len;
-    int gso_count = 1;
-    while (gso_count < count && (int)iovecs[gso_count].iov_len == seg_size)
-        gso_count++;
-    /* Last segment may be shorter per GSO spec */
-    if (gso_count < count && (int)iovecs[gso_count].iov_len < seg_size)
-        gso_count++;
-    if (gso_count <= 1) return 0;
+    size_t seg = iov[0].iov_len;
+    /* gso_size 0 is rejected by the kernel, and a segment that already fills a
+     * datagram on its own has nothing to be joined with. */
+    if (seg == 0 || seg > GSO_MAX_BYTES) return 0;
+
+    size_t total = seg;
+    int run = 1;
+    while (run < count && run < GSO_MAX_SEGMENTS &&
+           iov[run].iov_len == seg && total + seg <= GSO_MAX_BYTES &&
+           (!addrs || cliaddr_eq(&addrs[run], &addrs[0]))) {
+        total += seg;
+        run++;
+    }
+    /* One shorter packet may ride along as the final chunk. */
+    if (run < count && run < GSO_MAX_SEGMENTS &&
+        iov[run].iov_len < seg && total + iov[run].iov_len <= GSO_MAX_BYTES &&
+        (!addrs || cliaddr_eq(&addrs[run], &addrs[0])))
+        run++;
+
+    return run > 1 ? run : 0;
+}
+
+/* send_gso: send exactly `run` packets as one segmented datagram. `run` comes
+ * from gso_run_len, which has already checked every limit the kernel enforces.
+ * Returns the number of packets that went out, or negative errno on error. */
+static int send_gso(int fd, struct iovec *iovecs, int run, cliaddr_t *addr) {
+    size_t seg_size = iovecs[0].iov_len;
+    size_t total = 0;
+    for (int i = 0; i < run; i++) total += iovecs[i].iov_len;
 
     /* Build cmsg with UDP_SEGMENT */
     union {
@@ -1039,7 +1176,7 @@ static int send_gso(int fd, struct iovec *iovecs, int count,
     struct msghdr hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.msg_iov = iovecs;
-    hdr.msg_iovlen = gso_count;
+    hdr.msg_iovlen = run;
     hdr.msg_control = cmsg_u.buf;
     hdr.msg_controllen = sizeof(cmsg_u.buf);
 
@@ -1057,7 +1194,10 @@ static int send_gso(int fd, struct iovec *iovecs, int count,
 
     ssize_t ret = sendmsg(fd, &hdr, MSG_DONTWAIT | MSG_NOSIGNAL);
     if (ret < 0) return -errno;
-    return gso_count;
+    /* A short write is not a thing UDP does, but counting bytes rather than
+     * trusting the request keeps tx/drop honest if it ever becomes one. */
+    if ((size_t)ret >= total) return run;
+    return (int)((size_t)ret / seg_size);
 }
 
 /* ---- Init ---- */
@@ -1075,7 +1215,7 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     p->he_evfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     p->signal_fd = -1;
     p->timer_fd = -1;
-    p->gso_ok = 1;
+    p->gso_ok = !cfg->no_gso;
 
     if (config_validate(cfg, &cfg_err) < 0) {
         log_error2("invalid config: ", cfg_err);
@@ -1476,25 +1616,60 @@ static void send_junk_and_cps(proxy_t *p, int fd) {
 
 /* Returns errno of the failing send, or 0 when everything went out. Only the
  * remote path acts on it (see send_batch_remote) — a failed send to the local
- * WireGuard interface says nothing about the tunnel. */
+ * WireGuard interface says nothing about the tunnel.
+ *
+ * addrs is the batch's destination array, or NULL when fd is connected. A
+ * batch is not one run: a keepalive at the head used to cost the whole batch
+ * its offload, because only the leading run was ever offered to GSO and
+ * everything behind it went out one datagram per syscall. So walk the batch,
+ * offloading every run it contains and sending the packets between them
+ * normally. */
 static int send_batch_gso(proxy_t *p, int fd, struct mmsghdr *msgs,
                           struct iovec *iovecs, int nsend,
-                          cliaddr_t *addr, int *sent_out) {
+                          cliaddr_t *addrs, int *sent_out,
+                          _Atomic uint32_t *gso_msgs, _Atomic uint32_t *gso_segs) {
     int sent = 0;
     int err = 0;
-    if (p->gso_ok && nsend > 1) {
-        int n = send_gso(fd, iovecs, nsend, addr);
-        if (n < 0) {
-            err = -n;
-            if (err == ENOPROTOOPT || err == EIO)
-                p->gso_ok = 0;
-        } else {
-            sent = n;
-            err = 0;
-        }
-    }
     while (sent < nsend) {
-        int r = sendmmsg(fd, msgs + sent, nsend - sent, MSG_NOSIGNAL);
+        /* With the offload off (or given up on) this stays what it always was:
+         * the whole remaining batch in one sendmmsg. */
+        int want = nsend - sent;
+        if (p->gso_ok) {
+            int run = gso_run_len(iovecs + sent, addrs ? addrs + sent : NULL, want);
+            if (run > 1) {
+                int n = send_gso(fd, iovecs + sent, run, addrs ? addrs + sent : NULL);
+                if (n > 0) {
+                    atomic_fetch_add_explicit(gso_msgs, 1, memory_order_relaxed);
+                    atomic_fetch_add_explicit(gso_segs, (uint32_t)n, memory_order_relaxed);
+                    sent += n;
+                    err = 0;
+                    continue;
+                }
+                if (n < 0) {
+                    err = -n;
+                    if (err == ENOPROTOOPT || err == EIO) {
+                        p->gso_ok = 0;
+                        /* Once per process: the fallback below keeps the tunnel
+                         * running, so without this line the offload could be off
+                         * for the container's whole life with nothing to show it. */
+                        log_info2("GSO disabled by kernel: ", strerror(err));
+                    }
+                }
+                /* Whatever went wrong, the same packets still have to go out. */
+                want = run;
+            } else {
+                /* Nothing to coalesce at the head. Flush only as far as the
+                 * next run begins — swallowing the rest of the batch here is
+                 * what used to cost it its offload. */
+                want = 1;
+                while (sent + want < nsend &&
+                       gso_run_len(iovecs + sent + want,
+                                   addrs ? addrs + sent + want : NULL,
+                                   nsend - sent - want) == 0)
+                    want++;
+            }
+        }
+        int r = sendmmsg(fd, msgs + sent, want, MSG_NOSIGNAL);
         if (r <= 0) {
             err = errno;
             log_debug2("sendmmsg failed: ", strerror(err));
@@ -1518,7 +1693,8 @@ static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
         if (outer > 1500) log_frag_warn(p, v6, outer);
     }
     int sent = 0;
-    int err = send_batch_gso(p, fd, msgs, iovecs, nsend, NULL, &sent);
+    int err = send_batch_gso(p, fd, msgs, iovecs, nsend, NULL, &sent,
+                             &p->st_c2s_gso_msgs, &p->st_c2s_gso_segs);
     stats_add_tx(&p->st_c2s_tx, &p->st_c2s_drop, nsend, sent);
     if (err) note_remote_send_err(p, err);
 }
@@ -1552,6 +1728,7 @@ static void *c2s_thread_normal(void *arg) {
     proxy_t *p = (proxy_t *)arg;
     awg_config_t *cfg = p->cfg;
     set_thread_affinity(cfg->cpu_c2s, "c2s");
+    set_thread_rt(cfg->rt_prio, "c2s");
     const int prefix = p->c2s_headroom;
     int prev_nrecv = BATCH_SIZE;
     int gro_no_coalesce = 0;
@@ -1785,6 +1962,7 @@ static void *c2s_thread_reverse(void *arg) {
     awg_config_t *cfg = p->cfg;
     int server_mode = (cfg->mode == AWG_MODE_SERVER);
     set_thread_affinity(cfg->cpu_c2s, "c2s");
+    set_thread_rt(cfg->rt_prio, "c2s");
     int prev_nrecv = BATCH_SIZE;
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
@@ -2207,6 +2385,7 @@ __attribute__((hot))
 static void *s2c_thread(void *arg) {
     proxy_t *p = (proxy_t *)arg;
     set_thread_affinity(p->cfg->cpu_s2c, "s2c");
+    set_thread_rt(p->cfg->rt_prio, "s2c");
     int reconnect_backoff = 1;
     int prev_nrecv = BATCH_SIZE;
 
@@ -2397,11 +2576,18 @@ static void *s2c_thread(void *arg) {
 
         /* === Send === */
         if (nsend > 0) {
-            cliaddr_t *gso_addr = (p->cfg->mode == AWG_MODE_SERVER)
-                ? NULL : &p->send_s2c.addrs[0];
+            /* The listening socket is never connected, in any mode, so every
+             * segmented send has to name its destination. Server mode used to
+             * pass NULL here and earn EDESTADDRREQ on every batch — an error
+             * that is not in the "give up on GSO" list, so it repeated for the
+             * life of the container. The address array covers both modes:
+             * normal mode fills it with one client over and over, server mode
+             * with whoever each packet is for, and gso_run_len splits the runs
+             * accordingly. */
             int sent_s2c = 0;
             send_batch_gso(p, p->listen_fd, p->send_s2c.msgs,
-                           p->send_s2c.iovecs, nsend, gso_addr, &sent_s2c);
+                           p->send_s2c.iovecs, nsend, p->send_s2c.addrs, &sent_s2c,
+                           &p->st_s2c_gso_msgs, &p->st_s2c_gso_segs);
             stats_add_tx(&p->st_s2c_tx, &p->st_s2c_drop, nsend, sent_s2c);
         }
     }
@@ -2566,6 +2752,7 @@ int proxy_run(proxy_t *p) {
     if (p->listen_family == AF_INET6)
         log_ipv6_mtu_hint(p, "clients reach this proxy over IPv6");
     set_socket_buffers(p->listen_fd, cfg->socket_buf);
+    set_rps(cfg->rps_mask);
     atomic_store_explicit(&p->spin_us, cfg->spin_us, memory_order_relaxed);
     set_busy_poll(p->listen_fd, cfg->busy_poll);
     if (cfg->no_df)
@@ -2577,8 +2764,6 @@ int proxy_run(proxy_t *p) {
         if (p->gro_enabled_c2s)
             log_info("c2s: UDP GRO enabled");
     }
-    log_socket_buffers(p->listen_fd, cfg, "listen");
-
     /* Connect to remote with infinite retry (DNS may not be ready at startup).
      * Signals are not yet blocked here, so SIGTERM/SIGINT terminate via default
      * handler — listen_fd is the only open resource and OS reclaims it. */
@@ -2595,7 +2780,7 @@ int proxy_run(proxy_t *p) {
         if (backoff > 30) backoff = 30;
     }
     atomic_store_explicit(&p->remote_fd, rfd, memory_order_release);
-    log_socket_buffers(rfd, cfg, "remote");
+    log_socket_buffers(p->listen_fd, rfd, cfg);
     atomic_store_explicit(&p->last_active, 1, memory_order_relaxed);
 
     /* Signal handling */
@@ -2681,6 +2866,7 @@ int proxy_run(proxy_t *p) {
     }
     uint32_t pv_c2s_rx = 0, pv_c2s_tx = 0, pv_c2s_dr = 0;
     uint32_t pv_s2c_tx = 0, pv_s2c_dr = 0;
+    uint32_t pv_cgm = 0, pv_cgs = 0, pv_sgm = 0, pv_sgs = 0;
     udp_kstats_t pv_k = { 0, 0, 0 };
     unsigned long long pv_sl_l = 0, pv_sl_r = 0;
     if (stats_checks > 0) {
@@ -2820,11 +3006,17 @@ int proxy_run(proxy_t *p) {
                     uint32_t c2s_dr = atomic_load_explicit(&p->st_c2s_drop, memory_order_relaxed);
                     uint32_t s2c_tx = atomic_load_explicit(&p->st_s2c_tx, memory_order_relaxed);
                     uint32_t s2c_dr = atomic_load_explicit(&p->st_s2c_drop, memory_order_relaxed);
+                    uint32_t cgm = atomic_load_explicit(&p->st_c2s_gso_msgs, memory_order_relaxed);
+                    uint32_t cgs = atomic_load_explicit(&p->st_c2s_gso_segs, memory_order_relaxed);
+                    uint32_t sgm = atomic_load_explicit(&p->st_s2c_gso_msgs, memory_order_relaxed);
+                    uint32_t sgs = atomic_load_explicit(&p->st_s2c_gso_segs, memory_order_relaxed);
                     udp_kstats_t k = { 0, 0, 0 };
                     read_udp_kstats(&k);
                     uint32_t d_rx = c2s_rx - pv_c2s_rx, d_tx = c2s_tx - pv_c2s_tx;
                     uint32_t d_dr = c2s_dr - pv_c2s_dr;
                     uint32_t d_stx = s2c_tx - pv_s2c_tx, d_sdr = s2c_dr - pv_s2c_dr;
+                    uint32_t d_cgm = cgm - pv_cgm, d_cgs = cgs - pv_cgs;
+                    uint32_t d_sgm = sgm - pv_sgm, d_sgs = sgs - pv_sgs;
                     unsigned long long d_kin = k.in_errors - pv_k.in_errors;
                     unsigned long long d_krb = k.rcvbuf_errors - pv_k.rcvbuf_errors;
                     unsigned long long d_ksb = k.sndbuf_errors - pv_k.sndbuf_errors;
@@ -2856,8 +3048,32 @@ int proxy_run(proxy_t *p) {
                                                 &p->spin_us, memory_order_relaxed)) };
                         log_infon(parts, 22);
                     }
+                    /* A line of its own, not more fields on the one above:
+                     * RouterOS cuts a container's log message at 179 characters
+                     * including the container name, and the stats line already
+                     * sits on that edge — appending to it would silently drop
+                     * whichever numbers came last, exactly under the load where
+                     * they matter. run is segs/msgs to one decimal: 1.0 means
+                     * the offload fired and coalesced nothing, no line at all
+                     * means it never fired. */
+                    if (d_cgm || d_sgm) {
+                        uint32_t cw = d_cgm ? d_cgs / d_cgm : 0;
+                        uint32_t ct = d_cgm ? (d_cgs % d_cgm) * 10u / d_cgm : 0;
+                        uint32_t sw = d_sgm ? d_sgs / d_sgm : 0;
+                        uint32_t st = d_sgm ? (d_sgs % d_sgm) * 10u / d_sgm : 0;
+                        char g[8][12];
+                        const char *gparts[] = {
+                            "gso: c2s msgs=", u32_to_str(g[0], (unsigned)d_cgm),
+                            " segs=", u32_to_str(g[1], (unsigned)d_cgs),
+                            " run=", u32_to_str(g[2], cw), ".", u32_to_str(g[3], ct),
+                            " | s2c msgs=", u32_to_str(g[4], (unsigned)d_sgm),
+                            " segs=", u32_to_str(g[5], (unsigned)d_sgs),
+                            " run=", u32_to_str(g[6], sw), ".", u32_to_str(g[7], st) };
+                        log_infon(gparts, 16);
+                    }
                     pv_c2s_rx = c2s_rx; pv_c2s_tx = c2s_tx; pv_c2s_dr = c2s_dr;
                     pv_s2c_tx = s2c_tx; pv_s2c_dr = s2c_dr; pv_k = k;
+                    pv_cgm = cgm; pv_cgs = cgs; pv_sgm = sgm; pv_sgs = sgs;
                 }
 
                 if (dns_checks > 0 && ++dns_tick >= dns_checks) {

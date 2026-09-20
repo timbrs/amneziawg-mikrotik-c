@@ -177,6 +177,9 @@ typedef struct {
     int spin_us;        /* userspace spin-drain budget in μs (0 = off) */
     int spin_auto;      /* AWG_SPIN=auto: tune that budget at runtime */
     int no_gro;         /* disable UDP GRO (AWG_NO_GRO=1) */
+    int no_gso;         /* disable UDP GSO on send (AWG_NO_GSO=1) */
+    int rt_prio;        /* SCHED_RR priority for the I/O threads (AWG_RT, 0=off) */
+    char rps_mask[16];  /* hex CPU mask for the container veth RPS (AWG_RPS) */
     int no_df;          /* clear DF bit on UDP sockets (AWG_NO_DF=1) */
     int stats_interval; /* seconds between throughput/drop stat lines, 0 = off */
 

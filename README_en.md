@@ -499,10 +499,13 @@ With 3+ clients, this is easier to automate with a script on the server.
 | `AWG_HE_DELAY` | No | `250` | Happy Eyeballs: ms of IPv4 head start before probing IPv6 (only when the name has both an A and an AAAA) |
 | `AWG_LOG_LEVEL` | No | `info` | Log level |
 | `AWG_NO_GRO` | No | `0` | Disable UDP GRO |
+| `AWG_NO_GSO` | No | `0` | Disable UDP GSO on send |
 | `AWG_NO_DF` | No | `0` | Clear the DF bit on UDP packets (workaround for DPI dropping DF=1) |
 | `AWG_SOCKET_BUF` | No | `16777216` | Socket buffer size |
 | `AWG_CPU_C2S` | No | `-1` | CPU for client→server thread |
 | `AWG_CPU_S2C` | No | `-1` | CPU for server→client thread |
+| `AWG_RT` | No | `0` | `SCHED_RR` priority for the I/O threads (1..50, `0` = off). Needs privileges |
+| `AWG_RPS` | No | — | Core mask for RPS on the container's interface (hex, e.g. `9`). Needs privileges |
 | `AWG_BUSY_POLL` | No | `0` | SO_BUSY_POLL timeout (μs). Unavailable on RouterOS — its kernel is built without `CONFIG_NET_RX_BUSY_POLL` |
 | `AWG_SPIN` | No | `0` | Userspace spin instead of busy poll: μs of non-blocking re-reads before sleeping. `auto` self-tunes |
 | `AWG_STATS` | No | `0` | Seconds between stat lines (throughput, our drops, kernel drops, per-socket drops) |
@@ -790,12 +793,39 @@ AWG_NO_GRO=0   # default, GRO enabled (if kernel supports it)
 AWG_NO_GRO=1   # force disable GRO, use recvmmsg instead
 ```
 
+**`AWG_NO_GSO`** -- disables UDP GSO (Generic Segmentation Offload) on send. It mirrors GRO: the proxy hands the kernel a run of consecutive same-size packets in one `sendmsg` with a `UDP_SEGMENT` cmsg, and the kernel slices the buffer into datagrams itself. One syscall instead of dozens; on real traffic a run comes out 15--22 packets long. It works in both directions and in every mode, including `server` (a run ends when the destination changes). If the kernel has no `UDP_SEGMENT`, the proxy logs `GSO disabled by kernel: ...` once and falls back to plain `sendmmsg`. Turning it off is only worth it to measure the same build with and without the offload.
+
+How well the offload did is visible in the `gso:` line of the periodic statistics (`AWG_STATS`): `run` is the average run length, and `1.0` means there was nothing to coalesce.
+
+```
+AWG_NO_GSO=0   # default, GSO enabled (if kernel supports it)
+AWG_NO_GSO=1   # force disable, every batch goes out via sendmmsg
+```
+
 **`AWG_NO_DF`** -- clears the DF (Don't Fragment) bit on the proxy's outgoing UDP packets (`IP_MTU_DISCOVER=IP_PMTUDISC_DONT` on both sockets). Linux sends UDP with DF=1 by default (Path MTU Discovery); there are reports that some DPI nodes on certain networks handle DF=1 UDP worse than DF=0. This option changes the on-wire IP header, so it is off by default -- enable it only when experiencing connectivity issues: with DF=0 large packets may be fragmented along the path. On an IPv6 socket `IPV6_MTU_DISCOVER=IPV6_PMTUDISC_DONT` is used instead, but IPv6 has no DF bit — there it only changes how the local stack reacts to PMTU (see the [IPv6](#ipv6) section).
 
 ```
 AWG_NO_DF=0   # default, DF bit as set by the system (usually DF=1)
 AWG_NO_DF=1   # clear the DF bit on the proxy's UDP packets
 ```
+
+**`AWG_RT` and `AWG_RPS`** -- two levers against loss caused by the scheduler rather than by a full buffer. Both work **only in a privileged container** (on RouterOS, `/container set ... privileged=yes`, available since 7.24): the kernel checks the capability against the init namespace, so an ordinary container gets `EPERM` from `sched_setscheduler` and cannot write to `/sys/class/net`.
+
+`AWG_RT` puts the I/O threads into the `SCHED_RR` class at the given priority (1..50). Reach for it when drops arrive in a burst inside one window instead of being spread out: that is the signature of a reader thread not getting the CPU for tens of milliseconds, and no buffer size fixes it. It is deliberately incompatible with `AWG_SPIN` -- spinning under real time would starve the softirq that does the router's WG crypto; if both are set, `AWG_RT` is ignored with a log line.
+
+`AWG_RPS` writes a core mask into `rps_cpus` of the container interface's receive queue, so the kernel spreads receive processing over those CPUs instead of one. The mask is hexadecimal, as the kernel expects: `9` = cores 0 and 3, `e` = cores 1--3.
+
+Keeping the two on different cores is essential. On a hAP ax(2), with threads pinned by `AWG_CPU_C2S=1` and `AWG_CPU_S2C=2`, the mask `e` (cores 1--3) overlaps the threads themselves: real time preempts the softirq exactly where RPS puts it, and the gain is eaten. The mask `9` (cores 0 and 3) separates them and gave the best result of every combination tested.
+
+```
+AWG_RT=0            # default, ordinary scheduling class
+AWG_RT=10           # SCHED_RR priority 10
+AWG_RPS=9           # RPS on cores 0 and 3
+AWG_CPU_C2S=1       # threads on cores 1 and 2 -- no overlap with the RPS mask
+AWG_CPU_S2C=2
+```
+
+At startup the proxy reports what it got: `c2s: realtime SCHED_RR prio 10` or `c2s: realtime refused (...)`, and `rps: <interface> mask applied`. If the lines are missing, check that the container is privileged and that the log level lets INFO through.
 
 **`AWG_SOCKET_BUF`** -- receive/send buffer sizes (SO_RCVBUF/SO_SNDBUF) for UDP sockets in bytes. The kernel typically doubles the requested value. Larger buffers reduce packet loss under load but consume more RAM.
 
@@ -854,6 +884,14 @@ stats: c2s rx=173791 tx=173791 drop=0 | s2c tx=168402 drop=0 |
 ```
 
 The line separates three kinds of loss: `drop` -- ours (the packet arrived but could not be sent), `kernel udp rcvbuf_err` -- the kernel discarded it before we got there, having run out of receive buffer, and `sockdrop` -- which socket actually overflowed. The last one matters more than it looks: during an upload the data goes into the listen socket and only ACKs come back, so that pair of numbers says immediately which direction is failing.
+
+A line of its own follows with the segmentation offload's report (see [`AWG_NO_GSO`](#environment-variables)); it is printed only when the offload fired at least once during the period:
+
+```
+gso: c2s msgs=3104 segs=68443 run=22.0 | s2c msgs=4723 segs=95671 run=20.2
+```
+
+`msgs` is how many `sendmsg` calls carried a coalesced run, `segs` how many packets those runs held, and `run` the average per call. `run=1.0` means there was nothing to coalesce (mixed sizes); no line at all means the offload never fired. It is a separate line rather than more fields on `stats:` because RouterOS truncates a container's log message at 179 characters including the container name, and `stats:` already sits on that edge.
 
 ### Routing Traffic Through the Tunnel
 

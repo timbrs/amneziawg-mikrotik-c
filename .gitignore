@@ -16,3 +16,5 @@ bench/awg3-interop/src/
 bench/awg3-interop/awg-proxy-test
 bench/awg3-interop/shared/
 bench/awg3-interop/perfshared/
+# Снимок конфигурации боевого контейнера для отката — локальный, не для репозитория
+bench/*.bak

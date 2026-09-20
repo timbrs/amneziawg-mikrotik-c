@@ -96,6 +96,12 @@ static inline uint32_t prof_cache_key(const cliaddr_t *a) {
 #ifndef UDP_SEGMENT
 #define UDP_SEGMENT    103
 #endif
+/* Hard limits the kernel puts on one segmented send: UDP_MAX_SEGMENTS chunks
+ * (udp.h), and a payload that still fits a single IPv4 datagram before it is
+ * sliced (65535 - 20 - 8). Exceeding either costs the whole batch with EINVAL
+ * or EMSGSIZE, so gso_run_len stops short of both. */
+#define GSO_MAX_SEGMENTS  64
+#define GSO_MAX_BYTES     65507u
 #ifndef IPPROTO_UDP
 #define IPPROTO_UDP    17
 #endif
@@ -264,6 +270,15 @@ typedef struct {
     _Atomic uint32_t st_s2c_rx;
     _Atomic uint32_t st_s2c_tx;
     _Atomic uint32_t st_s2c_drop;
+
+    /* Segment offload, per direction: how many sendmsg calls carried a
+     * coalesced run, and how many packets those runs held. segs/msgs is the
+     * average run length — 1.0 means the offload is doing nothing, and until
+     * these existed there was no way to tell that from the outside. */
+    _Atomic uint32_t st_c2s_gso_msgs;
+    _Atomic uint32_t st_c2s_gso_segs;
+    _Atomic uint32_t st_s2c_gso_msgs;
+    _Atomic uint32_t st_s2c_gso_segs;
 
     uint8_t cps_bufs[5][1500];
     int cps_lens[5];
@@ -446,6 +461,11 @@ static inline int awg_max_wg_mtu(int s4, int ipv6) {
 
 /* Segment size of a coalesced UDP read, 0 when the kernel did not coalesce. */
 int gro_seg_size(const struct msghdr *hdr);
+
+/* How many packets from the head of a batch one UDP_SEGMENT send can carry;
+ * 0 when nothing can be coalesced. addrs non-NULL splits the run by
+ * destination (unconnected socket). */
+int gso_run_len(const struct iovec *iov, const cliaddr_t *addrs, int count);
 
 /* Initialize proxy. Returns 0 on success. */
 int proxy_init(proxy_t *p, awg_config_t *cfg,

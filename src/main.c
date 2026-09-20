@@ -541,6 +541,30 @@ int main(void) {
     if ((v = getenv("AWG_NO_GRO")) && v[0])
         cfg->no_gro = parse_int_str(v);
 
+    /* No GSO. Exists so the same binary can be measured with and without
+     * segment offload on the send path — otherwise an A/B mixes the offload
+     * with every other difference between two builds. */
+    cfg->no_gso = 0;
+    if ((v = getenv("AWG_NO_GSO")) && v[0])
+        cfg->no_gso = parse_int_str(v);
+
+    /* Real-time приоритет потоков ввода-вывода и RPS на veth контейнера.
+     * Оба требуют привилегированного контейнера (RouterOS 7.24 privileged=yes);
+     * без него ядро отвечает EPERM и прокси работает как раньше. */
+    cfg->rt_prio = 0;
+    if ((v = getenv("AWG_RT")) && v[0]) {
+        cfg->rt_prio = parse_int_str(v);
+        if (cfg->rt_prio > 50) cfg->rt_prio = 50;
+        if (cfg->rt_prio < 0) cfg->rt_prio = 0;
+    }
+    cfg->rps_mask[0] = 0;
+    if ((v = getenv("AWG_RPS")) && v[0]) {
+        size_t n = strlen(v);
+        if (n >= sizeof(cfg->rps_mask)) n = sizeof(cfg->rps_mask) - 1;
+        memcpy(cfg->rps_mask, v, n);
+        cfg->rps_mask[n] = 0;
+    }
+
     /* Periodic line with throughput, our own drops and the kernel's. Off by
      * default: it is a diagnostic, and on a router the log is precious. */
     cfg->stats_interval = 0;
@@ -658,6 +682,15 @@ int main(void) {
     report_unemulated_env();
     if (cfg->no_gro)
         log_info("config: UDP GRO disabled (AWG_NO_GRO=1)");
+    if (cfg->no_gso)
+        log_info("config: UDP GSO disabled (AWG_NO_GSO=1)");
+    if (cfg->rt_prio > 0 && (cfg->spin_us > 0 || cfg->spin_auto)) {
+        /* Спин под real-time отнимает ядро у softirq, который считает крипто
+         * для WG роутера. На четырёхъядерном роутере это верный способ сделать
+         * хуже, поэтому сочетание запрещено, а не просто не рекомендовано. */
+        log_info("config: AWG_RT ignored — it must not be combined with AWG_SPIN");
+        cfg->rt_prio = 0;
+    }
     if (cfg->no_df)
         log_info("config: DF bit cleared on UDP sockets (AWG_NO_DF=1)");
     if (cfg->cpu_c2s >= 0 || cfg->cpu_s2c >= 0 || cfg->busy_poll > 0 ||

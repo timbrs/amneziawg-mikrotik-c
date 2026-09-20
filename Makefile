@@ -6,7 +6,7 @@ SRCS = src/main.c src/proxy.c src/transform.c src/blake2s.c src/chacha20.c src/c
 CFLAGS = -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE -ffunction-sections -fdata-sections -flto -DVERSION=\"$(VERSION)\"
 LDFLAGS = -static -Wl,--gc-sections -flto -s -lpthread
 
-.PHONY: build clean test test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns test-state test-gro test-mtu test-stress \
+.PHONY: build clean test test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns test-state test-gro test-gso test-mtu test-stress \
 	docker-arm64 docker-arm docker-armv5 docker-amd64 docker-all \
 	docker-arm64-7.20-docker docker-arm-7.20-docker docker-armv5-7.20-docker docker-amd64-7.20-docker docker-all-7.20-docker
 
@@ -17,7 +17,7 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(IMAGE_NAME) $(SRCS)
 
-test: test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns test-state test-gro test-mtu
+test: test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns test-state test-gro test-gso test-mtu
 	@echo "All tests passed"
 
 test-blake2s: src/test_blake2s.c $(TEST_SRCS)
@@ -55,6 +55,10 @@ test-state: src/test_state.c src/proxy.c $(TEST_SRCS)
 test-gro: src/test_gro.c src/proxy.c $(TEST_SRCS)
 	$(CC) $(TEST_CFLAGS) -o /tmp/test_gro $^ -lpthread
 	/tmp/test_gro
+
+test-gso: src/test_gso.c src/proxy.c $(TEST_SRCS)
+	$(CC) $(TEST_CFLAGS) -o /tmp/test_gso $^ -lpthread
+	/tmp/test_gso
 
 test-mtu: src/test_mtu.c $(TEST_SRCS)
 	$(CC) $(TEST_CFLAGS) -o /tmp/test_mtu $^
