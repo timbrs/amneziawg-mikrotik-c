@@ -796,6 +796,15 @@
             <span data-i18n="autoUpdateLabel">Check for container updates daily</span></label>
             <div class="hint" data-i18n="autoUpdateHint">Adds a scheduler that runs the <code>&lt;prefix&gt;-update</code> script at 04:30. The script compares the published release with the installed one and only calls <code>/container/repull</code> when the version actually changed &mdash; a pull restarts the container and the tunnel is down for about ten seconds. Needs RouterOS 7.22+ and an install from the registry; the script itself is always created, so you can update by hand with <code>/system/script/run &lt;prefix&gt;-update</code>.</div>
         </div>
+        <div id="perf-row" style="margin-top:8px">
+            <label data-i18n="perfLabel">How powerful is your router?</label>
+            <div class="radio-group">
+                <label><input type="radio" name="perf-mode" value="auto" checked> <span data-i18n="perfAuto">Detect automatically (recommended)</span></label>
+                <label><input type="radio" name="perf-mode" value="strong"> <span data-i18n="perfStrong">It has 4 cores or more</span></label>
+                <label><input type="radio" name="perf-mode" value="weak"> <span data-i18n="perfWeak">It has 1-2 cores</span></label>
+            </div>
+            <div class="hint" data-i18n="perfHint">On a router with four cores or more the proxy gets two cores of its own, its threads are given the CPU first, and packet receive is spread over the other cores. That removes the last packet drops and makes the speed steady instead of jumping between runs. On a weaker router these settings are skipped &mdash; there they would only take the CPU away from everything else. Automatic detection asks the router itself during install, so it is the safe choice. Needs RouterOS 7.24+; on older versions the settings are accepted but do nothing.</div>
+        </div>
         <div id="df-row" style="margin-top:8px">
             <label><input type="checkbox" id="df-enable">
             <span data-i18n="dfLabel">Clear DF bit on UDP (DPI workaround)</span></label>
@@ -1015,6 +1024,7 @@
         </div>
         <div class="actions">
             <button class="btn btn-primary" id="btn-generate" onclick="generate()" data-i18n="btnGenerate">Generate commands</button>
+            <button class="btn btn-secondary" id="btn-diag" onclick="showDiagnostic()" data-i18n="btnDiag">Check the router</button>
         </div>
         <div id="infographic-container"></div>
     </div>
@@ -1024,6 +1034,15 @@
     <div id="parsed-section" class="card">
         <div class="card-title" data-i18n="parsedTitle">Parsed parameters</div>
         <div id="fields-display"></div>
+    </div>
+
+    <div id="diag-section" class="card" style="display:none">
+        <div class="output-header">
+            <div class="card-title" style="margin-bottom:0" data-i18n="diagTitle">Router check</div>
+            <button class="btn btn-secondary" id="copy-diag-btn" onclick="copyOutput('diag-output','copy-diag-btn')" data-i18n="btnCopyDiag">Copy check</button>
+        </div>
+        <div class="alert alert-warning" data-i18n="diagNote">Run this on the router before installing. It changes nothing &mdash; it only looks and prints what is missing, together with the command that fixes it.</div>
+        <pre id="diag-output"></pre>
     </div>
 
     <div id="output-section" class="card">
@@ -1235,6 +1254,15 @@
             netwatchHint: 'Monitors tunnel availability by pinging 8.8.8.8 through the WG interface (via a pinned probe route). If the tunnel is down, disables its route \u2014 traffic falls back to the next tunnel (by distance) or goes direct. Re-enables when the tunnel recovers.',
             v6blockLabel: 'Force IPv4 (block native IPv6 past the tunnel)',
             v6blockHint: 'Only IPv4 goes into the tunnel. If the ISP hands the router native IPv6, every IPv6 flow leaves straight out of WAN and the routing policy never sees it: the site opens past the VPN, or hangs for about 10 seconds until the client falls back to IPv4. These rules reject such connections (TCP with a reset, so the fallback is instant). Anything that must keep speaking IPv6 directly goes into the ...-v6-direct address list.',
+            perfLabel: 'How powerful is your router?',
+            perfAuto: 'Detect automatically (recommended)',
+            perfStrong: 'It has 4 cores or more',
+            perfWeak: 'It has 1-2 cores',
+            perfHint: 'On a router with four cores or more the proxy gets two cores of its own, its threads are given the CPU first, and packet receive is spread over the other cores. That removes the last packet drops and makes the speed steady instead of jumping between runs. On a weaker router these settings are skipped - there they would only take the CPU away from everything else. Automatic detection asks the router itself during install, so it is the safe choice. Needs RouterOS 7.24+; on older versions the settings are accepted but do nothing.',
+            btnDiag: 'Check the router',
+            diagTitle: 'Router check',
+            btnCopyDiag: 'Copy check',
+            diagNote: 'Run this on the router before installing. It changes nothing - it only looks and prints what is missing, together with the command that fixes it.',
             autoUpdateLabel: 'Check for container updates daily',
             autoUpdateHint: 'Adds a scheduler that runs the <prefix>-update script at 04:30. The script compares the published release with the installed one and only calls /container/repull when the version actually changed \u2014 a pull restarts the container and the tunnel is down for about ten seconds. Needs RouterOS 7.22+ and an install from the registry; the script itself is always created, so you can update by hand with /system/script/run <prefix>-update.',
             dfLabel: 'Clear DF bit on UDP (DPI workaround)',
@@ -1453,6 +1481,15 @@
             netwatchHint: '\u041f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e\u0441\u0442\u044c \u0442\u0443\u043d\u043d\u0435\u043b\u044f \u043f\u0438\u043d\u0433\u043e\u043c 8.8.8.8 \u0447\u0435\u0440\u0435\u0437 WG-\u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441 (\u0447\u0435\u0440\u0435\u0437 \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0451\u043d\u043d\u044b\u0439 probe-\u043c\u0430\u0440\u0448\u0440\u0443\u0442). \u0415\u0441\u043b\u0438 \u0442\u0443\u043d\u043d\u0435\u043b\u044c \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u2014 \u043e\u0442\u043a\u043b\u044e\u0447\u0430\u0435\u0442 \u0435\u0433\u043e \u043c\u0430\u0440\u0448\u0440\u0443\u0442, \u0442\u0440\u0430\u0444\u0438\u043a \u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0430\u0435\u0442\u0441\u044f \u043d\u0430 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c (\u043f\u043e distance) \u0438\u043b\u0438 \u0438\u0434\u0451\u0442 \u043d\u0430\u043f\u0440\u044f\u043c\u0443\u044e. \u041f\u0440\u0438 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0438 \u043c\u0430\u0440\u0448\u0440\u0443\u0442 \u0432\u043a\u043b\u044e\u0447\u0430\u0435\u0442\u0441\u044f \u043e\u0431\u0440\u0430\u0442\u043d\u043e.',
             v6blockLabel: '\u0424\u043e\u0440\u0441\u0438\u0440\u043e\u0432\u0430\u0442\u044c IPv4 (\u043d\u0435 \u043f\u0443\u0441\u043a\u0430\u0442\u044c IPv6 \u043c\u0438\u043c\u043e \u0442\u0443\u043d\u043d\u0435\u043b\u044f)',
             v6blockHint: '\u0412 \u0442\u0443\u043d\u043d\u0435\u043b\u044c \u0437\u0430\u0432\u043e\u0434\u0438\u0442\u0441\u044f \u0442\u043e\u043b\u044c\u043a\u043e IPv4. \u0415\u0441\u043b\u0438 \u043f\u0440\u043e\u0432\u0430\u0439\u0434\u0435\u0440 \u0432\u044b\u0434\u0430\u043b \u0440\u043e\u0443\u0442\u0435\u0440\u0443 \u043d\u0430\u0442\u0438\u0432\u043d\u044b\u0439 IPv6, \u0432\u0435\u0441\u044c IPv6-\u0442\u0440\u0430\u0444\u0438\u043a \u0443\u0445\u043e\u0434\u0438\u0442 \u043f\u0440\u044f\u043c\u043e \u0432 WAN \u0438 \u043f\u0440\u0430\u0432\u0438\u043b\u0430 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438 \u0435\u0433\u043e \u043d\u0435 \u0432\u0438\u0434\u044f\u0442: \u0441\u0430\u0439\u0442 \u043e\u0442\u043a\u0440\u044b\u0432\u0430\u0435\u0442\u0441\u044f \u043c\u0438\u043c\u043e VPN \u0438\u043b\u0438 \u0432\u0438\u0441\u043d\u0435\u0442 \u043e\u043a\u043e\u043b\u043e 10 \u0441\u0435\u043a\u0443\u043d\u0434, \u043f\u043e\u043a\u0430 \u043a\u043b\u0438\u0435\u043d\u0442 \u043d\u0435 \u043e\u0442\u043a\u0430\u0442\u0438\u0442\u0441\u044f \u043d\u0430 IPv4. \u041f\u0440\u0430\u0432\u0438\u043b\u0430 \u043e\u0442\u0431\u0438\u0432\u0430\u044e\u0442 \u0442\u0430\u043a\u0438\u0435 \u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u044f (TCP \u2014 \u0447\u0435\u0440\u0435\u0437 reset, \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u043e\u0442\u043a\u0430\u0442 \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u044b\u0439). \u0422\u043e, \u0447\u0442\u043e \u0434\u043e\u043b\u0436\u043d\u043e \u0445\u043e\u0434\u0438\u0442\u044c \u043f\u043e IPv6 \u043d\u0430\u043f\u0440\u044f\u043c\u0443\u044e, \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0439\u0442\u0435 \u0432 \u0430\u0434\u0440\u0435\u0441-\u043b\u0438\u0441\u0442 ...-v6-direct.',
+            perfLabel: '\u041d\u0430\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043c\u043e\u0449\u043d\u044b\u0439 \u0443 \u0432\u0430\u0441 \u0440\u043e\u0443\u0442\u0435\u0440?',
+            perfAuto: '\u041e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 (\u0440\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0443\u0435\u0442\u0441\u044f)',
+            perfStrong: '\u0423 \u043c\u0435\u043d\u044f 4 \u044f\u0434\u0440\u0430 \u0438\u043b\u0438 \u0431\u043e\u043b\u044c\u0448\u0435',
+            perfWeak: '\u0423 \u043c\u0435\u043d\u044f 1-2 \u044f\u0434\u0440\u0430',
+            perfHint: '\u041d\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0435 \u0441 \u0447\u0435\u0442\u044b\u0440\u044c\u043c\u044f \u044f\u0434\u0440\u0430\u043c\u0438 \u0438 \u0431\u043e\u043b\u044c\u0448\u0435 \u043f\u0440\u043e\u043a\u0441\u0438 \u043f\u043e\u043b\u0443\u0447\u0430\u0435\u0442 \u0434\u0432\u0430 \u044f\u0434\u0440\u0430 \u0432 \u0441\u0432\u043e\u0451 \u0440\u0430\u0441\u043f\u043e\u0440\u044f\u0436\u0435\u043d\u0438\u0435, \u0435\u0433\u043e \u043f\u043e\u0442\u043e\u043a\u0438 \u043d\u0430\u0447\u0438\u043d\u0430\u044e\u0442 \u043f\u043e\u043b\u0443\u0447\u0430\u0442\u044c \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0440 \u0432 \u043f\u0435\u0440\u0432\u0443\u044e \u043e\u0447\u0435\u0440\u0435\u0434\u044c, \u0430 \u0440\u0430\u0437\u0431\u043e\u0440 \u0432\u0445\u043e\u0434\u044f\u0449\u0438\u0445 \u043f\u0430\u043a\u0435\u0442\u043e\u0432 \u0440\u0430\u0441\u043a\u043b\u0430\u0434\u044b\u0432\u0430\u0435\u0442\u0441\u044f \u043f\u043e \u043e\u0441\u0442\u0430\u043b\u044c\u043d\u044b\u043c \u044f\u0434\u0440\u0430\u043c. \u042d\u0442\u043e \u0443\u0431\u0438\u0440\u0430\u0435\u0442 \u043e\u0441\u0442\u0430\u0442\u043a\u0438 \u043f\u043e\u0442\u0435\u0440\u044c \u0438 \u0434\u0435\u043b\u0430\u0435\u0442 \u0441\u043a\u043e\u0440\u043e\u0441\u0442\u044c \u0440\u043e\u0432\u043d\u043e\u0439, \u0430 \u043d\u0435 \u0441\u043a\u0430\u0447\u0443\u0449\u0435\u0439 \u043e\u0442 \u0437\u0430\u043c\u0435\u0440\u0430 \u043a \u0437\u0430\u043c\u0435\u0440\u0443. \u041d\u0430 \u0441\u043b\u0430\u0431\u043e\u043c \u0440\u043e\u0443\u0442\u0435\u0440\u0435 \u044d\u0442\u0438 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u043d\u0435 \u0432\u043a\u043b\u044e\u0447\u0430\u044e\u0442\u0441\u044f: \u0442\u0430\u043c \u043e\u043d\u0438 \u0442\u043e\u043b\u044c\u043a\u043e \u043e\u0442\u043d\u0438\u043c\u0443\u0442 \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0440 \u0443 \u043e\u0441\u0442\u0430\u043b\u044c\u043d\u043e\u0439 \u0440\u0430\u0431\u043e\u0442\u044b. \u0410\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u0432\u044b\u0431\u043e\u0440 \u0441\u043f\u0440\u0430\u0448\u0438\u0432\u0430\u0435\u0442 \u0441\u0430\u043c \u0440\u043e\u0443\u0442\u0435\u0440 \u0432\u043e \u0432\u0440\u0435\u043c\u044f \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438, \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u043e\u043d \u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u0435\u0435 \u0432\u0441\u0435\u0433\u043e. \u041d\u0443\u0436\u0435\u043d RouterOS 7.24 \u0438\u043b\u0438 \u043d\u043e\u0432\u0435\u0435; \u043d\u0430 \u0441\u0442\u0430\u0440\u044b\u0445 \u0432\u0435\u0440\u0441\u0438\u044f\u0445 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u043f\u0440\u0438\u043d\u0438\u043c\u0430\u044e\u0442\u0441\u044f, \u043d\u043e \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u0434\u0435\u043b\u0430\u044e\u0442.',
+            btnDiag: '\u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u0440\u043e\u0443\u0442\u0435\u0440',
+            diagTitle: '\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0430',
+            btnCopyDiag: '\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443',
+            diagNote: '\u0412\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u0435 \u044d\u0442\u043e \u043d\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0435 \u043f\u0435\u0440\u0435\u0434 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u043e\u0439. \u0421\u043a\u0440\u0438\u043f\u0442 \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u043c\u0435\u043d\u044f\u0435\u0442: \u043e\u043d \u0442\u043e\u043b\u044c\u043a\u043e \u0441\u043c\u043e\u0442\u0440\u0438\u0442 \u0438 \u043f\u0435\u0447\u0430\u0442\u0430\u0435\u0442, \u0447\u0435\u0433\u043e \u043d\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442, \u0430 \u0440\u044f\u0434\u043e\u043c \u0441 \u043a\u0430\u0436\u0434\u043e\u0439 \u043f\u0440\u043e\u0431\u043b\u0435\u043c\u043e\u0439 \u2014 \u0433\u043e\u0442\u043e\u0432\u0443\u044e \u043a\u043e\u043c\u0430\u043d\u0434\u0443.',
             autoUpdateLabel: '\u0415\u0436\u0435\u0434\u043d\u0435\u0432\u043d\u043e \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u0442\u044c \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440\u0430',
             autoUpdateHint: '\u0414\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u0442 scheduler, \u043a\u043e\u0442\u043e\u0440\u044b\u0439 \u0432 04:30 \u0437\u0430\u043f\u0443\u0441\u043a\u0430\u0435\u0442 \u0441\u043a\u0440\u0438\u043f\u0442 <prefix>-update. \u0421\u043a\u0440\u0438\u043f\u0442 \u0441\u0432\u0435\u0440\u044f\u0435\u0442 \u043e\u043f\u0443\u0431\u043b\u0438\u043a\u043e\u0432\u0430\u043d\u043d\u044b\u0439 \u0440\u0435\u043b\u0438\u0437 \u0441 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u043d\u044b\u043c \u0438 \u0432\u044b\u0437\u044b\u0432\u0430\u0435\u0442 /container/repull \u0442\u043e\u043b\u044c\u043a\u043e \u043a\u043e\u0433\u0434\u0430 \u0432\u0435\u0440\u0441\u0438\u044f \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043b\u044c\u043d\u043e \u0441\u043c\u0435\u043d\u0438\u043b\u0430\u0441\u044c \u2014 \u043f\u0435\u0440\u0435\u043a\u0430\u0447\u043a\u0430 \u043f\u0435\u0440\u0435\u0437\u0430\u043f\u0443\u0441\u043a\u0430\u0435\u0442 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440, \u0442\u0443\u043d\u043d\u0435\u043b\u044c \u043b\u0435\u0436\u0438\u0442 \u043e\u043a\u043e\u043b\u043e \u0434\u0435\u0441\u044f\u0442\u0438 \u0441\u0435\u043a\u0443\u043d\u0434. \u041d\u0443\u0436\u0435\u043d RouterOS 7.22+ \u0438 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0430 \u0438\u0437 \u0440\u0435\u0435\u0441\u0442\u0440\u0430; \u0441\u0430\u043c \u0441\u043a\u0440\u0438\u043f\u0442 \u0441\u043e\u0437\u0434\u0430\u0451\u0442\u0441\u044f \u0432\u0441\u0435\u0433\u0434\u0430, \u0442\u0430\u043a \u0447\u0442\u043e \u043e\u0431\u043d\u043e\u0432\u0438\u0442\u044c \u0432\u0440\u0443\u0447\u043d\u0443\u044e \u043c\u043e\u0436\u043d\u043e \u043a\u043e\u043c\u0430\u043d\u0434\u043e\u0439 /system/script/run <prefix>-update.',
             dfLabel: '\u0423\u0431\u0440\u0430\u0442\u044c DF-\u0431\u0438\u0442 \u0441 UDP (\u043e\u0431\u0445\u043e\u0434 \u0422\u0421\u041f\u0423)',
@@ -3823,16 +3860,37 @@
         var awgDns = awgDnsValue();
         if (awgDns) lines.push('/container/envs/add list=' + prefix + '-env key=AWG_DNS value="' + awgDns + '"');
 
-        // Pin the two forwarding threads to their own cores. The receive buffer
-        // of a container socket is capped by net.core.rmem_max and cannot be
-        // raised from inside, so a thread that loses its core to something else
-        // for a couple of milliseconds loses packets outright. Measured on a
-        // hAP ax3: pinned 1/2 dropped 0.92% against 2.11% unpinned. Only worth
-        // doing where there are cores to spare, hence the cpu-count guard.
-        lines.push('# Perf: give each forwarding thread its own core (4+ core routers)');
-        lines.push('{ :if ([/system/resource/get cpu-count] >= 4) do={' +
-                   ' /container/envs/add list=' + prefix + '-env key=AWG_CPU_C2S value="1";' +
-                   ' /container/envs/add list=' + prefix + '-env key=AWG_CPU_S2C value="2" } }');
+        // Perf settings for a router that has cores to spare. Three of them and
+        // they only make sense together:
+        //   AWG_CPU_C2S/S2C - a core of its own for each forwarding thread. The
+        //     socket receive buffer is small, so a thread that loses its core
+        //     for a couple of milliseconds loses packets outright. Measured on a
+        //     hAP ax3: pinned 1/2 dropped 0.92% against 2.11% unpinned.
+        //   AWG_RT - real-time priority for those threads. Once the buffer is
+        //     large (privileged mode), the drops that remain arrive in one burst,
+        //     which is the signature of a thread that did not get the CPU at all
+        //     for tens of milliseconds. Measured: drops to zero, and the spread
+        //     between runs falls from 24% to 3%.
+        //   AWG_RPS - spreads packet receive over the OTHER cores. On its own it
+        //     hurts; paired with AWG_RT it helps, but only when the masks do not
+        //     overlap. Threads sit on cores 1 and 2, so receive gets 0 and 3
+        //     (mask 9). Mask e (cores 1-3) overlaps them and eats the gain.
+        // All three need privileged mode, so RouterOS 7.24+; on older versions
+        // the proxy accepts them and reports in its log that it cannot apply them.
+        var perfEnv = ' /container/envs/add list=' + prefix + '-env key=AWG_CPU_C2S value="1";' +
+                      ' /container/envs/add list=' + prefix + '-env key=AWG_CPU_S2C value="2";' +
+                      ' /container/envs/add list=' + prefix + '-env key=AWG_RT value="10";' +
+                      ' /container/envs/add list=' + prefix + '-env key=AWG_RPS value="9"';
+        var perf = perfMode();
+        if (perf === 'strong') {
+            lines.push('# Perf: you said this router has 4+ cores');
+            lines.push('{' + perfEnv + ' }');
+        } else if (perf === 'auto') {
+            lines.push('# Perf: applied only if the router really has 4+ cores');
+            lines.push('{ :if ([/system/resource/get cpu-count] >= 4) do={' + perfEnv + ' } }');
+        } else {
+            lines.push('# Perf: skipped, you said this router has 1-2 cores');
+        }
         lines.push('# NOTE on MTU: the value above assumes this tunnel is the last hop.');
         lines.push('#   If the server forwards your traffic into another tunnel, subtract');
         lines.push('#   that tunnel\'s overhead too, or every packet leaves in two fragments.');
@@ -4097,6 +4155,203 @@
     function dfEnabled() {
         var el = document.getElementById('df-enable');
         return !!(el && el.checked);
+    }
+
+    /* 'auto' (по умолчанию) — решает сам роутер во время установки,
+       'strong' — ставим настройки безусловно, 'weak' — не ставим вовсе. */
+    /* Проверка роутера перед установкой. Ничего не меняет: только читает и
+       печатает. Смысл в том, чтобы всё, обо что установка спотыкается, всплыло
+       ДО неё, а не на середине, и чтобы рядом с каждой проблемой сразу лежала
+       готовая команда. */
+    function buildDiagnosticScript() {
+        var L = [];
+        var p = function (t) { L.push(':put "' + t.replace(/"/g, '\\"') + '"'); };
+        var pv = function (t) { L.push(':put ' + t); };
+
+        p('=== awg-proxy: checking the router ===');
+        p('This changes nothing. Lines marked ! need your attention.');
+        p('');
+
+        L.push(':local problems 0');
+
+        // --- RouterOS: версия решает, что вообще доступно
+        L.push(':local ver [/system/resource/get version]');
+        pv('("RouterOS version: " . $ver)');
+        L.push(':local dotPos [:find $ver "."]');
+        L.push(':local rest [:pick $ver ($dotPos + 1) [:len $ver]]');
+        L.push(':local endPos [:find $rest "."]');
+        L.push(':if ([:typeof $endPos] = "nil") do={ :set endPos [:find $rest " "] }');
+        L.push(':local minor [:tonum [:pick $rest 0 $endPos]]');
+        L.push(':if ($minor < 24) do={');
+        p('  ! 7.24 or newer is needed for full speed (privileged container).');
+        p('    Without it the proxy still works, but upload stays about 3x slower.');
+        p('    Update: System > Packages > Check For Updates, then reboot.');
+        L.push('  :set problems ($problems + 1)');
+        L.push('} else={');
+        p('  ok: this version supports the privileged container (full speed)');
+        L.push('}');
+        L.push(':if ($minor < 22) do={');
+        p('  ! 7.22 or newer is needed to update the container with one command.');
+        p('    On older versions updating means reinstalling.');
+        L.push('}');
+        p('');
+
+        // --- пакет container
+        L.push(':local hasCont false');
+        L.push(':do { :if ([:len [/system/package/find where name~"container"]] > 0) do={ :set hasCont true } } on-error={}');
+        L.push(':if (!$hasCont) do={');
+        p('  ! the container package is NOT installed.');
+        p('    Download "Extra packages" for your architecture from mikrotik.com,');
+        p('    upload container-*.npk to Files and reboot.');
+        L.push('  :set problems ($problems + 1)');
+        L.push('} else={');
+        p('  ok: container package is installed');
+        L.push('}');
+
+        // --- device-mode: без этих трёх флагов половина шагов молча не сработает
+        L.push(':local dmC false; :local dmF false; :local dmS false');
+        L.push(':do { :set dmC [/system/device-mode/get container] } on-error={}');
+        L.push(':do { :set dmF [/system/device-mode/get fetch] } on-error={}');
+        L.push(':do { :set dmS [/system/device-mode/get scheduler] } on-error={}');
+        L.push(':if (!$dmC || !$dmF) do={');
+        p('  ! device-mode does not allow containers or fetch yet. Run:');
+        p('      /system/device-mode/update container=yes fetch=yes scheduler=yes');
+        p('    The router will ask you to confirm with the Reset button or a reboot.');
+        L.push('  :set problems ($problems + 1)');
+        L.push('} else={');
+        p('  ok: device-mode allows containers and fetch');
+        L.push('}');
+        L.push(':if (!$dmS) do={');
+        p('  ! device-mode does not allow the scheduler: daily update checks');
+        p('    and the RU address list will not be installed. Same command as above.');
+        L.push('}');
+        p('');
+
+        // --- архитектура: по ней выбирается образ
+        L.push(':local arch [/system/resource/get architecture-name]');
+        pv('("Architecture: " . $arch . "  (this decides which image you need)")');
+
+        // --- ядра: от них зависят настройки производительности
+        L.push(':local cores [/system/resource/get cpu-count]');
+        L.push(':if ($cores >= 4) do={');
+        pv('("Cores: " . $cores . "  - enough for the performance settings")');
+        L.push('} else={');
+        pv('("Cores: " . $cores . "  - performance settings will be skipped, that is correct here")');
+        L.push('}');
+
+        // --- память
+        L.push(':local mem (([/system/resource/get free-memory]) / 1048576)');
+        L.push(':if ($mem < 16) do={');
+        pv('("  ! Free memory: " . $mem . " MB. 16 MB or more is recommended.")');
+        p('    Close what you can, or reboot the router before installing.');
+        L.push('  :set problems ($problems + 1)');
+        L.push('} else={');
+        pv('("Free memory: " . $mem . " MB")');
+        L.push('}');
+
+        // --- место: сначала флешка, потом внутренняя память
+        L.push(':local freeKB (([/system/resource/get free-hdd-space]) / 1024)');
+        L.push(':local usb ""');
+        L.push(':do { :foreach d in=[/disk/find where type="hardware"] do={');
+        L.push('  :local mp [/disk/get $d mount-point]');
+        L.push('  :if ([:len $mp] > 0 && [:len $usb] = 0) do={ :set usb $mp }');
+        L.push('} } on-error={}');
+        L.push(':if ([:len $usb] > 0) do={');
+        pv('("Storage: USB drive \\"" . $usb . "\\" is mounted - the container will live there")');
+        L.push('} else={');
+        pv('("Storage: internal memory, " . $freeKB . " KB free")');
+        L.push('  :if ($freeKB < 600) do={');
+        p('  ! less than 600 KB free. The image needs about 300 KB, and the RU');
+        p('    address list needs 1.5 MB more. Plug in a USB drive, or free space:');
+        p('      /file/print   then remove what you do not need');
+        L.push('    :set problems ($problems + 1)');
+        L.push('  }');
+        L.push('}');
+        p('');
+
+        // --- часы: при кривом времени сертификаты не проверяются и fetch падает
+        L.push(':local yr [:tonum [:pick [/system/clock/get date] 0 4]]');
+        L.push(':if ($yr < 2024) do={');
+        pv('("  ! The router clock says " . [/system/clock/get date] . " - that is wrong.")');
+        p('    Downloads over https will fail. Fix the time first:');
+        p('      /system/ntp/client/set enabled=yes servers=216.239.35.0,162.159.200.1');
+        L.push('  :set problems ($problems + 1)');
+        L.push('} else={');
+        p('ok: the clock looks sane (https downloads need it)');
+        L.push('}');
+
+        // --- DNS и интернет: без них не скачать образ
+        L.push(':local dns [/ip/dns/get servers]');
+        L.push(':if ([:len $dns] = 0) do={');
+        p('  ! no DNS server is set. Downloads will fail. For example:');
+        p('      /ip/dns/set servers=8.8.8.8,1.1.1.1');
+        L.push('  :set problems ($problems + 1)');
+        L.push('} else={');
+        pv('("DNS servers: " . [:tostr $dns])');
+        L.push('}');
+        L.push(':local resolved ""');
+        L.push(':do { :set resolved [:resolve "github.com"] } on-error={}');
+        L.push(':if ([:len $resolved] = 0) do={');
+        p('  ! the router cannot resolve github.com.');
+        p('    Either DNS is broken, or the router has no internet at all.');
+        p('    If GitHub is blocked for you, tick "Offline mode" in the configurator.');
+        L.push('  :set problems ($problems + 1)');
+        L.push('} else={');
+        p('ok: name resolution works');
+        L.push('}');
+        p('');
+
+        // --- списки интерфейсов: на них опираются правила
+        L.push(':foreach n in={"LAN";"WAN"} do={');
+        L.push('  :if ([:len [/interface/list/find where name=$n]] = 0) do={');
+        pv('("  ! interface list " . $n . " does not exist. Create it:")');
+        pv('("      /interface/list/add name=" . $n)');
+        pv('("      /interface/list/member/add list=" . $n . " interface=<your interface>")');
+        L.push('    :set problems ($problems + 1)');
+        L.push('  } else={');
+        pv('("ok: interface list " . $n . " exists")');
+        L.push('  }');
+        L.push('}');
+
+        // --- что уже стоит
+        L.push(':local already [:len [/container/find]]');
+        L.push(':if ($already > 0) do={');
+        pv('("")');
+        pv('("Containers already on this router: " . $already . ". Existing tunnels:")');
+        L.push('  :foreach c in=[/container/find] do={');
+        L.push('    :local nm ""; :do { :set nm [/container/get $c name] } on-error={}');
+        L.push('    :local pr false; :do { :set pr [/container/get $c privileged] } on-error={}');
+        L.push('    :if ($pr = true) do={');
+        pv('("  " . $nm . " - privileged mode ON")');
+        L.push('    } else={');
+        pv('("  " . $nm . " - privileged mode OFF (this one is losing speed)")');
+        L.push('    }');
+        L.push('  }');
+        L.push('}');
+
+        // --- итог
+        pv('("")');
+        L.push(':if ($problems = 0) do={');
+        p('=== Everything is ready. Go ahead and run the install commands. ===');
+        L.push('} else={');
+        pv('("=== " . $problems . " thing(s) to fix first - see the ! lines above ===")');
+        L.push('}');
+        return L.join('\n');
+    }
+
+    function showDiagnostic() {
+        var sec = document.getElementById('diag-section');
+        var pre = document.getElementById('diag-output');
+        var text = buildDiagnosticScript();
+        pre.textContent = text;
+        pre.dataset.plain = text;
+        sec.style.display = '';
+        sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function perfMode() {
+        var el = document.querySelector('input[name="perf-mode"]:checked');
+        return el ? el.value : 'auto';
     }
 
     function isAutoUpdateEnabled() {

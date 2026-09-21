@@ -1732,6 +1732,10 @@ static void *c2s_thread_normal(void *arg) {
     const int prefix = p->c2s_headroom;
     int prev_nrecv = BATCH_SIZE;
     int gro_no_coalesce = 0;
+    /* Об откате говорим один раз за жизнь потока. На veth склейка не работает
+       никогда, а пауза между попытками удваивается, поэтому без этого флага в
+       журнал ровным ручейком капает одно и то же сообщение. */
+    int gro_said = 0;
     int gro_pend_off = 0, gro_pend_total = 0, gro_pend_seg = 0;
     int gro_rearm_in = 0, gro_rearm_gap = GRO_REARM_MIN;
 
@@ -1798,7 +1802,8 @@ static void *c2s_thread_normal(void *arg) {
                     p->gro_enabled_c2s = 0;
                     disable_gro(p->listen_fd);
                     gro_rearm_in = gro_rearm_gap;
-                    log_info("c2s: GRO not coalescing, falling back to recvmmsg");
+                    if (!gro_said++)
+                        log_info("c2s: GRO not coalescing, falling back to recvmmsg");
                 }
                 if (total > BUF_SIZE) {
                     log_debug("c2s: dropping oversized GRO datagram");
@@ -1815,7 +1820,7 @@ static void *c2s_thread_normal(void *arg) {
                 p->gro_enabled_c2s = 1;
                 gro_no_coalesce = 0;
                 if (gro_rearm_gap < GRO_REARM_MAX) gro_rearm_gap *= 2;
-                log_info("c2s: retrying UDP GRO");
+                log_debug("c2s: retrying UDP GRO");
                 continue;
             }
             for (int i = 0; i < prev_nrecv; i++)
@@ -2411,6 +2416,10 @@ static void *s2c_thread(void *arg) {
     int s2c_headroom = p->s2c_headroom;
     int s2c_buflen = BUF_SIZE + AWG_PACKET_HEADROOM - s2c_headroom;
     int gro_no_coalesce = 0;
+    /* Об откате говорим один раз за жизнь потока. На veth склейка не работает
+       никогда, а пауза между попытками удваивается, поэтому без этого флага в
+       журнал ровным ручейком капает одно и то же сообщение. */
+    int gro_said = 0;
     int gro_rearm_in = 0, gro_rearm_gap = GRO_REARM_MIN;
     int gro_pend_off = 0, gro_pend_total = 0, gro_pend_seg = 0;
 
@@ -2514,7 +2523,8 @@ static void *s2c_thread(void *arg) {
                     p->gro_enabled = 0;
                     disable_gro(remote_fd);
                     gro_rearm_in = gro_rearm_gap;
-                    log_info("s2c: GRO not coalescing, falling back to recvmmsg");
+                    if (!gro_said++)
+                        log_info("s2c: GRO not coalescing, falling back to recvmmsg");
                 }
                 process_s2c_pkt_normal(p, p->gro_buf, n,
                                        p->send_s2c.iovecs, p->send_s2c.addrs, &nsend);
@@ -2526,7 +2536,7 @@ static void *s2c_thread(void *arg) {
                 p->gro_enabled = 1;
                 gro_no_coalesce = 0;
                 if (gro_rearm_gap < GRO_REARM_MAX) gro_rearm_gap *= 2;
-                log_info("s2c: retrying UDP GRO");
+                log_debug("s2c: retrying UDP GRO");
                 continue;
             }
             for (int i = 0; i < prev_nrecv; i++)
