@@ -1721,6 +1721,23 @@ static int note_client_addr(proxy_t *p, const cliaddr_t *a) {
     return 1;
 }
 
+/* Server mode: a client spoke from a new address and its session followed.
+ * The first move is said at info, as the proof that following works; later
+ * ones go to debug, so a client whose NAT keeps rebinding cannot flood the
+ * log. */
+static void log_client_moved(const cliaddr_t *a, int *said) {
+    int first = !(*said)++;
+    if (!first && g_log_level < LOG_DEBUG) return;
+    int v6 = (a->sa.sa_family == AF_INET6);
+    char abuf[INET6_ADDRSTRLEN], pbuf[12];
+    const char *parts[] = { "c2s: server: client moved to ", v6 ? "[" : "",
+                            sa_str(&a->sa, abuf, sizeof(abuf)), v6 ? "]:" : ":",
+                            u32_to_str(pbuf, ntohs(cliaddr_port(a))),
+                            ", replies follow it" };
+    if (first) log_infon(parts, 6);
+    else log_debugn(parts, 6);
+}
+
 /* ---- c2s: normal mode ---- */
 
 __attribute__((hot))
@@ -1969,6 +1986,7 @@ static void *c2s_thread_reverse(void *arg) {
     set_thread_affinity(cfg->cpu_c2s, "c2s");
     set_thread_rt(cfg->rt_prio, "c2s");
     int prev_nrecv = BATCH_SIZE;
+    int moved_said = 0;
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
         for (int i = 0; i < prev_nrecv; i++) {
@@ -2030,9 +2048,17 @@ static void *c2s_thread_reverse(void *arg) {
                         memcpy(pkt + s4, &wt, 4);
                         awg_window_note(cfg, n);
 
-                        /* Server mode: extract receiver_index for routing (but on c2s
-                         * transport is from client, no need to record — server replies
-                         * use receiver_index which maps to sender_index from init) */
+                        /* Server mode: the transport names its session by
+                         * our WireGuard's index. A session still aimed at
+                         * another address means the client moved — follow it
+                         * now instead of at its next handshake. */
+                        if (server_mode &&
+                            p->recv_c2s.addrs[i].sa.sa_family == p->listen_family) {
+                            uint32_t sidx;
+                            memcpy(&sidx, pkt + s4 + 4, 4);
+                            if (session_follow_client(p, sidx, &p->recv_c2s.addrs[i]))
+                                log_client_moved(&p->recv_c2s.addrs[i], &moved_said);
+                        }
 
                         p->send_c2s.iovecs[nsend].iov_base = pkt + s4;
                         p->send_c2s.iovecs[nsend].iov_len = n - s4;
@@ -2083,7 +2109,15 @@ static void *c2s_thread_reverse(void *arg) {
                     (msg_type == WG_HANDSHAKE_RESPONSE && out_len == WG_RESP_SIZE)) {
                     uint32_t sender_idx;
                     memcpy(&sender_idx, out + 4, 4);
-                    session_put_prof(p, sender_idx, &p->recv_c2s.addrs[i], prof);
+                    session_entry_t *e = session_put_prof(p, sender_idx,
+                                                          &p->recv_c2s.addrs[i], prof);
+                    /* The client answering a handshake our WireGuard started:
+                     * our index is its receiver field. */
+                    if (msg_type == WG_HANDSHAKE_RESPONSE) {
+                        uint32_t sidx;
+                        memcpy(&sidx, out + 8, 4);
+                        session_set_server_index(p, e, sidx);
+                    }
                     if (multi) profile_remember(p, &p->recv_c2s.addrs[i], prof);
                     log_debug("c2s: server: recorded handshake sender_index");
                 }
@@ -2222,10 +2256,14 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
             memcpy(&recv_idx, pkt + 4, 4);
             dest_entry = session_get_entry(p, recv_idx);
         } else if (msg_type == WG_HANDSHAKE_RESPONSE && n == WG_RESP_SIZE) {
-            /* receiver_index at bytes 8-11 */
-            uint32_t recv_idx;
+            /* receiver_index at bytes 8-11. Our own index at 4-7 is what the
+             * client's transport carries from now on — keep it, it is how the
+             * session is found again once the client moves. */
+            uint32_t recv_idx, sidx;
             memcpy(&recv_idx, pkt + 8, 4);
+            memcpy(&sidx, pkt + 4, 4);
             dest_entry = session_get_entry(p, recv_idx);
+            session_set_server_index(p, dest_entry, sidx);
         } else if (msg_type == WG_COOKIE_REPLY && n == WG_COOKIE_SIZE) {
             /* receiver_index at bytes 4-7 */
             uint32_t recv_idx;

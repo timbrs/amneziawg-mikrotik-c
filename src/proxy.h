@@ -59,6 +59,7 @@ static inline int cliaddr_eq(const cliaddr_t *a, const cliaddr_t *b) {
 typedef struct {
     uint32_t sender_index;
     cliaddr_t addr;
+    _Atomic uint32_t server_index; /* our WireGuard's index for it, 0 = unknown */
     _Atomic int peer_slot;
     _Atomic int prof;      /* obfuscation profile this client speaks */
     _Atomic int valid;
@@ -301,6 +302,9 @@ typedef struct {
     prof_cache_entry_t prof_cache[PROF_CACHE_SIZE];
     uint32_t h4_ring[AWG_MAX_PROFILES][H4_RING_SIZE];
     session_entry_t sessions[SESSION_TABLE_SIZE];
+    /* Server mode: our WireGuard's index -> session slot + 1, see
+     * session_set_server_index(). */
+    _Atomic uint32_t sidx_map[SESSION_TABLE_SIZE];
 
 } proxy_t;
 
@@ -327,8 +331,10 @@ static inline session_entry_t *session_put_prof(proxy_t *p, uint32_t index,
                                 p->sessions[s].sender_index == index;
             p->sessions[s].sender_index = index;
             p->sessions[s].addr = *addr;
-            if (!preserve_peer)
+            if (!preserve_peer) {
                 atomic_store_explicit(&p->sessions[s].peer_slot, -1, memory_order_relaxed);
+                atomic_store_explicit(&p->sessions[s].server_index, 0, memory_order_relaxed);
+            }
             atomic_store_explicit(&p->sessions[s].prof, prof, memory_order_relaxed);
             atomic_store_explicit(&p->sessions[s].valid, 1, memory_order_release);
             return &p->sessions[s];
@@ -337,6 +343,7 @@ static inline session_entry_t *session_put_prof(proxy_t *p, uint32_t index,
     p->sessions[slot].sender_index = index;
     p->sessions[slot].addr = *addr;
     atomic_store_explicit(&p->sessions[slot].peer_slot, -1, memory_order_relaxed);
+    atomic_store_explicit(&p->sessions[slot].server_index, 0, memory_order_relaxed);
     atomic_store_explicit(&p->sessions[slot].prof, prof, memory_order_relaxed);
     atomic_store_explicit(&p->sessions[slot].valid, 1, memory_order_release);
     return &p->sessions[slot];
@@ -419,6 +426,59 @@ static inline void session_drop_moved_peer(proxy_t *p, int peer_slot,
             continue;
         atomic_store_explicit(&p->sessions[i].valid, 0, memory_order_release);
     }
+}
+
+/* Server mode: remember the index our WireGuard gave this session (the
+ * sender_index of its handshake response). A client's transport carries that
+ * index, never its own, so it is the only handle a client that moved can be
+ * recognised by. The map is direct-mapped and advisory: a lost or stale slot
+ * only means that session waits for its next handshake to be found again. */
+static inline void session_set_server_index(proxy_t *p, session_entry_t *e,
+                                            uint32_t sidx) {
+    if (!e || !sidx) return;
+    atomic_store_explicit(&e->server_index, sidx, memory_order_relaxed);
+    atomic_store_explicit(&p->sidx_map[sidx & SESSION_TABLE_MASK],
+                          (uint32_t)(e - p->sessions) + 1, memory_order_release);
+}
+
+static inline session_entry_t *session_get_by_server_index(proxy_t *p,
+                                                           uint32_t sidx) {
+    if (!sidx) return NULL;
+    uint32_t ref = atomic_load_explicit(&p->sidx_map[sidx & SESSION_TABLE_MASK],
+                                        memory_order_acquire);
+    if (!ref) return NULL;
+    session_entry_t *e = &p->sessions[ref - 1];
+    if (!atomic_load_explicit(&e->valid, memory_order_acquire) ||
+        atomic_load_explicit(&e->server_index, memory_order_relaxed) != sidx)
+        return NULL;
+    return e;
+}
+
+/* A client's transport for session sidx came from `from`. If the session still
+ * points elsewhere, the client moved: its NAT rebound, or its own proxy
+ * restarted onto a new port. Follow it, as WireGuard follows a roaming peer —
+ * otherwise every reply keeps going to the dead address until the client's
+ * next handshake, up to two minutes later. Every entry at the old address
+ * moves too: they are the same client (a rekey keeps the previous session
+ * alive), and leaving them behind would make one client look like two.
+ *
+ * Unlike WireGuard, the proxy cannot authenticate the packet, so whoever knows
+ * a live session index can redirect its replies. They stay encrypted, and the
+ * session comes back with the client's next packet.
+ *
+ * Returns 1 when the address changed. The c2s thread is the only writer of
+ * addr; a reply read mid-update may go out once to a half-written address, as
+ * with any in-place update of this table. */
+static inline int session_follow_client(proxy_t *p, uint32_t sidx,
+                                        const cliaddr_t *from) {
+    session_entry_t *e = session_get_by_server_index(p, sidx);
+    if (!e || cliaddr_eq(&e->addr, from)) return 0;
+    cliaddr_t old = e->addr;
+    for (int i = 0; i < SESSION_TABLE_SIZE; i++)
+        if (atomic_load_explicit(&p->sessions[i].valid, memory_order_acquire) &&
+            cliaddr_eq(&p->sessions[i].addr, &old))
+            p->sessions[i].addr = *from;
+    return 1;
 }
 
 /* Re-check DNS records (A and AAAA) for host: 0 = cur still present,

@@ -306,6 +306,79 @@ static void test_rekey_at_same_address_keeps_both(void) {
     ASSERT(session_get(&g_p, 0x4444) != NULL);
 }
 
+/* Server mode: a client's transport names its session by OUR index, so that
+ * index has to find the entry — but only while the slot still holds that
+ * session. */
+static void test_server_index_lookup(void) {
+    memset(&g_p, 0, sizeof(g_p));
+    cliaddr_t a = addr_v4(0x0A000001, 40000);
+    cliaddr_t b = addr_v4(0x0A000009, 40009);
+    session_entry_t *e = session_put_prof(&g_p, 0x1000, &a, 0);
+    session_set_server_index(&g_p, e, 0xBEEF);
+
+    ASSERT(session_get_by_server_index(&g_p, 0xBEEF) == e);
+    ASSERT(session_get_by_server_index(&g_p, 0xBEEE) == NULL);
+    ASSERT(session_get_by_server_index(&g_p, 0) == NULL);   /* 0 = неизвестен */
+
+    /* Слот занял другой сеанс: старый индекс не должен его находить. */
+    atomic_store(&e->valid, 0);
+    session_entry_t *e2 = session_put_prof(&g_p, 0x1000 + SESSION_TABLE_SIZE, &b, 0);
+    ASSERT(e2 == e);
+    ASSERT(session_get_by_server_index(&g_p, 0xBEEF) == NULL);
+}
+
+/* The client's proxy restarted onto a new port: its transport arrives from the
+ * new address under the same session, and replies must follow — the previous
+ * session of the same client too, and nobody else. */
+static void test_follow_moved_client(void) {
+    memset(&g_p, 0, sizeof(g_p));
+    cliaddr_t old = addr_v4(0x0A000002, 40001);
+    cliaddr_t neu = addr_v4(0x0A000002, 40999);
+    cliaddr_t other = addr_v4(0x0A000003, 40001);
+    session_entry_t *prev = session_put_prof(&g_p, 0x2001, &old, 0);  /* до смены ключей */
+    session_entry_t *cur = session_put_prof(&g_p, 0x2002, &old, 0);
+    session_entry_t *o = session_put_prof(&g_p, 0x3001, &other, 0);
+    session_set_server_index(&g_p, cur, 0xCAFE);
+
+    ASSERT(session_follow_client(&g_p, 0xCAFE, &neu) == 1);
+    ASSERT(cliaddr_eq(&cur->addr, &neu));
+    ASSERT(cliaddr_eq(&prev->addr, &neu));      /* тот же клиент — переехал целиком */
+    ASSERT(cliaddr_eq(&o->addr, &other));       /* чужой клиент не тронут */
+    ASSERT(session_follow_client(&g_p, 0xCAFE, &neu) == 0);  /* уже там */
+    ASSERT(session_get(&g_p, 0x2002) != NULL);  /* ответы по индексу клиента идут */
+    ASSERT(cliaddr_eq(session_get(&g_p, 0x2002), &neu));
+}
+
+/* Transport under an index nobody recorded moves nothing: junk, or a session
+ * from before a restart, must not drag a client away. */
+static void test_follow_unknown_index_is_ignored(void) {
+    memset(&g_p, 0, sizeof(g_p));
+    cliaddr_t a = addr_v4(0x0A000004, 40002);
+    cliaddr_t b = addr_v4(0x0A000005, 40003);
+    session_entry_t *e = session_put_prof(&g_p, 0x4001, &a, 0);
+    session_set_server_index(&g_p, e, 0xD00D);
+
+    ASSERT(session_follow_client(&g_p, 0xD00E, &b) == 0);
+    ASSERT(session_follow_client(&g_p, 0, &b) == 0);
+    ASSERT(cliaddr_eq(&e->addr, &a));
+}
+
+/* A single-client hub aims server-initiated handshakes at "the only client".
+ * After a move that client must still look like one client, not two. */
+static void test_follow_keeps_sole_client(void) {
+    memset(&g_p, 0, sizeof(g_p));
+    cliaddr_t old = addr_v6("2001:db8::7", 50000);
+    cliaddr_t neu = addr_v6("2001:db8::7", 50001);
+    session_put_prof(&g_p, 0x5001, &old, 0);
+    session_entry_t *cur = session_put_prof(&g_p, 0x5002, &old, 0);
+    session_set_server_index(&g_p, cur, 0xF00D);
+
+    ASSERT(session_follow_client(&g_p, 0xF00D, &neu) == 1);
+    session_entry_t *sole = session_find_sole_entry(&g_p);
+    ASSERT(sole != NULL);
+    ASSERT(cliaddr_eq(&sole->addr, &neu));
+}
+
 static void test_real_session_v6(void) {
     memset(&g_p, 0, sizeof(g_p));
     cliaddr_t c6 = addr_v6("2a00:f2a:e08e:3da0::2", 51820);
@@ -379,6 +452,10 @@ int main(void) {
     RUN_TEST(peer_lookup);
     RUN_TEST(moved_peer_is_retired);
     RUN_TEST(rekey_at_same_address_keeps_both);
+    RUN_TEST(server_index_lookup);
+    RUN_TEST(follow_moved_client);
+    RUN_TEST(follow_unknown_index_is_ignored);
+    RUN_TEST(follow_keeps_sole_client);
     RUN_TEST(real_session_v6);
     RUN_TEST(real_session_mixed);
     RUN_TEST(real_session_sole_v6);

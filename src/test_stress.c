@@ -866,6 +866,102 @@ static void test_server_multiclient(void) {
     close(server_fd);
 }
 
+/* ---- Server mode: a client moves to a new port mid-session ----
+ *
+ * Its own proxy restarted, or its NAT rebound: the next transport comes from a
+ * new address under the same session. Replies must follow at once. Before,
+ * they kept going to the old port until the client's next handshake — up to
+ * two minutes of a dead tunnel, measured on a live hub. */
+static void test_server_client_moves(void) {
+    int listen_port = find_free_port();
+    int remote_port = find_free_port();
+    ASSERT(listen_port > 0);
+    ASSERT(remote_port > 0);
+
+    int server_fd = make_udp_socket(remote_port);
+    ASSERT(server_fd >= 0);
+    pid_t proxy = start_proxy("server", listen_port, remote_port);
+    ASSERT(proxy > 0);
+    struct sockaddr_in proxy_addr = make_addr(listen_port);
+
+    const uint32_t cidx = 0x7100, sidx = 0x7200;
+    int old_fd = make_client_socket();
+    ASSERT(old_fd >= 0);
+
+    /* The client's init goes through the proxy to the server, which learns
+     * the address the proxy speaks from. */
+    uint8_t awg_init[TEST_S1 + WG_INIT_SIZE];
+    make_awg_init(awg_init, cidx);
+    sendto(old_fd, awg_init, sizeof(awg_init), 0,
+           (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+    struct sockaddr_in proxy_remote_addr;
+    memset(&proxy_remote_addr, 0, sizeof(proxy_remote_addr));
+    int got = 0;
+    for (int i = 0; i < 20 && !got; i++) {
+        uint8_t tmp[2048];
+        struct sockaddr_in from;
+        socklen_t fl = sizeof(from);
+        struct pollfd pfd = { .fd = server_fd, .events = POLLIN };
+        if (poll(&pfd, 1, 200) <= 0) continue;
+        ssize_t n = recvfrom(server_fd, tmp, sizeof(tmp), 0,
+                             (struct sockaddr *)&from, &fl);
+        if (n == WG_INIT_SIZE) { proxy_remote_addr = from; got = 1; }
+    }
+    ASSERT(got);
+    drain_socket(server_fd);
+
+    /* The server answers. Its sender_index is what the client's transport
+     * carries from now on. */
+    uint8_t resp[WG_RESP_SIZE];
+    memset(resp, 0, sizeof(resp));
+    uint32_t t = WG_HANDSHAKE_RESPONSE;
+    memcpy(resp, &t, 4);
+    memcpy(resp + 4, &sidx, 4);
+    memcpy(resp + 8, &cidx, 4);
+    sendto(server_fd, resp, sizeof(resp), 0,
+           (struct sockaddr *)&proxy_remote_addr, sizeof(proxy_remote_addr));
+    uint8_t rbuf[2048];
+    int resp_ok = 0;
+    for (int i = 0; i < 10 && !resp_ok; i++)
+        if (recv_one(old_fd, rbuf, sizeof(rbuf), 300) == TEST_S2 + WG_RESP_SIZE)
+            resp_ok = 1;
+    ASSERT(resp_ok);
+    drain_socket(old_fd);
+
+    /* The client moves: same session, new port. */
+    int new_fd = make_client_socket();
+    ASSERT(new_fd >= 0);
+    uint8_t buf[200];
+    make_awg_transport(buf, sidx, 1, sizeof(buf));
+    sendto(new_fd, buf, sizeof(buf), 0,
+           (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+    int fwd = recv_one(server_fd, rbuf, sizeof(rbuf), 1000);
+    ASSERT(fwd == (int)sizeof(buf));
+
+    /* The server replies inside the session: it must land at the new port. */
+    make_wg_transport(buf, cidx, 1, sizeof(buf));
+    sendto(server_fd, buf, sizeof(buf), 0,
+           (struct sockaddr *)&proxy_remote_addr, sizeof(proxy_remote_addr));
+    int at_new = 0, at_old = 0;
+    if (recv_one(new_fd, rbuf, sizeof(rbuf), 1000) == (int)sizeof(buf)) {
+        uint32_t h, ri;
+        memcpy(&h, rbuf, 4);
+        memcpy(&ri, rbuf + 4, 4);
+        at_new = (h == TEST_H4 && ri == cidx);
+    }
+    at_old = recv_one(old_fd, rbuf, sizeof(rbuf), 300) > 0;
+
+    fprintf(stderr, "          (reply at new port: %s, at old port: %s)\n",
+            at_new ? "yes" : "no", at_old ? "yes" : "no");
+    ASSERT(at_new);
+    ASSERT(!at_old);
+
+    stop_proxy(proxy);
+    close(old_fd);
+    close(new_fd);
+    close(server_fd);
+}
+
 /* ---- Scenario 4: Server-initiated rekey ---- */
 
 static void test_server_rekey(void) {
@@ -3104,6 +3200,7 @@ int main(void) {
     RUN_TEST(reverse_bidirectional);
     RUN_TEST(server_multiclient);
     RUN_TEST(server_rekey);
+    RUN_TEST(server_client_moves);
     RUN_TEST(concurrent_handshakes);
     RUN_TEST(scale);
     RUN_TEST(gso_connected);
