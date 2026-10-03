@@ -254,6 +254,11 @@ typedef struct {
      * threads are running. */
     _Atomic int spin_us;
 
+    /* Receive-buffer request in force for the remote socket (rb_step). Atomic
+     * because a reconnect opens the new socket from the reader thread, and it
+     * must start at what the traffic already earned, not at the floor. */
+    _Atomic int rb_remote;
+
     /* Throughput/loss accounting. Bumped once per batch, not per packet, so
      * the hot path pays one relaxed add per recvmmsg/sendmmsg round. A packet
      * counted in rx but not in tx was dropped by us — that is the number the
@@ -526,6 +531,31 @@ int gro_seg_size(const struct msghdr *hdr);
  * 0 when nothing can be coalesced. addrs non-NULL splits the run by
  * destination (unconnected socket). */
 int gso_run_len(const struct iovec *iov, const cliaddr_t *addrs, int count);
+
+/* Perf knobs vs the hardware the container actually got, see perf_fit_hw(). */
+#define PERF_MIN_CPUS     4
+#define PERF_FEW_CPUS     1   /* fewer than PERF_MIN_CPUS: the whole set dropped */
+#define PERF_NO_C2S_CPU   2   /* AWG_CPU_C2S names a core this process cannot use */
+#define PERF_NO_S2C_CPU   4
+#define PERF_RPS_TRIMMED  8   /* AWG_RPS lost the cores the threads are pinned to */
+#define PERF_RPS_DROPPED 16   /* ...and nothing was left of it */
+#define PERF_32BIT       32   /* a 32-bit CPU: the whole set dropped */
+int perf_fit_hw(awg_config_t *cfg, int ncpu, uint32_t allowed, int wide);
+/* A router the proxy is not the bottleneck on: 64-bit, four cores or more. */
+static inline int hw_strong(int ncpu, int wide) { return wide && ncpu >= PERF_MIN_CPUS; }
+
+/* Receive buffer sized by the traffic, see rb_step(). Values are setsockopt
+ * requests: the kernel doubles them. */
+#define RB_FLOOR     212992   /* the kernel's own rmem_default */
+#define RB_QUEUE_MS  50       /* how much traffic, in time, a buffer may hold */
+#define RB_TRUESIZE  2304     /* kernel accounting for one full-size datagram */
+typedef struct {
+    uint32_t pv_pkts;
+    uint32_t peak_pps;
+    int req;                  /* request in force */
+} rb_ctl_t;
+int rb_for_rate(uint32_t pps, int cap);
+int rb_step(rb_ctl_t *c, uint32_t pkts, int secs, int cap);
 
 /* Initialize proxy. Returns 0 on success. */
 int proxy_init(proxy_t *p, awg_config_t *cfg,

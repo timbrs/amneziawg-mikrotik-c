@@ -168,7 +168,8 @@ typedef struct {
     int he_delay;       /* Happy Eyeballs: ms of IPv4 silence before probing IPv6 */
     const char *state_file; /* learned-preference file, NULL/"" = don't persist */
     int log_level;
-    int socket_buf;     /* socket buffer size */
+    int socket_buf;     /* socket buffer size; with socket_buf_auto, the receive ceiling */
+    int socket_buf_auto; /* AWG_SOCKET_BUF unset: receive buffer follows the rate */
     int src_port;       /* 0 = auto */
 
     int cpu_c2s;        /* CPU affinity for c2s thread (-1 = auto) */

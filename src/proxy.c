@@ -325,16 +325,64 @@ static int create_udp_socket(int family, int blocking) {
  * is exported to the host. SO_RCVBUFFORCE ignores the sysctl ceiling for a
  * caller holding CAP_NET_ADMIN, which is exactly the case in a MikroTik
  * container, so try that first and keep the clamped version as the fallback
- * for unprivileged runs. */
-static void set_socket_buffers(int fd, int size) {
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &size, sizeof(size)) < 0) {
+ * for unprivileged runs. Returns whether the receive side was forced, i.e.
+ * whether resizing it later can do anything at all. */
+static int set_socket_buffers(int fd, int rcv, int snd) {
+    int forced = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &rcv, sizeof(rcv)) < 0) {
+        forced = 0;
         log_debug2("SO_RCVBUFFORCE refused: ", strerror(errno));
-        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
     }
-    if (setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &size, sizeof(size)) < 0) {
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDBUFFORCE, &snd, sizeof(snd)) < 0) {
         log_debug2("SO_SNDBUFFORCE refused: ", strerror(errno));
-        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof(snd));
     }
+    return forced;
+}
+
+/* Приёмный буфер по трафику (AWG_SOCKET_BUF не задан, роутер слабый — см.
+ * hw_strong).
+ *
+ * С privileged=yes буфер может быть любым, и 1.4.0 ставил 32 МБ: на hAP ax² это
+ * убрало пачки потерь, когда поток на десятки миллисекунд оставался без ядра.
+ * Там прокси не узкое место, буфер только гасит всплески, и больше — лучше:
+ * 50 мс трафика вместо 32 МБ вернули на ax² тысячи потерь за замер и отняли
+ * до 5 % отдачи, поэтому на сильном роутере буфер остаётся 32 МБ.
+ * Но буфер — это ещё и очередь. Там, где узкое место сам прокси (два ядра,
+ * слабый arm, поток на одном ядре), 32 МБ не теряют ни пакета и копят их на
+ * сотни миллисекунд: TCP не видит потерь, видит только растущий RTT, упирается
+ * в окно и проседает. На hAP ac², где прокси отдали два ядра из четырёх, а
+ * остальные заняли, это отдача 83 -> 62 Мбит/с и ping на приёме 12 -> 62 мс;
+ * поток, зажатый на одном ядре, держал очередь на 220 мс (#68).
+ *
+ * Поэтому буфер держит не больше RB_QUEUE_MS трафика на пиковой скорости,
+ * которую этот сокет реально видел: этого с запасом хватает переждать
+ * вытеснение потока, а стоячей очереди длиннее не будет. Пик растёт сразу, а к
+ * текущей скорости спадает на четверть разницы за тик — спокойная минута не
+ * должна отнять запас перед следующим всплеском. Снизу — прежний буфер ядра,
+ * сверху — AWG_SOCKET_BUF. */
+int rb_for_rate(uint32_t pps, int cap) {
+    unsigned long long r = (unsigned long long)pps * RB_QUEUE_MS * RB_TRUESIZE / 2000;
+    if (r > (unsigned long long)cap) r = (unsigned long long)cap;
+    if (r < RB_FLOOR) r = RB_FLOOR;
+    return (int)r;
+}
+
+/* Один тик: pkts — счётчик пакетов этого сокета. Возвращает новый запрос,
+ * когда он ушёл достаточно далеко, чтобы стоить системного вызова, иначе 0.
+ * Восьмая вверх, четверть вниз: скорость, которая колышется, не должна
+ * превращаться в setsockopt на каждом тике. */
+int rb_step(rb_ctl_t *c, uint32_t pkts, int secs, int cap) {
+    uint32_t pps = (pkts - c->pv_pkts) / (uint32_t)(secs > 0 ? secs : 1);
+    c->pv_pkts = pkts;
+    c->peak_pps = pps >= c->peak_pps ? pps : c->peak_pps - (c->peak_pps - pps) / 4;
+    int want = rb_for_rate(c->peak_pps, cap);
+    if (want > c->req + c->req / 8 || want < c->req - c->req / 4) {
+        c->req = want;
+        return want;
+    }
+    return 0;
 }
 
 /* IPv6 has no DF bit — a v6 router never fragments — so there the sockopt only
@@ -407,6 +455,81 @@ static void set_busy_poll(int fd, int usec) {
                                 " budget=", budget_ok ? "yes" : "no" };
         log_infon(parts, 8);
     }
+}
+
+/* Ручки производительности против железа, на котором контейнер реально запущен.
+ *
+ * AWG_CPU_C2S/S2C, AWG_RT и AWG_RPS — набор для роутера с четырьмя ядрами и
+ * больше: два ядра под потоки прокси, остальные под приём пакетов и крипто
+ * WireGuard. Конфигуратор ставит его только там, но переменные легко переезжают
+ * руками — с соседнего роутера, из заметок к релизу, из старой установки. На
+ * двух ядрах такой набор отнимает процессор у WireGuard: real-time потоки
+ * вытесняют воркеры, которые считают его шифрование, пин на несуществующее ядро
+ * молча не срабатывает, а маска RPS схлопывается в одно ядро. Поэтому контейнер
+ * сверяет набор с тем, что видит сам, и выбрасывает то, что здесь не к месту.
+ *
+ * То же и с 32-битным arm, даже четырёхъядерным: на hAP ac² (Cortex-A7) поток,
+ * пришпиленный к ядру и поднятый в real-time, не пускает на это ядро воркер
+ * WireGuard. Тот шифрует пакеты на всех ядрах по кругу, а отдаёт строго по
+ * порядку, так что один застрявший пакет держит весь поток: отдача 100 -> 34
+ * Мбит/с при ping 15 -> 454 мс. Замеряли набор только на 64-битных ax²/ax³,
+ * и выигрыш там — проценты, а здесь провал в разы.
+ *
+ * ncpu и allowed — сколько ядер и какие именно доступны процессу, с учётом
+ * cpu-list контейнера; wide — 64-битный ли процессор. Возвращает PERF_* того,
+ * что пришлось поменять. */
+int perf_fit_hw(awg_config_t *cfg, int ncpu, uint32_t allowed, int wide) {
+    if (cfg->cpu_c2s < 0 && cfg->cpu_s2c < 0 && cfg->rt_prio <= 0 && !cfg->rps_mask[0])
+        return 0;
+    if (!hw_strong(ncpu, wide)) {
+        cfg->cpu_c2s = cfg->cpu_s2c = -1;
+        cfg->rt_prio = 0;
+        cfg->rps_mask[0] = 0;
+        return ncpu < PERF_MIN_CPUS ? PERF_FEW_CPUS : PERF_32BIT;
+    }
+    int changed = 0;
+    if (cfg->cpu_c2s >= 32 || (cfg->cpu_c2s >= 0 && !((allowed >> cfg->cpu_c2s) & 1))) {
+        cfg->cpu_c2s = -1;
+        changed |= PERF_NO_C2S_CPU;
+    }
+    if (cfg->cpu_s2c >= 32 || (cfg->cpu_s2c >= 0 && !((allowed >> cfg->cpu_s2c) & 1))) {
+        cfg->cpu_s2c = -1;
+        changed |= PERF_NO_S2C_CPU;
+    }
+    /* RPS на ядрах пришпиленных потоков съедает весь выигрыш: real-time поток
+     * вытесняет softirq ровно там, куда RPS его кладёт. Маска длиннее восьми
+     * hex-цифр (больше 32 ядер) — не роутер, её не трогаем. */
+    uint32_t m = 0;
+    int n = 0;
+    for (const char *c = cfg->rps_mask; *c; c++, n++) {
+        int d = (*c >= '0' && *c <= '9') ? *c - '0' :
+                (*c >= 'a' && *c <= 'f') ? *c - 'a' + 10 :
+                (*c >= 'A' && *c <= 'F') ? *c - 'A' + 10 : -1;
+        if (d < 0 || n >= 8) { n = 0; break; }
+        m = (m << 4) | (uint32_t)d;
+    }
+    if (n > 0) {
+        uint32_t busy = 0;
+        if (cfg->cpu_c2s >= 0) busy |= 1u << cfg->cpu_c2s;
+        if (cfg->cpu_s2c >= 0) busy |= 1u << cfg->cpu_s2c;
+        if (m & busy) {
+            m &= ~busy;
+            if (!m) {
+                cfg->rps_mask[0] = 0;
+                changed |= PERF_RPS_DROPPED;
+            } else {
+                static const char hex[] = "0123456789abcdef";
+                char tmp[9];
+                int k = 0;
+                for (int sh = 28; sh >= 0; sh -= 4)
+                    if (k || (m >> sh) & 0xF) tmp[k++] = hex[(m >> sh) & 0xF];
+                memcpy(cfg->rps_mask, tmp, (size_t)k);
+                cfg->rps_mask[k] = 0;
+                changed |= PERF_RPS_TRIMMED;
+            }
+        }
+    }
+    return changed;
 }
 
 static void set_thread_affinity(int cpu, const char *name) {
@@ -532,7 +655,7 @@ static void log_socket_buffers(int listen_fd, int remote_fd, const awg_config_t 
     sock_buf_kb(remote_fd, &rr, &rw);
     char b[5][12];
     const char *parts[] = { "socket buf KB: want=",
-        u32_to_str(b[0], (unsigned)(cfg->socket_buf / 1024)),
+        cfg->socket_buf_auto ? "auto" : u32_to_str(b[0], (unsigned)(cfg->socket_buf / 1024)),
         " listen=", u32_to_str(b[1], lr), "/", u32_to_str(b[2], lw),
         " remote=", u32_to_str(b[3], rr), "/", u32_to_str(b[4], rw) };
     log_infon(parts, 10);
@@ -620,7 +743,8 @@ static int dial_one(proxy_t *p, const awg_addr_t *a, int blocking) {
         log_infon(parts, 4);
     }
 
-    set_socket_buffers(fd, p->cfg->socket_buf);
+    set_socket_buffers(fd, atomic_load_explicit(&p->rb_remote, memory_order_relaxed),
+                       p->cfg->socket_buf);
     set_busy_poll(fd, p->cfg->busy_poll);
     if (p->cfg->no_df)
         set_df_off(fd, family);
@@ -1216,6 +1340,8 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     p->signal_fd = -1;
     p->timer_fd = -1;
     p->gso_ok = !cfg->no_gso;
+    atomic_store_explicit(&p->rb_remote, cfg->socket_buf_auto ? RB_FLOOR : cfg->socket_buf,
+                          memory_order_relaxed);
 
     if (config_validate(cfg, &cfg_err) < 0) {
         log_error2("invalid config: ", cfg_err);
@@ -2799,7 +2925,11 @@ int proxy_run(proxy_t *p) {
     }
     if (p->listen_family == AF_INET6)
         log_ipv6_mtu_hint(p, "clients reach this proxy over IPv6");
-    set_socket_buffers(p->listen_fd, cfg->socket_buf);
+    /* Unprivileged the receive side is clamped to rmem_max whatever is asked,
+     * so the controller below only runs where resizing can work. */
+    int rb_auto = set_socket_buffers(p->listen_fd,
+                                     cfg->socket_buf_auto ? RB_FLOOR : cfg->socket_buf,
+                                     cfg->socket_buf) && cfg->socket_buf_auto;
     set_rps(cfg->rps_mask);
     atomic_store_explicit(&p->spin_us, cfg->spin_us, memory_order_relaxed);
     set_busy_poll(p->listen_fd, cfg->busy_poll);
@@ -2912,6 +3042,13 @@ int proxy_run(proxy_t *p) {
         sp_init(p, &spc);
         log_info("spin: self-tuning enabled");
     }
+    /* Receive buffers follow the traffic, one controller per socket. The
+     * remote socket's datagrams are counted where s2c hands them on: it keeps
+     * no rx counter of its own. */
+    rb_ctl_t rb_l = { atomic_load_explicit(&p->st_c2s_rx, memory_order_relaxed), 0, RB_FLOOR };
+    rb_ctl_t rb_r = { atomic_load_explicit(&p->st_s2c_tx, memory_order_relaxed) +
+                      atomic_load_explicit(&p->st_s2c_drop, memory_order_relaxed), 0, RB_FLOOR };
+    int rb_fd = -1, rb_moved = 0;
     uint32_t pv_c2s_rx = 0, pv_c2s_tx = 0, pv_c2s_dr = 0;
     uint32_t pv_s2c_tx = 0, pv_s2c_dr = 0;
     uint32_t pv_cgm = 0, pv_cgs = 0, pv_sgm = 0, pv_sgs = 0;
@@ -3047,6 +3184,28 @@ int proxy_run(proxy_t *p) {
 
                 if (cfg->spin_auto) sp_tick(p, &spc);
 
+                if (rb_auto) {
+                    int nl = rb_step(&rb_l, atomic_load_explicit(&p->st_c2s_rx, memory_order_relaxed),
+                                     5, cfg->socket_buf);
+                    if (nl) {
+                        setsockopt(p->listen_fd, SOL_SOCKET, SO_RCVBUFFORCE, &nl, sizeof(nl));
+                        rb_moved = 1;
+                    }
+                    int nr = rb_step(&rb_r, atomic_load_explicit(&p->st_s2c_tx, memory_order_relaxed) +
+                                     atomic_load_explicit(&p->st_s2c_drop, memory_order_relaxed),
+                                     5, cfg->socket_buf);
+                    if (nr) atomic_store_explicit(&p->rb_remote, nr, memory_order_relaxed);
+                    /* A reconnect opens a new socket with whatever rb_remote held
+                     * at that moment; one tick later it gets the current value. */
+                    int rfd3 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
+                    if (rfd3 >= 0 && (nr || rfd3 != rb_fd)) {
+                        int want = atomic_load_explicit(&p->rb_remote, memory_order_relaxed);
+                        setsockopt(rfd3, SOL_SOCKET, SO_RCVBUFFORCE, &want, sizeof(want));
+                        rb_fd = rfd3;
+                        rb_moved |= nr != 0;
+                    }
+                }
+
                 if (stats_checks > 0 && ++stats_tick >= stats_checks) {
                     stats_tick = 0;
                     uint32_t c2s_rx = atomic_load_explicit(&p->st_c2s_rx, memory_order_relaxed);
@@ -3121,6 +3280,19 @@ int proxy_run(proxy_t *p) {
                     }
                     pv_c2s_rx = c2s_rx; pv_c2s_tx = c2s_tx; pv_c2s_dr = c2s_dr;
                     pv_s2c_tx = s2c_tx; pv_s2c_dr = s2c_dr; pv_k = k;
+                    /* Only when it moved: an idle tunnel stays silent, and a busy
+                     * one says once what the buffers settled on. */
+                    if (rb_moved) {
+                        rb_moved = 0;
+                        unsigned lr, lw, rr = 0, rw = 0;
+                        sock_buf_kb(p->listen_fd, &lr, &lw);
+                        int rfd4 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
+                        if (rfd4 >= 0) sock_buf_kb(rfd4, &rr, &rw);
+                        char rb[2][12];
+                        const char *rparts[] = { "rcvbuf KB: listen=", u32_to_str(rb[0], lr),
+                                                 " remote=", u32_to_str(rb[1], rr) };
+                        log_infon(rparts, 4);
+                    }
                     pv_cgm = cgm; pv_cgs = cgs; pv_sgm = sgm; pv_sgs = sgs;
                 }
 

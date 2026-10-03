@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sched.h>
 
 #ifndef VERSION
 #define VERSION "dev"
@@ -303,6 +304,53 @@ static void report_unemulated_env(void) {
     }
 }
 
+/* Сверить ручки производительности с ядрами, которые процесс реально видит
+ * (perf_fit_hw), и сказать в лог, что пришлось выбросить: иначе настройка,
+ * перенесённая с четырёхъядерного роутера, выглядела бы применённой.
+ * Возвращает, сильный ли роутер (hw_strong); не удалось узнать — считаем
+ * сильным, то есть ведём себя как 1.4.0. */
+static int fit_perf_to_hardware(awg_config_t *cfg) {
+    cpu_set_t cs;
+    CPU_ZERO(&cs);
+    if (sched_getaffinity(0, sizeof(cs), &cs) != 0) return 1;
+    int ncpu = CPU_COUNT(&cs);
+    uint32_t allowed = 0;
+    for (int i = 0; i < 32; i++)
+        if (CPU_ISSET(i, &cs)) allowed |= 1u << i;
+    if (ncpu <= 0) return 1;
+    int strong = hw_strong(ncpu, sizeof(void *) >= 8);
+
+    char was_rps[sizeof(cfg->rps_mask)];
+    memcpy(was_rps, cfg->rps_mask, sizeof(was_rps));
+    int fit = perf_fit_hw(cfg, ncpu, allowed, sizeof(void *) >= 8);
+    char nb[12];
+    if (fit & PERF_FEW_CPUS) {
+        const char *parts[] = { "perf: ", u32_to_str(nb, (unsigned)ncpu),
+            " cores - AWG_CPU_*, AWG_RT and AWG_RPS skipped: they are for 4+ cores "
+            "and here would take the CPU from WireGuard" };
+        log_infon(parts, 3);
+        return strong;
+    }
+    if (fit & PERF_32BIT) {
+        log_info("perf: 32-bit CPU - AWG_CPU_*, AWG_RT and AWG_RPS skipped: "
+                 "on these cores they stall WireGuard instead of speeding it up");
+        return strong;
+    }
+    if (fit & (PERF_NO_C2S_CPU | PERF_NO_S2C_CPU)) {
+        const char *parts[] = { "perf: ",
+            (fit & PERF_NO_C2S_CPU) ? ((fit & PERF_NO_S2C_CPU) ? "AWG_CPU_C2S and AWG_CPU_S2C"
+                                                               : "AWG_CPU_C2S")
+                                    : "AWG_CPU_S2C",
+            " skipped: no such core among the ", u32_to_str(nb, (unsigned)ncpu), " available" };
+        log_infon(parts, 5);
+    }
+    if (fit & PERF_RPS_TRIMMED)
+        log_info3("perf: AWG_RPS=", was_rps, " lost the cores of the pinned threads");
+    if (fit & PERF_RPS_DROPPED)
+        log_info3("perf: AWG_RPS=", was_rps, " skipped: it only covered the pinned threads");
+    return strong;
+}
+
 int main(void) {
     int errs = 0;
     const char *v;
@@ -480,10 +528,15 @@ int main(void) {
     }
     g_log_level = cfg->log_level;
 
-    /* Socket buffer */
+    /* Socket buffer. Unset, on a weak router (hw_strong) the receive side sizes
+     * itself by the traffic (rb_step in proxy.c) and 16 MB is only its ceiling;
+     * on a strong one, and whenever set, it is fixed. */
     cfg->socket_buf = 16 * 1024 * 1024;
-    if ((v = getenv("AWG_SOCKET_BUF")) && v[0])
+    cfg->socket_buf_auto = 1;
+    if ((v = getenv("AWG_SOCKET_BUF")) && v[0]) {
         cfg->socket_buf = parse_int_str(v);
+        cfg->socket_buf_auto = 0;
+    }
 
     /* Source port: "random" (default, kernel-ephemeral), "auto"/0 (copy the WG
      * client's port), or a fixed N.
@@ -693,6 +746,10 @@ int main(void) {
     }
     if (cfg->no_df)
         log_info("config: DF bit cleared on UDP sockets (AWG_NO_DF=1)");
+    /* A strong router keeps the fixed 32 MB of 1.4.0: there the buffer only
+     * absorbs bursts, and the traffic-sized one cost it drops and speed. */
+    if (fit_perf_to_hardware(cfg) && cfg->socket_buf_auto)
+        cfg->socket_buf_auto = 0;
     if (cfg->cpu_c2s >= 0 || cfg->cpu_s2c >= 0 || cfg->busy_poll > 0 ||
         cfg->spin_us > 0) {
         char c2sb[12], s2cb[12], bpb[12], spb[12];

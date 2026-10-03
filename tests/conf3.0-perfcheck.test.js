@@ -94,14 +94,19 @@ ok('по умолчанию выбран автоматический режим
 
 const auto = generateWith('auto');
 ok('в автоматическом режиме настройки под условием о числе ядер',
-   /:if \(\[\/system\/resource\/get cpu-count\] >= 4\) do=\{[^}]*AWG_RT/.test(auto),
+   /:if \(\[\/system\/resource\/get cpu-count\] >= 4 [^)]*\) do=\{[^}]*AWG_RT/.test(auto),
+   auto.split(NL).filter(l => l.indexOf('AWG_RT') >= 0).join(' | '));
+// #68: на hAP ac² (4 ядра, 32-битный arm) пин + real-time обрушили отдачу втрое,
+// поэтому то же условие обязано отсекать 32-битный arm, а не только число ядер.
+ok('и под условием о 64-битном процессоре',
+   /cpu-count\] >= 4 && \[\/system\/resource\/get architecture-name\] != "arm"\) do=\{[^}]*AWG_RT/.test(auto),
    auto.split(NL).filter(l => l.indexOf('AWG_RT') >= 0).join(' | '));
 ok('и в них входят все четыре переменные',
    ['AWG_CPU_C2S', 'AWG_CPU_S2C', 'AWG_RT', 'AWG_RPS'].every(k => auto.indexOf(k) >= 0));
 
 const strong = generateWith('strong');
 ok('для мощного роутера условие не нужно',
-   strong.indexOf('AWG_RT') >= 0 && !/cpu-count\] >= 4\) do=\{[^}]*AWG_RT/.test(strong),
+   strong.indexOf('AWG_RT') >= 0 && !/cpu-count\] >= 4[^)]*\) do=\{[^}]*AWG_RT/.test(strong),
    strong.split(NL).filter(l => l.indexOf('AWG_RT') >= 0).join(' | '));
 
 const weak = generateWith('weak');

@@ -501,7 +501,7 @@ With 3+ clients, this is easier to automate with a script on the server.
 | `AWG_NO_GRO` | No | `0` | Disable UDP GRO |
 | `AWG_NO_GSO` | No | `0` | Disable UDP GSO on send |
 | `AWG_NO_DF` | No | `0` | Clear the DF bit on UDP packets (workaround for DPI dropping DF=1) |
-| `AWG_SOCKET_BUF` | No | `16777216` | Socket buffer size |
+| `AWG_SOCKET_BUF` | No | auto | Socket buffer size. Unset: 32 MB on a 64-bit router with 4+ cores, on a weaker one the receive buffer follows the traffic (≈50 ms at the peak rate, 416 KB to 32 MB) |
 | `AWG_CPU_C2S` | No | `-1` | CPU for client→server thread |
 | `AWG_CPU_S2C` | No | `-1` | CPU for server→client thread |
 | `AWG_RT` | No | `0` | `SCHED_RR` priority for the I/O threads (1..50, `0` = off). Needs privileges |
@@ -815,6 +815,8 @@ AWG_NO_DF=1   # clear the DF bit on the proxy's UDP packets
 
 `AWG_RPS` writes a core mask into `rps_cpus` of the container interface's receive queue, so the kernel spreads receive processing over those CPUs instead of one. The mask is hexadecimal, as the kernel expects: `9` = cores 0 and 3, `e` = cores 1--3.
 
+**The set `AWG_CPU_*` + `AWG_RT` + `AWG_RPS` is for a 64-bit router with four cores or more** (hAP ax², ax³), and the container checks that by itself. With fewer than four cores (counting the container's `cpu-list`) or a 32-bit CPU the whole set is dropped with one log line (`perf: 2 cores - ... skipped` or `perf: 32-bit CPU - ... skipped`). Why: on two cores real-time threads take the CPU from WireGuard's crypto, and on a four-core 32-bit hAP ac² a thread pinned to a core and raised to real time keeps WireGuard's worker off that core -- upload fell from 100 to 34 Mbit/s with ping at 454 ms. Along the way a pin to a core that does not exist (or was not given to the container) is skipped, and the cores of pinned threads are taken out of `AWG_RPS`.
+
 Keeping the two on different cores is essential. On a hAP ax(2), with threads pinned by `AWG_CPU_C2S=1` and `AWG_CPU_S2C=2`, the mask `e` (cores 1--3) overlaps the threads themselves: real time preempts the softirq exactly where RPS puts it, and the gain is eaten. The mask `9` (cores 0 and 3) separates them and gave the best result of every combination tested.
 
 ```
@@ -827,12 +829,16 @@ AWG_CPU_S2C=2
 
 At startup the proxy reports what it got: `c2s: realtime SCHED_RR prio 10` or `c2s: realtime refused (...)`, and `rps: <interface> mask applied`. If the lines are missing, check that the container is privileged and that the log level lets INFO through.
 
-**`AWG_SOCKET_BUF`** -- receive/send buffer sizes (SO_RCVBUF/SO_SNDBUF) for UDP sockets in bytes. The kernel typically doubles the requested value. Larger buffers reduce packet loss under load but consume more RAM.
+**`AWG_SOCKET_BUF`** -- receive/send buffer sizes (SO_RCVBUF/SO_SNDBUF) for UDP sockets in bytes. The kernel doubles the requested value.
+
+**Unset (the default), the size depends on the router.** On a 64-bit router with four cores or more (hAP ax², ax³) it is a fixed 32 MB, as in 1.4.0: there the proxy is not the bottleneck, the buffer only absorbs bursts, and bigger is better (a rate-sized one brought thousands of drops back on the ax² and cost it up to 5 % of its upload). **On a weaker router -- fewer cores, or a 32-bit arm -- each socket's receive buffer sizes itself.** Every 5 seconds the proxy looks at how many packets went through the socket and keeps the buffer at about 50 ms of traffic at the peak rate: no smaller than the kernel's old 416 KB, no larger than 32 MB. The peak rises at once and falls off gradually, over tens of seconds, so a short lull does not take away the room the next burst needs. Why: a buffer is also a queue. A privileged container may have a buffer of any size, and on a weak router where the proxy itself is the bottleneck a huge one does not drop packets -- it holds them for hundreds of milliseconds, so TCP sees no loss, only a growing delay, runs into its window and slows down several times over. 50 ms is enough to ride out the thread being preempted, and no standing queue grows longer than that. Without privileges the kernel caps the buffer at `rmem_max` anyway, and the sizing stays off. With `AWG_STATS` the log gets a `rcvbuf KB: listen=… remote=…` line whenever the size moved.
+
+Set, the buffer is fixed, as in 1.4.0 and before.
 
 ```
-AWG_SOCKET_BUF=16777216  # default, 16 MB
-AWG_SOCKET_BUF=4194304   # 4 MB, for memory-constrained devices
-AWG_SOCKET_BUF=1048576   # 1 MB, minimum recommended
+# unset                  # default: ax²/ax³ -- 32 MB; weaker -- receive buffer follows the traffic
+AWG_SOCKET_BUF=16777216  # fixed 16 MB (32 MB once doubled) -- the 1.4.0 behaviour
+AWG_SOCKET_BUF=1048576   # fixed 1 MB
 ```
 
 #### Optional -- Performance

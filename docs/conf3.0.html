@@ -803,7 +803,7 @@
                 <label><input type="radio" name="perf-mode" value="strong"> <span data-i18n="perfStrong">It has 4 cores or more</span></label>
                 <label><input type="radio" name="perf-mode" value="weak"> <span data-i18n="perfWeak">It has 1-2 cores</span></label>
             </div>
-            <div class="hint" data-i18n="perfHint">On a router with four cores or more the proxy gets two cores of its own, its threads are given the CPU first, and packet receive is spread over the other cores. That removes the last packet drops and makes the speed steady instead of jumping between runs. On a weaker router these settings are skipped &mdash; there they would only take the CPU away from everything else. Automatic detection asks the router itself during install, so it is the safe choice. Needs RouterOS 7.24+; on older versions the settings are accepted but do nothing.</div>
+            <div class="hint" data-i18n="perfHint">On a router with four cores or more and a 64-bit CPU (hAP ax2, ax3) the proxy gets two cores of its own, its threads are given the CPU first, and packet receive is spread over the other cores. That removes the last packet drops and makes the speed steady instead of jumping between runs. On a weaker router &mdash; fewer cores, or a 32-bit arm such as the hAP ac2 &mdash; these settings are skipped: there they take the CPU away from WireGuard, and the container drops them by itself even if they are set. Automatic detection asks the router itself during install, so it is the safe choice. Needs RouterOS 7.24+; on older versions the settings are accepted but do nothing.</div>
         </div>
         <div id="df-row" style="margin-top:8px">
             <label><input type="checkbox" id="df-enable">
@@ -1259,7 +1259,7 @@
             perfAuto: 'Detect automatically (recommended)',
             perfStrong: 'It has 4 cores or more',
             perfWeak: 'It has 1-2 cores',
-            perfHint: 'On a router with four cores or more the proxy gets two cores of its own, its threads are given the CPU first, and packet receive is spread over the other cores. That removes the last packet drops and makes the speed steady instead of jumping between runs. On a weaker router these settings are skipped - there they would only take the CPU away from everything else. Automatic detection asks the router itself during install, so it is the safe choice. Needs RouterOS 7.24+; on older versions the settings are accepted but do nothing.',
+            perfHint: 'On a router with four cores or more and a 64-bit CPU (hAP ax2, ax3) the proxy gets two cores of its own, its threads are given the CPU first, and packet receive is spread over the other cores. That removes the last packet drops and makes the speed steady instead of jumping between runs. On a weaker router - fewer cores, or a 32-bit arm such as the hAP ac2 - these settings are skipped: there they take the CPU away from WireGuard, and the container drops them by itself even if they are set. Automatic detection asks the router itself during install, so it is the safe choice. Needs RouterOS 7.24+; on older versions the settings are accepted but do nothing.',
             btnDiag: 'Check the router',
             diagTitle: 'Router check',
             btnCopyDiag: 'Copy check',
@@ -1488,7 +1488,7 @@
             perfAuto: '\u041e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 (\u0440\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0443\u0435\u0442\u0441\u044f)',
             perfStrong: '\u0423 \u043c\u0435\u043d\u044f 4 \u044f\u0434\u0440\u0430 \u0438\u043b\u0438 \u0431\u043e\u043b\u044c\u0448\u0435',
             perfWeak: '\u0423 \u043c\u0435\u043d\u044f 1-2 \u044f\u0434\u0440\u0430',
-            perfHint: '\u041d\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0435 \u0441 \u0447\u0435\u0442\u044b\u0440\u044c\u043c\u044f \u044f\u0434\u0440\u0430\u043c\u0438 \u0438 \u0431\u043e\u043b\u044c\u0448\u0435 \u043f\u0440\u043e\u043a\u0441\u0438 \u043f\u043e\u043b\u0443\u0447\u0430\u0435\u0442 \u0434\u0432\u0430 \u044f\u0434\u0440\u0430 \u0432 \u0441\u0432\u043e\u0451 \u0440\u0430\u0441\u043f\u043e\u0440\u044f\u0436\u0435\u043d\u0438\u0435, \u0435\u0433\u043e \u043f\u043e\u0442\u043e\u043a\u0438 \u043d\u0430\u0447\u0438\u043d\u0430\u044e\u0442 \u043f\u043e\u043b\u0443\u0447\u0430\u0442\u044c \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0440 \u0432 \u043f\u0435\u0440\u0432\u0443\u044e \u043e\u0447\u0435\u0440\u0435\u0434\u044c, \u0430 \u0440\u0430\u0437\u0431\u043e\u0440 \u0432\u0445\u043e\u0434\u044f\u0449\u0438\u0445 \u043f\u0430\u043a\u0435\u0442\u043e\u0432 \u0440\u0430\u0441\u043a\u043b\u0430\u0434\u044b\u0432\u0430\u0435\u0442\u0441\u044f \u043f\u043e \u043e\u0441\u0442\u0430\u043b\u044c\u043d\u044b\u043c \u044f\u0434\u0440\u0430\u043c. \u042d\u0442\u043e \u0443\u0431\u0438\u0440\u0430\u0435\u0442 \u043e\u0441\u0442\u0430\u0442\u043a\u0438 \u043f\u043e\u0442\u0435\u0440\u044c \u0438 \u0434\u0435\u043b\u0430\u0435\u0442 \u0441\u043a\u043e\u0440\u043e\u0441\u0442\u044c \u0440\u043e\u0432\u043d\u043e\u0439, \u0430 \u043d\u0435 \u0441\u043a\u0430\u0447\u0443\u0449\u0435\u0439 \u043e\u0442 \u0437\u0430\u043c\u0435\u0440\u0430 \u043a \u0437\u0430\u043c\u0435\u0440\u0443. \u041d\u0430 \u0441\u043b\u0430\u0431\u043e\u043c \u0440\u043e\u0443\u0442\u0435\u0440\u0435 \u044d\u0442\u0438 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u043d\u0435 \u0432\u043a\u043b\u044e\u0447\u0430\u044e\u0442\u0441\u044f: \u0442\u0430\u043c \u043e\u043d\u0438 \u0442\u043e\u043b\u044c\u043a\u043e \u043e\u0442\u043d\u0438\u043c\u0443\u0442 \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0440 \u0443 \u043e\u0441\u0442\u0430\u043b\u044c\u043d\u043e\u0439 \u0440\u0430\u0431\u043e\u0442\u044b. \u0410\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u0432\u044b\u0431\u043e\u0440 \u0441\u043f\u0440\u0430\u0448\u0438\u0432\u0430\u0435\u0442 \u0441\u0430\u043c \u0440\u043e\u0443\u0442\u0435\u0440 \u0432\u043e \u0432\u0440\u0435\u043c\u044f \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438, \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u043e\u043d \u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u0435\u0435 \u0432\u0441\u0435\u0433\u043e. \u041d\u0443\u0436\u0435\u043d RouterOS 7.24 \u0438\u043b\u0438 \u043d\u043e\u0432\u0435\u0435; \u043d\u0430 \u0441\u0442\u0430\u0440\u044b\u0445 \u0432\u0435\u0440\u0441\u0438\u044f\u0445 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u043f\u0440\u0438\u043d\u0438\u043c\u0430\u044e\u0442\u0441\u044f, \u043d\u043e \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u0434\u0435\u043b\u0430\u044e\u0442.',
+            perfHint: 'На роутере с четырьмя ядрами и больше и 64-битным процессором (hAP ax², ax³) прокси получает два ядра в своё распоряжение, его потоки начинают получать процессор в первую очередь, а разбор входящих пакетов раскладывается по остальным ядрам. Это убирает остатки потерь и делает скорость ровной, а не скачущей от замера к замеру. На слабом роутере — меньше ядер или 32-битный arm вроде hAP ac² — эти настройки не включаются: там они отнимают процессор у WireGuard, и контейнер сам их отбрасывает, даже если они заданы. Автоматический выбор спрашивает сам роутер во время установки, поэтому он безопаснее всего. Нужен RouterOS 7.24 или новее; на старых версиях настройки принимаются, но ничего не делают.',
             btnDiag: '\u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u0440\u043e\u0443\u0442\u0435\u0440',
             diagTitle: '\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0430',
             btnCopyDiag: '\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443',
@@ -3891,8 +3891,11 @@
             lines.push('# Perf: you said this router has 4+ cores');
             lines.push('{' + perfEnv + ' }');
         } else if (perf === 'auto') {
-            lines.push('# Perf: applied only if the router really has 4+ cores');
-            lines.push('{ :if ([/system/resource/get cpu-count] >= 4) do={' + perfEnv + ' } }');
+            // Not on 32-bit arm, four cores or not: on a hAP ac2 the pinned real-time
+            // thread starved WireGuard's crypto worker on its core, and upload fell
+            // from 100 to 34 Mbit/s (#68). The set was only ever measured on arm64.
+            lines.push('# Perf: applied only if the router really has 4+ cores and a 64-bit CPU');
+            lines.push('{ :if ([/system/resource/get cpu-count] >= 4 && [/system/resource/get architecture-name] != "arm") do={' + perfEnv + ' } }');
         } else {
             lines.push('# Perf: skipped, you said this router has 1-2 cores');
         }
@@ -4238,10 +4241,10 @@
 
         // --- ядра: от них зависят настройки производительности
         L.push(':local cores [/system/resource/get cpu-count]');
-        L.push(':if ($cores >= 4) do={');
+        L.push(':if ($cores >= 4 && $arch != "arm") do={');
         pv('("Cores: " . $cores . "  - enough for the performance settings")');
         L.push('} else={');
-        pv('("Cores: " . $cores . "  - performance settings will be skipped, that is correct here")');
+        pv('("Cores: " . $cores . " (" . $arch . ")  - performance settings will be skipped, that is correct here")');
         L.push('}');
 
         // --- память
