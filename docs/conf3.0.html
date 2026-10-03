@@ -1131,6 +1131,7 @@
             </div>
             <pre id="srv-out-client" class="s2s-output"></pre>
             <button class="btn btn-primary" id="srv-download-conf" onclick="downloadAwgConf()" data-i18n="btnDownloadConf" style="display:none;margin-top:10px">Download .conf</button>
+            <div id="srv-download-conf-hint" class="hint" data-i18n="srvConfAltHint" style="display:none"></div>
         </div>
         <div id="srv-server-update" class="card s2s-side" style="display:none">
             <div class="s2s-side-header">
@@ -1338,6 +1339,8 @@
             srvNetAwg: 'Direct AmneziaWG client',
             srvNetAwgHint: 'Generates a ready-to-import .conf for a phone / laptop / AmneziaWG app instead of a second MikroTik. All device traffic is routed through the hub (full tunnel, AllowedIPs = 0.0.0.0/0). The head MikroTik just gets a peer with one tunnel IP — no client-side router needed. LAN merging fields are not used here.',
             srvAwgConfTitle: '.conf for AmneziaWG — Client',
+            btnDownloadConfAlt: 'Download .conf for a phone / PC',
+            srvConfAltHint: 'The same client, but for a device instead of a MikroTik: import the file into the AmneziaWG app on a phone or computer, and all its traffic goes through the hub. The file and the script above share one key, so use one or the other — two devices on one key keep knocking each other off.',
             srvNetNoneHint: 'VPN tunnel only. No routing between LANs is configured \u2014 further network setup is up to the admin. Once the tunnel is established, you can connect to the remote MikroTik via WinBox/SSH using its tunnel IP (e.g. 10.10.10.2).',
             srvNetL3Hint: 'Devices will be able to reach each other by IP across subnets. What becomes possible: access NAS/file shares, IP cameras, printers by address, remote desktop (RDP/VNC), manage routers via WinBox/SSH, host game servers, access home automation (Home Assistant). Does NOT work: broadcast/multicast services \u2014 auto-discovery (mDNS/Bonjour, DLNA, AirPlay, Chromecast), Windows Network Neighborhood, printer auto-discovery, Wake-on-LAN. Note: each client only sees the server LAN by default. To connect two clients to each other, additional routes must be added manually \u2014 see README section "Routing between clients".',
             srvNetL2Hint: 'Single network \u2014 all devices as if on one switch. Everything works: mDNS (Bonjour), DLNA, AirPlay, Chromecast, Windows Network, printer discovery. Downside: broadcast traffic goes through tunnel, more load.',
@@ -1562,6 +1565,8 @@
             srvNetAwg: '\u041f\u0440\u044f\u043c\u043e\u0439 \u043a\u043b\u0438\u0435\u043d\u0442 AmneziaWG',
             srvNetAwgHint: '\u0412\u043c\u0435\u0441\u0442\u043e \u0432\u0442\u043e\u0440\u043e\u0433\u043e MikroTik \u0433\u0435\u043d\u0435\u0440\u0438\u0440\u0443\u0435\u0442 \u0433\u043e\u0442\u043e\u0432\u044b\u0439 .conf \u0434\u043b\u044f \u0438\u043c\u043f\u043e\u0440\u0442\u0430 \u0432 \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435 AmneziaWG (\u0442\u0435\u043b\u0435\u0444\u043e\u043d / \u043d\u043e\u0443\u0442\u0431\u0443\u043a). \u0412\u0435\u0441\u044c \u0442\u0440\u0430\u0444\u0438\u043a \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430 \u0438\u0434\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 \u0445\u0430\u0431 (full-tunnel, AllowedIPs = 0.0.0.0/0). \u041d\u0430 \u0433\u043e\u043b\u043e\u0432\u043d\u043e\u043c MikroTik \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u0442\u0441\u044f \u0442\u043e\u043b\u044c\u043a\u043e peer \u0441 \u043e\u0434\u043d\u0438\u043c IP \u0432 \u0442\u0443\u043d\u043d\u0435\u043b\u0435 \u2014 \u043a\u043b\u0438\u0435\u043d\u0442\u0441\u043a\u0438\u0439 \u0440\u043e\u0443\u0442\u0435\u0440 \u043d\u0435 \u043d\u0443\u0436\u0435\u043d. \u041f\u043e\u043b\u044f \u043e\u0431\u044a\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u044f LAN \u0437\u0434\u0435\u0441\u044c \u043d\u0435 \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u044e\u0442\u0441\u044f.',
             srvAwgConfTitle: '.conf \u0434\u043b\u044f AmneziaWG \u2014 \u041a\u043b\u0438\u0435\u043d\u0442',
+            btnDownloadConfAlt: '\u0421\u043a\u0430\u0447\u0430\u0442\u044c .conf \u0434\u043b\u044f \u0442\u0435\u043b\u0435\u0444\u043e\u043d\u0430 / \u041f\u041a',
+            srvConfAltHint: '\u0422\u043e\u0442 \u0436\u0435 \u043a\u043b\u0438\u0435\u043d\u0442, \u043d\u043e \u043d\u0435 \u0434\u043b\u044f MikroTik: \u0444\u0430\u0439\u043b \u0438\u043c\u043f\u043e\u0440\u0442\u0438\u0440\u0443\u0435\u0442\u0441\u044f \u0432 \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435 AmneziaWG \u043d\u0430 \u0442\u0435\u043b\u0435\u0444\u043e\u043d\u0435 \u0438\u043b\u0438 \u043a\u043e\u043c\u043f\u044c\u044e\u0442\u0435\u0440\u0435, \u0438 \u0432\u0435\u0441\u044c \u0442\u0440\u0430\u0444\u0438\u043a \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430 \u043f\u043e\u0439\u0434\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 \u0445\u0430\u0431. \u041a\u043b\u044e\u0447 \u0443 \u0444\u0430\u0439\u043b\u0430 \u0438 \u0443 \u0441\u043a\u0440\u0438\u043f\u0442\u0430 \u0432\u044b\u0448\u0435 \u043e\u0431\u0449\u0438\u0439 \u2014 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0430\u0439\u0442\u0435 \u0447\u0442\u043e-\u0442\u043e \u043e\u0434\u043d\u043e, \u0438\u043d\u0430\u0447\u0435 \u0434\u0432\u0430 \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430 \u043d\u0430 \u043e\u0434\u043d\u043e\u043c \u043a\u043b\u044e\u0447\u0435 \u0431\u0443\u0434\u0443\u0442 \u0432\u044b\u0431\u0438\u0432\u0430\u0442\u044c \u0434\u0440\u0443\u0433 \u0434\u0440\u0443\u0433\u0430.',
             srvNetNoneHint: '\u0422\u043e\u043b\u044c\u043a\u043e VPN-\u0442\u0443\u043d\u043d\u0435\u043b\u044c. \u041c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u043c\u0435\u0436\u0434\u0443 \u0441\u0435\u0442\u044f\u043c\u0438 \u043d\u0435 \u043d\u0430\u0441\u0442\u0440\u0430\u0438\u0432\u0430\u0435\u0442\u0441\u044f \u2014 \u0434\u0430\u043b\u044c\u043d\u0435\u0439\u0448\u0430\u044f \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0430 \u0441\u0435\u0442\u0438 \u043d\u0430 \u0430\u0434\u043c\u0438\u043d\u0435. \u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c\u0441\u044f \u043a \u0443\u0434\u0430\u043b\u0451\u043d\u043d\u043e\u043c\u0443 \u0440\u043e\u0443\u0442\u0435\u0440\u0443 \u043c\u043e\u0436\u043d\u043e \u0447\u0435\u0440\u0435\u0437 \u041f\u043e\u0441\u043b\u0435 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f \u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u044f \u043c\u043e\u0436\u043d\u043e \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0430\u0442\u044c\u0441\u044f \u043a \u0443\u0434\u0430\u043b\u0451\u043d\u043d\u043e\u043c\u0443 MikroTik \u0447\u0435\u0440\u0435\u0437 WinBox/SSH \u043f\u043e \u0442\u0443\u043d\u043d\u0435\u043b\u044c\u043d\u043e\u043c\u0443 IP (\u043d\u0430\u043f\u0440. 10.10.10.2).',
             srvNetL3Hint: '\u0423\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430 \u0441\u043c\u043e\u0433\u0443\u0442 \u043e\u0431\u0440\u0430\u0449\u0430\u0442\u044c\u0441\u044f \u0434\u0440\u0443\u0433 \u043a \u0434\u0440\u0443\u0433\u0443 \u043f\u043e IP \u043c\u0435\u0436\u0434\u0443 \u043f\u043e\u0434\u0441\u0435\u0442\u044f\u043c\u0438. \u0421\u0442\u0430\u043d\u0435\u0442 \u0432\u043e\u0437\u043c\u043e\u0436\u043d\u043e: \u0434\u043e\u0441\u0442\u0443\u043f \u043a NAS/\u0444\u0430\u0439\u043b\u043e\u0432\u044b\u043c \u0448\u0430\u0440\u0430\u043c, IP-\u043a\u0430\u043c\u0435\u0440\u0430\u043c, \u043f\u0440\u0438\u043d\u0442\u0435\u0440\u0430\u043c \u043f\u043e \u0430\u0434\u0440\u0435\u0441\u0443, \u0443\u0434\u0430\u043b\u0451\u043d\u043d\u044b\u0439 \u0440\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b (RDP/VNC), \u0443\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u0440\u043e\u0443\u0442\u0435\u0440\u0430\u043c\u0438 \u0447\u0435\u0440\u0435\u0437 WinBox/SSH, \u0438\u0433\u0440\u043e\u0432\u044b\u0435 \u0441\u0435\u0440\u0432\u0435\u0440\u044b, \u0434\u043e\u0441\u0442\u0443\u043f \u043a \u0443\u043c\u043d\u043e\u043c\u0443 \u0434\u043e\u043c\u0443 (Home Assistant). \u041d\u0415 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442: broadcast/multicast-\u0441\u0435\u0440\u0432\u0438\u0441\u044b \u2014 \u0430\u0432\u0442\u043e\u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u0438\u0435 (mDNS/Bonjour, DLNA, AirPlay, Chromecast), \u0441\u0435\u0442\u0435\u0432\u043e\u0435 \u043e\u043a\u0440\u0443\u0436\u0435\u043d\u0438\u0435 Windows, \u0430\u0432\u0442\u043e\u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u0438\u0435 \u043f\u0440\u0438\u043d\u0442\u0435\u0440\u043e\u0432, Wake-on-LAN. \u0412\u0430\u0436\u043d\u043e: \u043a\u0430\u0436\u0434\u044b\u0439 \u043a\u043b\u0438\u0435\u043d\u0442 \u043f\u043e \u0443\u043c\u043e\u043b\u0447\u0430\u043d\u0438\u044e \u0432\u0438\u0434\u0438\u0442 \u0442\u043e\u043b\u044c\u043a\u043e \u0441\u0435\u0442\u044c \u0441\u0435\u0440\u0432\u0435\u0440\u0430. \u0427\u0442\u043e\u0431\u044b \u043a\u043b\u0438\u0435\u043d\u0442\u044b \u0432\u0438\u0434\u0435\u043b\u0438 \u0434\u0440\u0443\u0433 \u0434\u0440\u0443\u0433\u0430, \u043d\u0443\u0436\u043d\u043e \u0434\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u044b \u0432\u0440\u0443\u0447\u043d\u0443\u044e \u2014 \u0441\u043c. README, \u0440\u0430\u0437\u0434\u0435\u043b "\u041c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u043c\u0435\u0436\u0434\u0443 \u043a\u043b\u0438\u0435\u043d\u0442\u0430\u043c\u0438".',
             srvNetL2Hint: '\u0415\u0434\u0438\u043d\u0430\u044f \u0441\u0435\u0442\u044c \u2014 \u0432\u0441\u0435 \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0430 \u043a\u0430\u043a \u0432 \u043e\u0434\u043d\u043e\u043c \u0441\u0432\u0438\u0442\u0447\u0435. \u0420\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u0412\u0421\u0401: mDNS (Bonjour), DLNA, AirPlay, Chromecast, \u0441\u0435\u0442\u0435\u0432\u043e\u0435 \u043e\u043a\u0440\u0443\u0436\u0435\u043d\u0438\u0435 Windows, \u043e\u0431\u043d\u0430\u0440\u0443\u0436\u0435\u043d\u0438\u0435 \u043f\u0440\u0438\u043d\u0442\u0435\u0440\u043e\u0432. \u041c\u0438\u043d\u0443\u0441: broadcast-\u0442\u0440\u0430\u0444\u0438\u043a \u0438\u0434\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 \u0442\u0443\u043d\u043d\u0435\u043b\u044c, \u0431\u043e\u043b\u044c\u0448\u0435 \u043d\u0430\u0433\u0440\u0443\u0437\u043a\u0430.',
@@ -5619,23 +5624,37 @@
     }
 
     // Right-hand output column. For 'awg' mode it shows the importable .conf (plain text,
-    // copyable) + a visible "Download .conf" button; otherwise the client-side MikroTik script.
+    // copyable); otherwise the client-side MikroTik script. The "Download .conf" button
+    // is there in every mode (#69): the hub always gets full-tunnel NAT and the client key
+    // in AWG_CLIENT_PUBS, so the same client slot works from the AmneziaWG app too.
+    // Without it, a hub whose first client was a MikroTik had no way to hand out a .conf.
     function renderClientPanel(result, netMode, clientNum) {
         var pre = document.getElementById('srv-out-client');
         var title = document.getElementById('srv-client-title');
         var dlBtn = document.getElementById('srv-download-conf');
+        var dlHint = document.getElementById('srv-download-conf-hint');
+        var isAwg = netMode === 'awg';
         lastAwgConf = result.awgConf;
         lastAwgConfName = 'awg-client-' + clientNum + '.conf';
-        if (netMode === 'awg') {
+        if (isAwg) {
             pre.dataset.plain = result.awgConf;
             pre.textContent = result.awgConf;
             title.textContent = t('srvAwgConfTitle') + ' ' + clientNum;
-            if (dlBtn) dlBtn.style.display = '';
         } else {
             pre.dataset.plain = result.client;
             pre.innerHTML = highlight(result.client);
             title.textContent = t('srvOutputClient') + ' ' + clientNum;
-            if (dlBtn) dlBtn.style.display = 'none';
+        }
+        if (dlBtn) {
+            // data-i18n too, so a language switch after Generate keeps the right label.
+            var dlKey = isAwg ? 'btnDownloadConf' : 'btnDownloadConfAlt';
+            dlBtn.setAttribute('data-i18n', dlKey);
+            dlBtn.textContent = t(dlKey);
+            dlBtn.style.display = '';
+        }
+        if (dlHint) {
+            dlHint.textContent = t('srvConfAltHint');
+            dlHint.style.display = isAwg ? 'none' : '';
         }
     }
 

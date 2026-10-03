@@ -134,6 +134,80 @@ if (envI1) ok('the same I1 reaches the client .conf',
 ok('the generated client .conf validates', w.validate(w.parseConf(out.awgConf)).length === 0,
    JSON.stringify(w.validate(w.parseConf(out.awgConf))));
 
+/* ---- a .conf for every client, not only for 'awg' mode (#69) ----
+ *
+ * A hub whose first client was a MikroTik used to offer no .conf at all, and
+ * neither did every client added from its share link. The .conf is only worth
+ * offering if it really is the same client slot: its private key has to be the
+ * peer the hub gets, and the hub has to route a full tunnel for it. */
+function pubOf(privB64) {
+    const base = new Uint8Array(32); base[0] = 9;
+    return w.uint8ToBase64(w.curve25519ScalarMult(new Uint8Array(Buffer.from(privB64, 'base64')), base));
+}
+function peerKeyIn(script) {
+    const m = /\/interface\/wireguard\/peers\/add [^\n]*public-key="([^"]+)"/.exec(script);
+    return m ? m[1] : null;
+}
+function confPriv(c) {
+    const m = /^PrivateKey = (\S+)$/m.exec(c);
+    return m ? m[1] : null;
+}
+
+['l3', 'none'].forEach(function (mode) {
+    const ap2 = profile();
+    ap2.level = 'v3'; ap2.port = 30892; ap2.wgListenPort = 40001; ap2.chain = [];
+    const lan = mode === 'l3' ? '192.168.1.0/24' : '';
+    const cl = mode === 'l3' ? '192.168.2.0/24' : '';
+    const r = w.buildServerCommands('198.51.100.1', ap2, '10.182.242.0/24', 'disk1', 'disk1',
+                                    'awg-server-1', lan, cl, mode, 1, '');
+    ok(mode + ': first client gets a .conf', !!r.awgConf);
+    ok(mode + ': that .conf validates', w.validate(w.parseConf(r.awgConf)).length === 0, r.awgConf);
+    const priv = confPriv(r.awgConf);
+    ok(mode + ': .conf key is the peer the hub gets',
+       !!priv && pubOf(priv) === peerKeyIn(r.server), priv);
+    ok(mode + ': hub routes a full tunnel for it',
+       r.server.indexOf('-ft-nat') >= 0 && r.server.indexOf('-ft-fwd') >= 0);
+});
+
+/* The add-client page, opened from a share link made in l3 mode. */
+(function () {
+    const ap3 = profile();
+    ap3.level = 'v3'; ap3.port = 30892; ap3.wgListenPort = 40001; ap3.chain = [];
+    const first = w.buildServerCommands('198.51.100.1', ap3, '10.182.242.0/24', 'disk1', 'disk1',
+                                        'awg-server-1', '192.168.1.0/24', '192.168.2.0/24', 'l3', 1, '');
+    const d2 = new JSDOM(html, { runScripts: 'dangerously', url: first.shareURL });
+    const w2 = d2.window;
+    ok('share link opens the add-client page', !!w2.serverFromURL);
+    if (!w2.serverFromURL) return;
+    const r = w2.buildAddClientCommands(w2.serverFromURL, 'disk1', '192.168.3.0/24', 'l3', '');
+    ok('added client gets a .conf', !!r.awgConf);
+    ok('added client .conf validates', w2.validate(w2.parseConf(r.awgConf)).length === 0, r.awgConf);
+    const priv = confPriv(r.awgConf);
+    ok('added client .conf key is the peer the hub update adds',
+       !!priv && pubOf(priv) === peerKeyIn(r.serverUpdate), priv);
+    ok('added client .conf points at the same hub',
+       r.awgConf.indexOf('Endpoint = 198.51.100.1:30892') >= 0, r.awgConf);
+    ok('added client .conf takes the next tunnel address',
+       r.awgConf.indexOf('Address = 10.182.242.3/32') >= 0, r.awgConf);
+
+    /* And the button that hands it out is actually there. */
+    w2.renderClientPanel(r, 'l3', 2);
+    const btn = w2.document.getElementById('srv-download-conf');
+    const hint = w2.document.getElementById('srv-download-conf-hint');
+    ok('l3: download button is shown', btn.style.display !== 'none');
+    eq('l3: button says it is the phone/PC alternative', btn.getAttribute('data-i18n'), 'btnDownloadConfAlt');
+    ok('l3: hint about the shared key is shown', hint.style.display !== 'none' && hint.textContent.length > 0);
+    eq('l3: the file offered is this client', w2.lastAwgConf, r.awgConf);
+    eq('l3: file is named after the client', w2.lastAwgConfName, 'awg-client-2.conf');
+    ok('l3: the panel still shows the MikroTik script',
+       w2.document.getElementById('srv-out-client').dataset.plain === r.client);
+
+    w2.renderClientPanel(r, 'awg', 2);
+    ok('awg: download button is shown', btn.style.display !== 'none');
+    eq('awg: plain label', btn.getAttribute('data-i18n'), 'btnDownloadConf');
+    eq('awg: no shared-key hint (there is no script)', hint.style.display, 'none');
+})();
+
 /* ---- the serializer itself ---- */
 const lines = w.awgProfileConfLines(profile());
 ok('serializer emits Jc first', lines[0].indexOf('Jc = ') === 0, lines.join(' | '));
