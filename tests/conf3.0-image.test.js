@@ -207,6 +207,11 @@ ok('leftovers are looked for next to the real root-dir, not by prefix',
 // default (internal flash) has nowhere to put them.
 ok('tmpdir is moved onto the disk that holds root-dir',
    /\/container\/config set tmpdir=\(\$disk \. "\/pull"\)/.test(script));
+// Several installs on one router check minutes apart and a slow pull overlaps the
+// next: a shared answer file gets read, or deleted, by the wrong script.
+ok('the published-version answer lands in a file of its own',
+   /:set verPath \(\$disk \. "\/pull\/awg-proxy-1-update-check\.json"\)/.test(script) &&
+   script.indexOf('"awg-update-check.json"') < 0);
 ok('repull leftovers are swept',
    /\/file\/remove \[find where name~\(\$rootDirOrig \. "\.backup"\)\]/.test(script));
 

@@ -3396,11 +3396,14 @@
         src.push('        :local slashPos [:find $rootDir "/"]');
         src.push('        :local disk $rootDir');
         src.push('        :if ([:typeof $slashPos] != "nil") do={ :set disk [:pick $rootDir 0 $slashPos] }');
-        src.push('        :local verPath "awg-update-check.json"');
+        // One file per install: several installs on a router run their checks
+        // minutes apart, and a slow pull overlaps the next one - with a shared file
+        // one script reads, or deletes, the answer meant for another.
+        src.push('        :local verPath "' + prefix + '-update-check.json"');
         src.push('        :if ($disk != "disk1") do={');
         src.push('          :do { /file/make-directory ($disk . "/pull") } on-error={}');
         src.push('          /container/config set tmpdir=($disk . "/pull")');
-        src.push('          :set verPath ($disk . "/pull/awg-update-check.json")');
+        src.push('          :set verPath ($disk . "/pull/' + prefix + '-update-check.json")');
         src.push('        }');
         src.push('        :local newVer ""');
         if (REPO.api) {
