@@ -18,9 +18,12 @@ CLI=awg3-client
 IMG=awg3-interop
 SHARED="$PWD/shared"
 
-SRV_IP=172.30.0.10
-PRX_IP=172.30.0.20
-CLI_IP=172.30.0.30
+# 172.30.0.0/16 by default; AWG3_NET=172.40 when another docker network on the
+# machine already holds that range (docker refuses overlapping pools).
+NET4=${AWG3_NET:-172.30}
+SRV_IP=$NET4.0.10
+PRX_IP=$NET4.0.20
+CLI_IP=$NET4.0.30
 SRV_IP6=fd00:30::10
 PRX_IP6=fd00:30::20
 CLI_IP6=fd00:30::30
@@ -49,12 +52,12 @@ up() {
     # A dual-stack network is what makes the IPv6 leg and the Happy Eyeballs
     # probe testable at all; fall back to IPv4-only rather than failing outright
     # on daemons where IPv6 is not enabled.
-    if dk network create --ipv6 --subnet 172.30.0.0/16 --subnet fd00:30::/64 \
+    if dk network create --ipv6 --subnet $NET4.0.0/16 --subnet fd00:30::/64 \
             $NET >/dev/null 2>&1; then
         HAS_IPV6=1
     else
         HAS_IPV6=0
-        dk network create --subnet 172.30.0.0/16 $NET >/dev/null 2>&1
+        dk network create --subnet $NET4.0.0/16 $NET >/dev/null 2>&1
         echo "note: docker refused an IPv6 network - IPv6 scenarios will be skipped"
     fi
 
@@ -347,6 +350,8 @@ test_all() {
     version_case v2   v2
     version_case v3   v3
     version_case v3.1 v3.1
+    # WARP-style: AmneziaWG defaults for S/H, junk + CPS only.
+    version_case warp v1.5
 
     # Same three pre-3.0 generations against the real old server (v0.2.19),
     # which has no header-protection code at all — so this checks a separate
@@ -450,5 +455,6 @@ case "${1:-all}" in
     test)  test_all ;;
     down)  down ;;
     all)   build && up && test_all ;;
-    *)     echo "usage: $0 [build|up|test|down|all]"; exit 1 ;;
+    one)   up && { pass=0; fail=0; version_case "$2" "$3"; echo; echo "passed $pass, failed $fail"; [ "$fail" = 0 ]; } ;;
+    *)     echo "usage: $0 [build|up|test|down|all|one <profile> <expected-proto>]"; exit 1 ;;
 esac

@@ -213,6 +213,8 @@ The container should show `running` status, and the peer should have a `last-han
 
 The obfuscation parameters (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`, `H1`--`H4`) are in the `[Interface]` section, while `Endpoint` and `PublicKey` are in the `[Peer]` section.
 
+**If some of them are missing** -- as in AWG configs for Cloudflare WARP, which carry only `Jc`/`Jmin`/`Jmax` (sometimes `I1` too) -- the configurator takes the AmneziaWG defaults, exactly as the AmneziaWG apps do: `S1 = S2 = 0`, `H1`--`H4` = `1`--`4` (the plain WireGuard message types), a missing `Jc`/`Jmin`/`Jmax` = `0`. Filled-in fields are marked as defaults, with a note below. For WARP this is the working setup: Cloudflare speaks plain WireGuard, and what gets the handshake past DPI are the junk and CPS packets the proxy sends before it. If a config has no obfuscation at all, the configurator says it is plain WireGuard -- MikroTik connects that without the proxy.
+
 ## Server Mode (1:N) — Detailed Setup
 
 Server mode allows a single awg-proxy to serve multiple MikroTik clients simultaneously. It acts as a full AmneziaWG server, implemented via a WireGuard server + awg-proxy pair.

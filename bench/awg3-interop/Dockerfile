@@ -9,7 +9,9 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
 
 # --- AmneziaWG 3.x server (userspace) ---
 COPY src /build/amneziawg-go
-RUN cd /build/amneziawg-go && git checkout -q v3.1.20260814 \
+# -f: the clone is copied in from a Windows checkout, and the CRLF line endings
+# look like local changes to git inside the container.
+RUN cd /build/amneziawg-go && git checkout -f -q v3.1.20260814 \
     && git log --oneline -1 \
     && go build -o /usr/local/bin/amneziawg-go .
 

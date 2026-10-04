@@ -1191,6 +1191,9 @@
             v3RejectWarn: 'RejectAfterTime has a lower bound below 150 s. MikroTik starts rekeying at 120 s and keeps the old keypair until 180 s, so the peer may start rejecting a key MikroTik still considers live. Expect the tunnel to drop periodically — this one cannot be worked around in the proxy.',
             v3MtuNote: 'This S4 pushes the outer datagram past 1500 bytes, so the WireGuard MTU is lowered to keep it from fragmenting.',
             mtuNoteConf: 'The MTU from the config is kept as is — it is lower than the ceiling this transport allows.',
+            fieldDefault: 'default',
+            awgDefaultsNote: 'Not in the config, so the AmneziaWG defaults are used — exactly what the AmneziaWG apps do with such a config. Typical for WARP: Cloudflare speaks plain WireGuard, and only the junk packets (Jc/Jmin/Jmax) and the CPS packets (I1–I5) sent before the handshake differ from it — they are what gets the handshake past DPI. Filled in:',
+            plainWgNote: 'There is no AmneziaWG obfuscation in this config at all: no junk packets, no CPS, no padding, standard message types. It is a plain WireGuard config — MikroTik connects it natively, and the proxy would add nothing. If the config was meant to be AmneziaWG, check that it was copied whole.',
             mtuNotePath: 'The WireGuard MTU is lowered to fit the underlay path MTU of',
             extraTimeLabel: 'Hold DNS address-list entries past their TTL',
             extraTimeHint: 'Sets /ip/dns address-list-extra-time. Services behind Cloudflare and other CDNs hand out very short TTLs, so an address can drop out of the list while the browser is still using it and the connection leaves the tunnel. This is a router-wide DNS setting, not a per-list one: it is only applied if the router still has the default 0s, and the uninstall script only resets it if it is still exactly the value set here.',
@@ -1420,6 +1423,9 @@
             v3RejectWarn: 'Нижняя граница RejectAfterTime меньше 150 с. MikroTik начинает ре-кей на 120-й секунде и держит старый keypair до 180-й, поэтому пир может начать отвергать ключ, который MikroTik ещё считает живым. Ждите периодических обрывов — это единственное, что нельзя обойти на стороне прокси.',
             v3MtuNote: 'При таком S4 внешняя датаграмма выходит за 1500 байт, поэтому MTU WireGuard понижается, чтобы не было фрагментации.',
             mtuNoteConf: 'MTU из конфига оставлен как есть — он ниже потолка, который допускает этот транспорт.',
+            fieldDefault: 'по умолчанию',
+            awgDefaultsNote: 'Этого нет в конфиге, поэтому взяты значения AmneziaWG по умолчанию — ровно так поступают с таким конфигом приложения AmneziaWG. Обычное дело для WARP: Cloudflare говорит на обычном WireGuard, и от него отличаются только junk-пакеты (Jc/Jmin/Jmax) и CPS-пакеты (I1–I5) перед рукопожатием — именно они проводят его через DPI. Подставлено:',
+            plainWgNote: 'В этом конфиге нет никакой обфускации AmneziaWG: ни junk-пакетов, ни CPS, ни паддинга, типы сообщений стандартные. Это обычный WireGuard — MikroTik подключит его и сам, прокси ничего не добавит. Если конфиг задумывался как AmneziaWG, проверьте, что он скопирован целиком.',
             mtuNotePath: 'MTU WireGuard понижен, чтобы уложиться в MTU нижележащего канала',
             extraTimeLabel: 'Держать записи DNS address-list дольше TTL',
             extraTimeHint: 'Задаёт /ip/dns address-list-extra-time. У сервисов за Cloudflare и другими CDN очень короткий TTL, поэтому адрес успевает выпасть из списка, пока браузер им ещё пользуется, и соединение уходит мимо туннеля. Это настройка на весь роутер, а не на конкретный список: она применяется, только если там всё ещё дефолтные 0s, а скрипт удаления сбрасывает её, только если значение осталось ровно тем, что задано здесь.',
@@ -1724,7 +1730,17 @@
     // ============================================================
     // Field definitions
     // ============================================================
-    var IFACE_REQUIRED = ['PrivateKey', 'Address', 'Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
+    var IFACE_REQUIRED = ['PrivateKey', 'Address'];
+    // AmneziaWG obfuscation keys a config may leave out. The AmneziaWG apps take
+    // these defaults for anything missing, and the defaults are plain WireGuard:
+    // no junk, no padding, H1-H4 = the WireGuard message types 1-4. WARP configs
+    // are the usual case - Cloudflare speaks plain WireGuard, so they carry only
+    // Jc/Jmin/Jmax (and sometimes I1-I5): the packets in front of the handshake
+    // are what gets it past DPI. Rejecting such a config as "S1 missing" turned
+    // away something every client app accepts.
+    var AWG_DEFAULTS = { Jc: '0', Jmin: '0', Jmax: '0', S1: '0', S2: '0',
+                         H1: '1', H2: '2', H3: '3', H4: '4' };
+    var AWG_DEFAULT_KEYS = ['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'H1', 'H2', 'H3', 'H4'];
     // AWG 3.0 keys are optional: a v2 config stays valid, and a v3 config is
     // rendered with its extra keys instead of being flagged as unknown.
     var IFACE_OPTIONAL = ['DNS', 'MTU', 'S3', 'S4', 'I1', 'I2', 'I3', 'I4', 'I5',
@@ -2062,11 +2078,13 @@
         var protoBadge = '<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600;' + badgeColors[proto] + ';margin-left:8px">AWG ' + proto + '</span>';
         var html = '<div style="margin-bottom:8px;font-size:0.8rem;color:var(--text-muted)">' + esc(t('ifaceSec')) + protoBadge + '</div>';
         html += '<div class="fields-grid">';
-        IFACE_REQUIRED.concat(IFACE_OPTIONAL).forEach(function (k) {
+        var defaulted = parsed.defaulted || [];
+        IFACE_REQUIRED.concat(AWG_DEFAULT_KEYS, IFACE_OPTIONAL).forEach(function (k) {
             var v = parsed.interface[k];
             var ok = !!v;
-            var opt = IFACE_OPTIONAL.indexOf(k) >= 0;
+            var opt = IFACE_OPTIONAL.indexOf(k) >= 0 || AWG_DEFAULT_KEYS.indexOf(k) >= 0;
             var display = v ? (v.length > 18 ? v.slice(0, 15) + '...' : v) : 'missing';
+            if (defaulted.indexOf(k) >= 0) display = v + ' · ' + t('fieldDefault');
             html += '<div class="field-tag ' + (ok || opt ? 'ok' : 'miss') + '">' +
                 '<span class="fname">' + esc(k) + '</span>' +
                 '<span class="fval">' + esc(display) + '</span></div>';
@@ -2085,8 +2103,36 @@
                 '<span class="fval">' + esc(display) + '</span></div>';
         });
         html += '</div>';
+        html += renderDefaultsNote(parsed);
         html += renderV3Notes(parsed.interface, proto);
         html += renderMtuNote(parsed.interface);
+        return html;
+    }
+
+    // Plain WireGuard with nothing AmneziaWG about it: the defaults for every
+    // obfuscation key and no CPS, padding or header protection either.
+    function isPlainWireGuard(iface) {
+        for (var k in AWG_DEFAULTS) if (String(iface[k]) !== AWG_DEFAULTS[k]) return false;
+        var extra = ['S3', 'S4', 'I1', 'I2', 'I3', 'I4', 'I5', 'HeaderProtectionKey'];
+        for (var i = 0; i < extra.length; i++) {
+            var v = iface[extra[i]];
+            if (v && v !== '0') return false;
+        }
+        return true;
+    }
+
+    // Say what was filled in rather than fill it in silently: a config that
+    // needed the defaults is either WARP (fine) or one cut short by a copy-paste.
+    function renderDefaultsNote(parsed) {
+        var d = parsed.defaulted || [];
+        if (!d.length) return '';
+        var html = '';
+        if (isPlainWireGuard(parsed.interface)) {
+            html += '<div class="alert alert-warning" style="margin-top:14px">' + esc(t('plainWgNote')) + '</div>';
+        }
+        html += '<div class="alert alert-info" style="margin-top:' + (html ? '8' : '14') + 'px">' +
+            esc(t('awgDefaultsNote')) + ' ' +
+            esc(d.map(function (k) { return k + ' = ' + AWG_DEFAULTS[k]; }).join(', ')) + '.</div>';
         return html;
     }
 
@@ -2356,6 +2402,17 @@
         var iface = parsed.interface;
         var peer = parsed.peer;
 
+        // Fill what the config left out, the way the AmneziaWG apps do, and
+        // remember what was filled so the page can say so. Idempotent: a second
+        // call finds the keys present and keeps the first call's list.
+        if (!parsed.defaulted) parsed.defaulted = [];
+        AWG_DEFAULT_KEYS.forEach(function (k) {
+            if (!iface[k]) {
+                iface[k] = AWG_DEFAULTS[k];
+                parsed.defaulted.push(k);
+            }
+        });
+
         // Check presence first
         IFACE_REQUIRED.forEach(function (k) {
             if (!iface[k]) errors.push('[Interface] ' + k + ' -- missing');
@@ -2422,6 +2479,24 @@
             errors.push('[Interface] H3 -- must be uint32 or range MIN-MAX');
         if (!isHValue(iface.H4))
             errors.push('[Interface] H4 -- must be uint32 or range MIN-MAX');
+        // The proxy refuses to start on overlapping H values: a packet could not
+        // be told apart. With defaults filled in this is a real case - an explicit
+        // H1 = 2 next to a missing H2 - so the message names the filled-in one.
+        var hk = ['H1', 'H2', 'H3', 'H4'];
+        if (hk.every(function (k) { return isHValue(iface[k]); })) {
+            var rng = hk.map(function (k) {
+                var a = String(iface[k]).split('-');
+                return [Number(a[0]), Number(a[a.length - 1])];
+            });
+            var dflt = parsed.defaulted || [];
+            for (var hi = 0; hi < 4; hi++) for (var hj = hi + 1; hj < 4; hj++) {
+                if (rng[hi][0] <= rng[hj][1] && rng[hj][0] <= rng[hi][1]) {
+                    var note = [hk[hi], hk[hj]].filter(function (k) { return dflt.indexOf(k) >= 0; });
+                    errors.push('[Interface] ' + hk[hi] + ' and ' + hk[hj] + ' -- overlap, the proxy cannot tell the packets apart' +
+                        (note.length ? ' (' + note.join(', ') + ' not in the config, taken as the default - set it explicitly)' : ''));
+                }
+            }
+        }
 
         if (!isValidBase64Key(peer.PublicKey))
             errors.push('[Peer] PublicKey -- invalid base64 key (expected 44 chars, 32 bytes)');

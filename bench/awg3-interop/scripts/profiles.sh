@@ -50,6 +50,18 @@ load_profile() {
         HPK_ON=1
         RT_ON=1; DC_ON=1
         ;;
+    warp)
+        # What AWG configs for Cloudflare WARP look like: Cloudflare speaks
+        # plain WireGuard, so S and H stay at the AmneziaWG defaults (0 and the
+        # WireGuard message types 1-4) and only the junk and CPS packets sent
+        # before the handshake differ. The server here is therefore plain
+        # WireGuard in all but name.
+        JC=4; JMIN=40; JMAX=70
+        S1=0; S2=0; S3=0; S4=0
+        H1=1; H2=2; H3=3; H4=4
+        I1='<b 0xc2000000011419fa4bb3599f336777de><r 16>'; I2=''
+        HPK_ON=0
+        ;;
     *)
         echo "unknown profile: $1" >&2
         return 1
