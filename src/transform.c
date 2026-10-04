@@ -266,7 +266,10 @@ uint8_t *transform_outbound_profile(uint8_t *buf, int dataoff, int n,
         write32_le(data, hrange_pick(&pr->h1, rand_val));
         if (out_key)
             recompute_mac1(data, out_key);
-        *sendJunk = (cfg->jc > 0);
+        /* I-packets go out even with Jc=0: a single cover packet must not
+         * drag a row of small junk packets in front of it. */
+        *sendJunk = (cfg->jc > 0) || pr->cps[0] || pr->cps[1] ||
+                    pr->cps[2] || pr->cps[3] || pr->cps[4];
         if (pr->s1 > 0) {
             uint8_t *out;
             if (dataoff >= pr->s1) {
@@ -498,7 +501,7 @@ uint8_t *transform_inbound(uint8_t *buf, int n, const awg_config_t *cfg, int *ou
                                      NULL, out_len);
 }
 
-int generate_junk(const awg_config_t *cfg, uint8_t *junk_buf, int *sizes) {
+int generate_junk(const awg_config_t *cfg, uint64_t seed, int *sizes) {
     if (cfg->jc <= 0 || cfg->jmax <= 0) return 0;
 
     /* Clamp downward, never upward: the caller sized junk_buf as jc * cfg->jmax
@@ -512,9 +515,10 @@ int generate_junk(const awg_config_t *cfg, uint8_t *junk_buf, int *sizes) {
     /* Half-open [jmin, jmax), matching amneziawg-go's min + fastrandn(max-min) */
     int span = jmax - jmin;
 
-    /* junk_buf should already be filled with random data by caller */
+    /* The seed must not be bytes that go on the wire: seeded from the junk
+     * itself, the sizes could be read off the first junk packet. */
     fastrand_t r;
-    fastrand_init(&r, read32_le(junk_buf) | 1);
+    fastrand_init(&r, seed);
 
     for (int i = 0; i < cfg->jc; i++) {
         sizes[i] = (span > 0) ? jmin + fastrand_intn(&r, span) : jmin;

@@ -1401,20 +1401,25 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
      * and server modes never reach the auto_src_port branch below anyway: it
      * lives in c2s_thread_normal(), so for them local_port has always been 0. */
 
-    /* Init PRNG */
-    uint64_t seed;
+    /* Init PRNG: 8 bytes of seed, then the 32-byte key for the I-packet and
+     * junk bytes. */
+    struct { uint64_t seed; uint8_t key[32]; } rnd;
     int ufd = open("/dev/urandom", O_RDONLY);
-    if (ufd >= 0) {
-        read(ufd, &seed, 8);
-        close(ufd);
-    } else {
-        seed = (uint64_t)(uintptr_t)p ^ 0xDEADBEEFCAFEULL;
+    int got = ufd >= 0 ? (int)read(ufd, &rnd, sizeof(rnd)) : -1;
+    if (ufd >= 0) close(ufd);
+    if (got != (int)sizeof(rnd)) {
+        fastrand_t fb;
+        fastrand_init(&fb, (uint64_t)(uintptr_t)p ^ 0xDEADBEEFCAFEULL ^ (uint64_t)time(NULL));
+        fastrand_fill(&fb, &rnd, sizeof(rnd));
     }
+    uint64_t seed = rnd.seed;
     fastrand_init(&p->rng, seed);
     /* The two directions must never emit the same padding bytes at the same
      * time, so they run independent streams from independent seeds. */
     fastrand_init(&p->rng_c2s, seed ^ 0x9E3779B97F4A7C15ULL);
     fastrand_init(&p->rng_s2c, seed ^ 0xBF58476D1CE4E5B9ULL);
+    csprng_init(&p->cs_c2s, rnd.key, 1);
+    csprng_init(&p->cs_s2c, rnd.key, 2);
 
     /* Pre-allocate junk buffers */
     if (cfg->jc > 0 && cfg->jmax > 0) {
@@ -1687,7 +1692,7 @@ static int send_packet_to(int fd, const void *data, int len, cliaddr_t *addr) {
 static void send_junk_and_cps_to(proxy_t *p, int fd, cliaddr_t *addr) {
     awg_config_t *cfg = p->cfg;
 
-    int ncps = cps_generate_all(cfg->cps, &p->cps_counter,
+    int ncps = cps_generate_all(cfg->cps, &p->cps_counter, &p->cs_s2c,
                                  p->cps_bufs, p->cps_lens);
     for (int i = 0; i < ncps; i++)
         send_packet_to(fd, p->cps_bufs[i], p->cps_lens[i], addr);
@@ -1695,11 +1700,13 @@ static void send_junk_and_cps_to(proxy_t *p, int fd, cliaddr_t *addr) {
     if (cfg->jc > 0 && cfg->jmax > 0) {
         size_t junk_bytes;
         size_t junk_sizes_bytes;
+        uint64_t seed;
         if (junk_layout_sizes(cfg, &junk_bytes, &junk_sizes_bytes) < 0)
             return;
         (void)junk_sizes_bytes;
-        fastrand_fill(&p->rng_s2c, p->junk_buf, junk_bytes);
-        int njunk = generate_junk(cfg, p->junk_buf, p->junk_sizes);
+        csprng_fill(&p->cs_s2c, &seed, sizeof(seed));
+        csprng_fill(&p->cs_s2c, p->junk_buf, junk_bytes);
+        int njunk = generate_junk(cfg, seed, p->junk_sizes);
         size_t off = 0;
         for (int i = 0; i < njunk; i++) {
             send_packet_to(fd, p->junk_buf + off, p->junk_sizes[i], addr);
@@ -1714,7 +1721,7 @@ static void send_junk_and_cps(proxy_t *p, int fd) {
     awg_config_t *cfg = p->cfg;
 
     /* CPS packets */
-    int ncps = cps_generate_all(cfg->cps, &p->cps_counter,
+    int ncps = cps_generate_all(cfg->cps, &p->cps_counter, &p->cs_c2s,
                                  p->cps_bufs, p->cps_lens);
     for (int i = 0; i < ncps; i++)
         if (send_packet(fd, p->cps_bufs[i], p->cps_lens[i]) < 0)
@@ -1724,11 +1731,13 @@ static void send_junk_and_cps(proxy_t *p, int fd) {
     if (cfg->jc > 0 && cfg->jmax > 0) {
         size_t junk_bytes;
         size_t junk_sizes_bytes;
+        uint64_t seed;
         if (junk_layout_sizes(cfg, &junk_bytes, &junk_sizes_bytes) < 0)
             return;
         (void)junk_sizes_bytes;
-        fastrand_fill(&p->rng_c2s, p->junk_buf, junk_bytes);
-        int njunk = generate_junk(cfg, p->junk_buf, p->junk_sizes);
+        csprng_fill(&p->cs_c2s, &seed, sizeof(seed));
+        csprng_fill(&p->cs_c2s, p->junk_buf, junk_bytes);
+        int njunk = generate_junk(cfg, seed, p->junk_sizes);
         size_t off = 0;
         for (int i = 0; i < njunk; i++) {
             if (send_packet(fd, p->junk_buf + off, p->junk_sizes[i]) < 0)

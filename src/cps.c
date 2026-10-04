@@ -152,10 +152,22 @@ int cps_max_size(const cps_template_t *tmpl) {
     return total;
 }
 
-int cps_generate(const cps_template_t *tmpl, uint32_t counter, uint8_t *buf, int bufsize) {
+/* n symbols drawn uniformly from set. Bytes past the largest multiple of
+ * setlen are rejected: plain modulo would make some symbols more frequent. */
+static void fill_symbols(csprng_t *rng, uint8_t *dst, int n, const char *set, int setlen) {
+    const int lim = 256 - 256 % setlen;
+    uint8_t pool[64];
+    int have = 0;
+    while (n > 0) {
+        if (!have) { csprng_fill(rng, pool, sizeof(pool)); have = sizeof(pool); }
+        uint8_t b = pool[--have];
+        if (b < lim) { *dst++ = (uint8_t)set[b % setlen]; n--; }
+    }
+}
+
+int cps_generate(const cps_template_t *tmpl, uint32_t counter, csprng_t *rng,
+                 uint8_t *buf, int bufsize) {
     int off = 0;
-    fastrand_t rng;
-    fastrand_init(&rng, counter ^ 0xDEADBEEF);
 
     for (int i = 0; i < tmpl->nseg; i++) {
         const cps_segment_t *seg = &tmpl->segs[i];
@@ -167,13 +179,12 @@ int cps_generate(const cps_template_t *tmpl, uint32_t counter, uint8_t *buf, int
             break;
         case CPS_RANDOM:
             if (off + seg->size > bufsize) return off;
-            fastrand_fill(&rng, buf + off, seg->size);
+            csprng_fill(rng, buf + off, (size_t)seg->size);
             off += seg->size;
             break;
         case CPS_RANDOM_CHARS:
             if (off + seg->size > bufsize) return off;
-            for (int j = 0; j < seg->size; j++)
-                buf[off + j] = chars52[fastrand_intn(&rng, CHARS52_LEN)];
+            fill_symbols(rng, buf + off, seg->size, chars52, CHARS52_LEN);
             off += seg->size;
             break;
         case CPS_ZEROS:
@@ -183,8 +194,7 @@ int cps_generate(const cps_template_t *tmpl, uint32_t counter, uint8_t *buf, int
             break;
         case CPS_RANDOM_DIGITS:
             if (off + seg->size > bufsize) return off;
-            for (int j = 0; j < seg->size; j++)
-                buf[off + j] = '0' + fastrand_intn(&rng, 10);
+            fill_symbols(rng, buf + off, seg->size, "0123456789", 10);
             off += seg->size;
             break;
         case CPS_TIMESTAMP: {
@@ -209,11 +219,11 @@ int cps_generate(const cps_template_t *tmpl, uint32_t counter, uint8_t *buf, int
 }
 
 int cps_generate_all(cps_template_t *templates[5], uint32_t *counter,
-                     uint8_t bufs[][1500], int lens[]) {
+                     csprng_t *rng, uint8_t bufs[][1500], int lens[]) {
     int count = 0;
     for (int i = 0; i < 5; i++) {
         if (!templates[i]) continue;
-        lens[count] = cps_generate(templates[i], *counter, bufs[count], 1500);
+        lens[count] = cps_generate(templates[i], *counter, rng, bufs[count], 1500);
         (*counter)++;
         count++;
     }

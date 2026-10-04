@@ -294,10 +294,10 @@ int config_server_resolve_peer_for_response(const awg_config_t *cfg,
 int config_server_resolve_peer_for_init(const awg_config_t *cfg,
                                         const uint8_t *wg_init, int n);
 
-/* Generate junk packets into pre-allocated buffer.
- * junk_buf: buffer of at least jc*jmax bytes (pre-filled with random).
+/* Draw the junk packet sizes; the caller fills jc*jmax bytes of junk itself.
+ * seed: fresh random value that never goes on the wire.
  * sizes[]: output array of packet sizes (at least jc entries).
  * Returns number of junk packets. */
-int generate_junk(const awg_config_t *cfg, uint8_t *junk_buf, int *sizes);
+int generate_junk(const awg_config_t *cfg, uint64_t seed, int *sizes);
 
 #endif

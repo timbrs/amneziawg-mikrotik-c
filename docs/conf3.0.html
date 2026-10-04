@@ -492,6 +492,27 @@
             color: var(--promo);
         }
 
+        .warp-gen {
+            --promo: #c2410c;
+            --promo-line: #fb923c;
+            margin: 0 0 12px;
+            border-color: #fed7aa;
+            background: #fff7ed;
+        }
+
+        .warp-gen .promo-title::before {
+            content: "\2601";
+        }
+
+        .warp-gen ol {
+            margin: 4px 0 6px 20px;
+        }
+
+        /* A WARP config needs none of the advanced rows: their defaults fit. */
+        .warp-simple .warp-adv {
+            display: none !important;
+        }
+
         .scenario-panel-header {
             display: flex;
             align-items: center;
@@ -612,6 +633,7 @@
 
             .scenario-panel { background: #242424; }
             .promo { --promo: #86efac; --promo-line: #4ade80; background: #14231a; border-color: #1f3d29; }
+            .warp-gen { --promo: #fdba74; --promo-line: #fb923c; background: #26180c; border-color: #4a2c14; }
             .checkbox-grid label:hover { background: #2a2a2a; }
 
             .alert-warning { background: #2a1a00; border-color: #92400e; color: #fcd34d; }
@@ -735,6 +757,18 @@
             </div>
             <div id="mode-hint" class="hint" data-i18n="modeContainerHint">WireGuard client on MikroTik + awg-proxy runs inside a Docker container directly on the router</div>
         </div>
+        <details id="warp-gen" class="promo warp-gen">
+            <summary class="promo-title" data-i18n="warpGenTitle">No AmneziaVPN — generate a config on Cloudflare WARP</summary>
+            <ol>
+                <li><span data-i18n="warpGenStep1">Open the WARP config generator:</span>
+                    <a href="https://lanrat.github.io/wireguard-warp-generator/" target="_blank" rel="noopener">lanrat.github.io/wireguard-warp-generator</a></li>
+                <li data-i18n="warpGenStep2">Press "Generate WARP Config", then "Copy to Clipboard" (or "Download warp.conf").</li>
+                <li data-i18n="warpGenStep3">Paste it into the field below. The page fills in the missing AmneziaWG values itself and offers to make the packet before the handshake look like ordinary Chrome QUIC traffic to Cloudflare.</li>
+            </ol>
+            <p><span data-i18n="warpGenAlt">Another way is the wgcf command-line tool:</span>
+                <a href="https://github.com/ViRb3/wgcf" target="_blank" rel="noopener">github.com/ViRb3/wgcf</a></p>
+            <p data-i18n="warpGenNote">This page stays offline: it only reads the config you paste.</p>
+        </details>
         <label for="conf-input" data-i18n="confLabel">.conf file contents</label>
         <textarea id="conf-input"
                   placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.1.1.1/32&#10;DNS = 1.1.1.1&#10;Jc = 2&#10;Jmin = 1&#10;Jmax = 500&#10;S1 = 123&#10;S2 = 12&#10;H1 = 12345&#10;...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = 1.2.3.4:12345&#10;AllowedIPs = 0.0.0.0/0"></textarea>
@@ -743,6 +777,14 @@
             <input type="text" id="awg-dns" placeholder="e.g. 192.168.88.1" oninput="clearFieldFlag('awg-dns', 'awg-dns-error')">
             <div id="awg-dns-error" class="field-error" role="alert" style="display:none"></div>
             <div class="hint" data-i18n="awgDnsHint">Written to the container as AWG_DNS. The container image is scratch and has no resolver of its own, so a hostname endpoint cannot be resolved without this. It has to be reachable from the container without the tunnel &mdash; the router itself or a public resolver. Left empty, a public DNS from the config (1.1.1.1 and the like) is taken by itself; a private one (10.x, 100.64.x...) is not &mdash; it usually lives inside the tunnel.</div>
+        </div>
+        <div id="warp-row" class="alert alert-info" style="display:none;margin-top:10px">
+            <div data-i18n="warpSimpleNote">This is a Cloudflare WARP config: only what it needs is asked, everything else keeps its defaults.</div>
+            <label style="margin-top:8px"><input type="checkbox" id="warp-ports-enable" checked>
+            <span data-i18n="warpPortsLabel">Random WARP port</span></label>
+            <div class="hint"><span data-i18n="warpPortsNote">Cloudflare takes WARP on several ports, so the proxy gets them all: a port is picked at random for each connection, and one that does not answer is left after about 15 s. Ports:</span>
+                <span id="warp-ports-list"></span></div>
+            <button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px" id="warp-adv-toggle" onclick="toggleWarpAdvanced()" data-i18n="warpShowAll">Show all settings</button>
         </div>
         <details class="promo">
             <summary class="promo-title" data-i18n="promoTitle">VPS без ограничений по трафику</summary>
@@ -802,22 +844,22 @@
             </div>
             <div id="exclusions-grid" class="checkbox-grid"></div>
         </div>
-        <div id="netwatch-row" style="margin-top:8px">
+        <div id="netwatch-row" class="warp-adv" style="margin-top:8px">
             <label><input type="checkbox" id="netwatch-enable" checked>
             <span data-i18n="netwatchLabel">Netwatch failover</span></label>
             <div class="hint" data-i18n="netwatchHint">Monitors tunnel availability by pinging 8.8.8.8 through the WG interface (via a pinned probe route). If the tunnel is down, disables its route &mdash; traffic falls back to the next tunnel (by distance) or goes direct. Re-enables the route when the tunnel recovers.</div>
         </div>
-        <div id="v6block-row" style="margin-top:8px">
+        <div id="v6block-row" class="warp-adv" style="margin-top:8px">
             <label><input type="checkbox" id="v6block-enable" checked>
             <span data-i18n="v6blockLabel">Force IPv4 (block native IPv6 past the tunnel)</span></label>
             <div class="hint" data-i18n="v6blockHint">Only IPv4 goes into the tunnel. If the ISP hands the router native IPv6, every IPv6 flow leaves straight out of WAN and the routing policy never sees it: the site opens past the VPN, or hangs for about 10 seconds until the client falls back to IPv4. These rules reject such connections (TCP with a reset, so the fallback is instant). Anything that must keep speaking IPv6 directly goes into the ...-v6-direct address list.</div>
         </div>
-        <div id="autoupdate-row" style="margin-top:8px">
+        <div id="autoupdate-row" class="warp-adv" style="margin-top:8px">
             <label><input type="checkbox" id="autoupdate-enable" checked>
             <span data-i18n="autoUpdateLabel">Check for container updates daily</span></label>
             <div class="hint" data-i18n="autoUpdateHint">Adds a scheduler that runs the <code>&lt;prefix&gt;-update</code> script at 04:30. The script compares the published release with the installed one and only calls <code>/container/repull</code> when the version actually changed &mdash; a pull restarts the container and the tunnel is down for about ten seconds. Needs RouterOS 7.22+ and an install from the registry; the script itself is always created, so you can update by hand with <code>/system/script/run &lt;prefix&gt;-update</code>.</div>
         </div>
-        <div id="perf-row" style="margin-top:8px">
+        <div id="perf-row" class="warp-adv" style="margin-top:8px">
             <label data-i18n="perfLabel">How powerful is your router?</label>
             <div class="radio-group">
                 <label><input type="radio" name="perf-mode" value="auto" checked> <span data-i18n="perfAuto">Detect automatically (recommended)</span></label>
@@ -826,33 +868,33 @@
             </div>
             <div class="hint" data-i18n="perfHint">On a router with four cores or more and a 64-bit CPU (hAP ax2, ax3) the proxy gets two cores of its own, its threads are given the CPU first, and packet receive is spread over the other cores. That removes the last packet drops and makes the speed steady instead of jumping between runs. On a weaker router &mdash; fewer cores, or a 32-bit arm such as the hAP ac2 &mdash; these settings are skipped: there they take the CPU away from WireGuard, and the container drops them by itself even if they are set. Automatic detection asks the router itself during install, so it is the safe choice. Needs RouterOS 7.24+; on older versions the settings are accepted but do nothing.</div>
         </div>
-        <div id="df-row" style="margin-top:8px">
+        <div id="df-row" class="warp-adv" style="margin-top:8px">
             <label><input type="checkbox" id="df-enable">
             <span data-i18n="dfLabel">Clear DF bit on UDP (DPI workaround)</span></label>
             <div class="hint" data-i18n="dfHint">Adds AWG_NO_DF=1 to the container ENV: the proxy clears the Don&rsquo;t Fragment bit on its UDP packets. Some DPI equipment passes DF=0 UDP better than DF=1. Enable only if the tunnel has connectivity issues &mdash; with DF=0 large packets may be fragmented along the path.</div>
         </div>
-        <div id="ipv6-row" style="margin-top:8px">
+        <div id="ipv6-row" class="warp-adv" style="margin-top:8px">
             <label><input type="checkbox" id="ipv6-enable">
             <span data-i18n="ipv6Label">Server is reachable over IPv6</span></label>
             <div class="hint" data-i18n="ipv6Hint">The IPv6 header is 40 bytes instead of 20, so a full-size packet no longer fits a 1500-byte path and the WireGuard MTU has to come down. Ticked automatically when the endpoint is an IPv6 literal. For a DNS name the box stays off (IPv4 MTU) &mdash; tick it yourself if you know the name has an AAAA record; the generated script also asks the router with <code>:resolve type=ipv6</code> and lowers the MTU if it answers.</div>
         </div>
-        <div id="extratime-row" style="margin-top:8px">
+        <div id="extratime-row" class="warp-adv" style="margin-top:8px">
             <label><input type="checkbox" id="extratime-enable">
             <span data-i18n="extraTimeLabel">Hold DNS address-list entries past their TTL</span></label>
             <input type="text" id="extratime-value" value="30m" style="max-width:6em;margin-left:6px">
             <div class="hint" data-i18n="extraTimeHint">Sets <code>/ip/dns address-list-extra-time</code>. Services behind Cloudflare and other CDNs hand out very short TTLs, so an address can drop out of the list while the browser is still using it and the connection leaves the tunnel. This is a <strong>router-wide</strong> DNS setting, not a per-list one: it is only applied if the router still has the default <code>0s</code>, and the uninstall script only resets it if it is still exactly the value set here.</div>
         </div>
-        <div id="offline-row" style="margin-top:8px">
+        <div id="offline-row" class="warp-adv" style="margin-top:8px">
             <label><input type="checkbox" id="offline-enable">
             <span data-i18n="offlineLabel">Offline mode</span></label>
             <div class="hint" data-i18n="offlineHint">Adds a step 0 to the output: a script that changes nothing and prints exactly which files to download and where to put them. Download them elsewhere, upload them to the router, then run the install. Nothing is fetched from GitHub &mdash; no registry pull, no release download, and the RU list stops waiting a minute for a name that will never resolve.</div>
         </div>
-        <div id="path-mtu-row" style="margin-top:8px">
+        <div id="path-mtu-row" class="warp-adv" style="margin-top:8px">
             <label for="path-mtu" data-i18n="pathMtuLabel">Underlay path MTU</label>
             <input type="number" id="path-mtu" value="1500" min="1280" max="1500" step="1">
             <div class="hint" data-i18n="pathMtuHint">The MTU of the link the outer UDP datagram has to cross: 1500 for plain Ethernet, <strong>1492 for PPPoE</strong>, lower for PPPoE over VLAN.</div>
         </div>
-        <div id="storage-row" style="margin-top:14px">
+        <div id="storage-row" class="warp-adv" style="margin-top:14px">
             <label for="storage-select" data-i18n="storageLabel">Container storage</label>
             <select id="storage-select">
                 <option value="__auto" data-i18n="sAuto">Auto (usb1/ &rarr; disk1/)</option>
@@ -871,7 +913,7 @@
             <label for="proxy-ip" data-i18n="proxyIpLabel">Proxy device IP address</label>
             <input type="text" id="proxy-ip" placeholder="e.g. 192.168.1.100" data-i18n-ph="proxyIpPh">
         </div>
-        <div style="margin-top:14px">
+        <div id="prefix-row" class="warp-adv" style="margin-top:14px">
             <label for="prefix-select" data-i18n="prefixLabel">Tunnel name (prefix)</label>
             <select id="prefix-select">
                 <option value="awg-proxy-1" data-i18n="pAwg1">awg-proxy-1 &mdash; 1st tunnel (default)</option>
@@ -1211,6 +1253,21 @@
             awgDnsAuto: 'Container DNS server was not set, so the public DNS from the config is used (filled into the field):',
             plainWgJunkHint: 'For WARP that is not enough to get past DPI: it takes the junk packets sent before the handshake. The button adds them to the config - a plain WireGuard server, WARP included, simply drops them.',
             btnAddJunk: 'Add junk packets, as for WARP (Jc = 4, Jmin = 40, Jmax = 70)',
+            warpQuicHint: 'This is a Cloudflare WARP config. The packet sent before each handshake can be made to look like an ordinary Chrome QUIC connection to Cloudflare, so the traffic stands out less. The button puts that packet into the config as I1 and sets Jc = 0, so nothing else goes in front of it. Cloudflare ignores it, like any junk packet.',
+            warpQuicOn: 'The packet before each handshake looks like an ordinary Chrome QUIC connection to Cloudflare (I1).',
+            warpQuicPort: 'Ordinary QUIC goes to UDP port 443, while Cloudflare takes WireGuard on 2408, 500, 1701 and 4500: the packet looks like QUIC by its header, not by its port.',
+            warpPortsNote: 'Cloudflare takes WARP on several ports, so the proxy gets them all: a port is picked at random for each connection, and one that does not answer is left after about 15 s. Ports:',
+            btnWarpQuic: 'Make the packet before the handshake look like Chrome QUIC (I1, Jc = 0)',
+            warpSimpleNote: 'This is a Cloudflare WARP config: only what it needs is asked, everything else keeps its defaults.',
+            warpPortsLabel: 'Random WARP port',
+            warpShowAll: 'Show all settings',
+            warpHideAll: 'Hide extra settings',
+            warpGenTitle: 'No AmneziaVPN — generate a config on Cloudflare WARP',
+            warpGenStep1: 'Open the WARP config generator:',
+            warpGenStep2: 'Press "Generate WARP Config", then "Copy to Clipboard" (or "Download warp.conf").',
+            warpGenStep3: 'Paste it into the field below. The page fills in the missing AmneziaWG values itself and offers to make the packet before the handshake look like ordinary Chrome QUIC traffic to Cloudflare.',
+            warpGenAlt: 'Another way is the wgcf command-line tool:',
+            warpGenNote: 'This page stays offline: it only reads the config you paste.',
             awgDefaultsNote: 'Not in the config, so the AmneziaWG defaults are used — exactly what the AmneziaWG apps do with such a config. Typical for WARP: Cloudflare speaks plain WireGuard, and only the junk packets (Jc/Jmin/Jmax) and the CPS packets (I1–I5) sent before the handshake differ from it — they are what gets the handshake past DPI. Filled in:',
             plainWgNote: 'There is no AmneziaWG obfuscation in this config at all: no junk packets, no CPS, no padding, standard message types. It is a plain WireGuard config — MikroTik connects it natively, and the proxy would add nothing. If the config was meant to be AmneziaWG, check that it was copied whole.',
             mtuNotePath: 'The WireGuard MTU is lowered to fit the underlay path MTU of',
@@ -1446,6 +1503,21 @@
             awgDnsAuto: 'DNS-сервер контейнера не был задан, поэтому взят публичный DNS из конфига (подставлен в поле):',
             plainWgJunkHint: 'Для WARP этого мало, чтобы пройти DPI: нужны junk-пакеты перед рукопожатием. Кнопка добавит их в конфиг — обычный WireGuard-сервер, и WARP тоже, их просто отбрасывает.',
             btnAddJunk: 'Добавить junk-пакеты, как для WARP (Jc = 4, Jmin = 40, Jmax = 70)',
+            warpQuicHint: 'Это конфиг Cloudflare WARP. Пакет перед каждым рукопожатием можно сделать похожим на обычное QUIC-соединение Chrome с Cloudflare, чтобы трафик меньше выделялся. Кнопка запишет такой пакет в конфиг как I1 и поставит Jc = 0, чтобы перед ним больше ничего не шло. Cloudflare его игнорирует, как любой junk-пакет.',
+            warpQuicOn: 'Пакет перед каждым рукопожатием похож на обычное QUIC-соединение Chrome с Cloudflare (I1).',
+            warpQuicPort: 'Обычный QUIC идёт на UDP-порт 443, а WireGuard Cloudflare принимает на 2408, 500, 1701 и 4500: по заголовку пакет похож на QUIC, по порту — нет.',
+            warpPortsNote: 'Cloudflare принимает WARP на нескольких портах, поэтому прокси получает их все: порт выбирается случайно при каждом подключении, а неотвечающий бросается примерно через 15 с. Порты:',
+            btnWarpQuic: 'Сделать пакет перед рукопожатием похожим на QUIC Chrome (I1, Jc = 0)',
+            warpSimpleNote: 'Это конфиг Cloudflare WARP: спрашивается только нужное ему, остальное остаётся по умолчанию.',
+            warpPortsLabel: 'Случайный порт WARP',
+            warpShowAll: 'Показать все настройки',
+            warpHideAll: 'Скрыть лишние настройки',
+            warpGenTitle: 'Нет AmneziaVPN — сгенерировать конфиг на Cloudflare WARP',
+            warpGenStep1: 'Откройте генератор конфигов WARP:',
+            warpGenStep2: 'Нажмите «Generate WARP Config», затем «Copy to Clipboard» (или «Download warp.conf»).',
+            warpGenStep3: 'Вставьте конфиг в поле ниже. Недостающие значения AmneziaWG страница подставит сама и предложит сделать пакет перед рукопожатием похожим на обычный QUIC-трафик Chrome к Cloudflare.',
+            warpGenAlt: 'Другой способ — консольная утилита wgcf:',
+            warpGenNote: 'Сама эта страница остаётся офлайн: она только читает вставленный конфиг.',
             awgDefaultsNote: 'Этого нет в конфиге, поэтому взяты значения AmneziaWG по умолчанию — ровно так поступают с таким конфигом приложения AmneziaWG. Обычное дело для WARP: Cloudflare говорит на обычном WireGuard, и от него отличаются только junk-пакеты (Jc/Jmin/Jmax) и CPS-пакеты (I1–I5) перед рукопожатием — именно они проводят его через DPI. Подставлено:',
             plainWgNote: 'В этом конфиге нет никакой обфускации AmneziaWG: ни junk-пакетов, ни CPS, ни паддинга, типы сообщений стандартные. Это обычный WireGuard — MikroTik подключит его и сам, прокси ничего не добавит. Если конфиг задумывался как AmneziaWG, проверьте, что он скопирован целиком.',
             mtuNotePath: 'MTU WireGuard понижен, чтобы уложиться в MTU нижележащего канала',
@@ -2014,6 +2086,11 @@
         return s.replace(/:[\d]+$/, '');
     }
 
+    function endpointPort(s) {
+        var m = /:(\d+)$/.exec(String(s || '').trim());
+        return m ? String(Number(m[1])) : '';
+    }
+
     // The port half of AWG_REMOTE may name a whole band: "443", "443,8080",
     // "20150-20299,21500-21649". Same grammar the proxy parses — 1-65535, no
     // reversed range, at most 32 tokens — so anything this accepts starts.
@@ -2041,7 +2118,7 @@
     // excludes the server from the tunnel, the AAAA probe — keeps reading
     // Endpoint, which stays an ordinary host:port.
     function remoteEndpoint(parsed) {
-        var spec = parsed.allowedPorts;
+        var spec = parsed.allowedPorts || warpPortSpec(parsed);
         return (spec && isValidPortSpec(spec))
             ? endpointWithPorts(parsed.peer.Endpoint, spec)
             : parsed.peer.Endpoint;
@@ -2125,6 +2202,7 @@
                 '<span class="fval">' + esc(display) + '</span></div>';
         });
         html += '</div>';
+        html += renderWarpCover(parsed);
         html += renderDefaultsNote(parsed);
         html += renderV3Notes(parsed.interface, proto);
         html += renderMtuNote(parsed.interface);
@@ -2143,13 +2221,91 @@
         return true;
     }
 
+    // Every WARP config carries the same server key, whatever endpoint the
+    // generator wrote; the hostname catches the rest.
+    var WARP_PUB = 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=';
+    var WARP_HOST = 'engage.cloudflareclient.com';
+    // The ports Cloudflare documents for WARP over WireGuard.
+    var WARP_PORTS = ['2408', '500', '1701', '4500'];
+
+    function isCloudflareWarp(parsed) {
+        return String(parsed.peer.PublicKey || '').trim() === WARP_PUB ||
+            endpointHost(parsed.peer.Endpoint).toLowerCase() === WARP_HOST;
+    }
+
+    // WARP listens on several ports, so the proxy gets them all and moves on
+    // from one that does not answer. The config's own port goes first; only a
+    // real Cloudflare config gets Cloudflare's ports.
+    function warpPorts(parsed) {
+        var own = endpointPort(parsed.peer.Endpoint);
+        return (own ? [own] : []).concat(WARP_PORTS.filter(function (p) { return p !== own; }));
+    }
+
+    function warpPortSpec(parsed) {
+        var el = document.getElementById('warp-ports-enable');
+        if (!isCloudflareWarp(parsed) || (el && !el.checked)) return '';
+        return warpPorts(parsed).join(',');
+    }
+
+    var warpShowAll = false;
+
+    // A WARP config gets the short form: the advanced rows step aside with
+    // their defaults, the DNS field shows only for a hostname endpoint the
+    // config has no public resolver for, and the port list comes switched on.
+    function applyWarpUi() {
+        var parsed = parseConf(document.getElementById('conf-input').value);
+        var mode = getDeployMode();
+        var warp = (mode === 'container' || mode === 'standalone') && isCloudflareWarp(parsed);
+        document.getElementById('warp-row').style.display = warp ? 'block' : 'none';
+        document.body.classList.toggle('warp-simple', warp && !warpShowAll);
+        var needDns = !isIPLiteral(endpointHost(parsed.peer.Endpoint)) && !firstPublicDns(parsed.interface.DNS);
+        document.getElementById('dns-row').classList.toggle('warp-adv', !needDns);
+        document.getElementById('warp-ports-list').textContent = warp ? warpPorts(parsed).join(',') : '';
+        var btn = document.getElementById('warp-adv-toggle');
+        var key = warpShowAll ? 'warpHideAll' : 'warpShowAll';
+        btn.setAttribute('data-i18n', key);
+        btn.textContent = t(key);
+    }
+
+    function toggleWarpAdvanced() {
+        warpShowAll = !warpShowAll;
+        applyWarpUi();
+    }
+
+    // Chrome's QUIC v1 client Initial as seen by anyone without the keys, taken
+    // from a capture of Chromium talking to Cloudflare: a 1250-byte datagram,
+    // 8-byte random DCID, empty SCID, no token, Length 1232. The low nibble of
+    // the first byte is under header protection and so random on the wire; the
+    // preset draws it once per config. The protected payload is random too.
+    var WARP_QUIC_RE = /^<b 0xc[0-9a-f]0000000108><r 8><b 0x000044d0><r 1232>$/;
+
+    function warpQuicI1() {
+        return '<b 0xc' + randomInt(0, 15).toString(16) + '0000000108><r 8><b 0x000044d0><r 1232>';
+    }
+
+    // The junk button stays as the other way out while the config has nothing
+    // in front of the handshake at all.
+    function renderWarpCover(parsed) {
+        if (!isCloudflareWarp(parsed)) return '';
+        var on = WARP_QUIC_RE.test(String(parsed.interface.I1 || '').trim());
+        var html = '<div class="alert alert-info" style="margin-top:14px">' + esc(t(on ? 'warpQuicOn' : 'warpQuicHint'));
+        var port = endpointPort(parsed.peer.Endpoint);
+        if (port && port !== '443') html += '<br>' + esc(t('warpQuicPort'));
+        if (!on) html += '<br><button class="btn btn-secondary" style="margin-top:8px" onclick="addWarpQuicCover()">' +
+            esc(t('btnWarpQuic')) + '</button>';
+        if (isPlainWireGuard(parsed.interface))
+            html += ' <button class="btn btn-secondary" style="margin-top:8px" onclick="addWarpJunk()">' +
+                esc(t('btnAddJunk')) + '</button>';
+        return html + '</div>';
+    }
+
     // Say what was filled in rather than fill it in silently: a config that
     // needed the defaults is either WARP (fine) or one cut short by a copy-paste.
     function renderDefaultsNote(parsed) {
         var d = parsed.defaulted || [];
         if (!d.length) return '';
         var html = '';
-        if (isPlainWireGuard(parsed.interface)) {
+        if (isPlainWireGuard(parsed.interface) && !isCloudflareWarp(parsed)) {
             html += '<div class="alert alert-warning" style="margin-top:14px">' + esc(t('plainWgNote')) +
                 '<br>' + esc(t('plainWgJunkHint')) +
                 '<br><button class="btn btn-secondary" style="margin-top:8px" onclick="addWarpJunk()">' +
@@ -4485,6 +4641,7 @@
         document.getElementById('srv-panel').style.display = isSrv ? 'block' : 'none';
         document.getElementById('conf-input').style.display = hideConf ? 'none' : 'block';
         document.querySelector('label[for="conf-input"]').style.display = hideConf ? 'none' : 'block';
+        document.getElementById('warp-gen').style.display = hideConf ? 'none' : 'block';
         document.getElementById('scenario-row').style.display = hideConf ? 'none' : 'block';
         if (hideConf) {
             document.getElementById('doh-panel').style.display = 'none';
@@ -4511,6 +4668,7 @@
         if (!isSrv && prefixSel.value.indexOf('awg-server') === 0) prefixSel.value = 'awg-proxy-1';
         if (isS2S) ensureS2SParams();
         if (isSrv) ensureServerParams();
+        applyWarpUi();
         _igRefresh();
     }
 
@@ -6412,6 +6570,7 @@
     // ============================================================
     function generate() {
         var mode = getDeployMode();
+        applyWarpUi();
         document.getElementById('errors-container').innerHTML = '';
         clearFieldFlag('awg-dns', 'awg-dns-error');
         document.getElementById('parsed-section').style.display = 'none';
@@ -6653,27 +6812,39 @@
         return '';
     }
 
-    // Plain WireGuard has nothing for the proxy to add; for WARP the fix is the
-    // junk packets in front of the handshake. A plain WireGuard server drops
-    // them as garbage, so adding them is safe for any such server.
-    function addWarpJunk() {
+    // Swap keys in [Interface]: drop every line of the given keys, put the new
+    // ones at the end of the section, before [Peer], and regenerate.
+    function replaceIfaceKeys(drop, add) {
         var ta = document.getElementById('conf-input');
         var lines = ta.value.split(String.fromCharCode(10)).filter(function (l) {
-            var k = l.split('=')[0].trim().toLowerCase();
-            return k !== 'jc' && k !== 'jmin' && k !== 'jmax';
+            return drop.indexOf(l.split('=')[0].trim().toLowerCase()) < 0;
         });
         var at = -1;
         for (var i = 0; i < lines.length; i++) {
             if (lines[i].trim().toLowerCase() === '[peer]') { at = i; break; }
         }
-        var junk = ['Jc = 4', 'Jmin = 40', 'Jmax = 70'];
-        if (at < 0) lines = lines.concat(junk);
+        if (at < 0) lines = lines.concat(add);
         else {
             while (at > 0 && lines[at - 1].trim() === '') at--;
-            lines.splice.apply(lines, [at, 0].concat(junk));
+            lines.splice.apply(lines, [at, 0].concat(add));
         }
         ta.value = lines.join(String.fromCharCode(10));
         generate();
+    }
+
+    // Plain WireGuard has nothing for the proxy to add; for WARP the fix is the
+    // junk packets in front of the handshake. A plain WireGuard server drops
+    // them as garbage, so adding them is safe for any such server.
+    function addWarpJunk() {
+        replaceIfaceKeys(['jc', 'jmin', 'jmax'], ['Jc = 4', 'Jmin = 40', 'Jmax = 70']);
+    }
+
+    // One QUIC-shaped packet instead of a row of junk: Jc = 0 keeps anything
+    // else from going out in front of it, and any I-packets already there go,
+    // since they would follow it on the wire.
+    function addWarpQuicCover() {
+        replaceIfaceKeys(['jc', 'jmin', 'jmax', 'i1', 'i2', 'i3', 'i4', 'i5'],
+                         ['I1 = ' + warpQuicI1(), 'Jc = 0']);
     }
 
     function clearAll() {
@@ -6703,6 +6874,8 @@
         document.getElementById('s2s-lan-a').value = '';
         document.getElementById('s2s-lan-b').value = '';
         s2sParams = null;
+        document.getElementById('warp-ports-enable').checked = true;
+        warpShowAll = false;
         var radios = document.getElementsByName('deploy-mode');
         radios[0].checked = true;
         onModeChange();
@@ -6831,6 +7004,7 @@
         // менять его пришлось бы уже после того, как скрипт собран.
         var d = /^\s*DNS\s*=\s*(.+)$/m.exec(this.value);
         if (d) autoSelectDoh(d[1].trim());
+        applyWarpUi();
     });
     ['s2s-endpoint-b', 'srv-endpoint'].forEach(function (id) {
         var el = document.getElementById(id);

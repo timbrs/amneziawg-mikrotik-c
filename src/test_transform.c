@@ -265,27 +265,25 @@ static void test_roundtrip_transport(void) {
 /* 13. Generate junk packets */
 static void test_generate_junk(void) {
     awg_config_t cfg = make_test_config();
-    uint8_t jbuf[3 * 500];
-    int sizes[3];
-    fastrand_t rng;
-    fastrand_init(&rng, 42);
-    fastrand_fill(&rng, jbuf, sizeof(jbuf));
+    int sizes[3], again[3];
 
-    int n = generate_junk(&cfg, jbuf, sizes);
+    int n = generate_junk(&cfg, 42, sizes);
     ASSERT_EQ(n, 3);
     for (int i = 0; i < 3; i++) {
         ASSERT(sizes[i] >= 30);
         ASSERT(sizes[i] <= 500);
     }
+    /* The sizes follow the seed alone */
+    generate_junk(&cfg, 42, again);
+    ASSERT_MEM_EQ(sizes, again, sizeof(sizes));
 }
 
 /* 14. Junk Jc=0 */
 static void test_generate_junk_zero_jc(void) {
     awg_config_t cfg = make_test_config();
     cfg.jc = 0;
-    uint8_t jbuf[4];
     int sizes[1];
-    int n = generate_junk(&cfg, jbuf, sizes);
+    int n = generate_junk(&cfg, 1, sizes);
     ASSERT_EQ(n, 0);
 }
 
@@ -742,6 +740,31 @@ static void test_v1_backward(void) {
         transform_outbound(buf, dataoff, WG_COOKIE_SIZE, &cfg, 0, &out_len, &sendJunk);
         ASSERT_EQ(out_len, WG_COOKIE_SIZE);
     }
+}
+
+/* I-packets go out before the handshake even with Jc = 0: a single cover
+ * packet is configured exactly that way. With neither, nothing goes out. */
+static void test_cps_without_junk(void) {
+    static cps_template_t tmpl;
+    awg_config_t cfg;
+    uint8_t buf[256 + WG_INIT_SIZE];
+    int out_len, sendJunk;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.h1 = (hrange_t){1, 1}; cfg.h2 = (hrange_t){2, 2};
+    cfg.h3 = (hrange_t){3, 3}; cfg.h4 = (hrange_t){4, 4};
+    cfg.cps[0] = &tmpl;
+    config_compute(&cfg);
+    memset(buf, 0, sizeof(buf));
+    write32_le(buf + 256, WG_HANDSHAKE_INIT);
+    transform_outbound(buf, 256, WG_INIT_SIZE, &cfg, 0, &out_len, &sendJunk);
+    ASSERT_EQ(sendJunk, 1);
+
+    cfg.cps[0] = NULL;
+    config_compute(&cfg);
+    write32_le(buf + 256, WG_HANDSHAKE_INIT);
+    transform_outbound(buf, 256, WG_INIT_SIZE, &cfg, 0, &out_len, &sendJunk);
+    ASSERT_EQ(sendJunk, 0);
 }
 
 /* 27. V2 false positive regression */
@@ -2094,6 +2117,7 @@ int main(void) {
     RUN_TEST(roundtrip_v2);
     RUN_TEST(v1_backward);
     RUN_TEST(v2_false_positive);
+    RUN_TEST(cps_without_junk);
     RUN_TEST(server_init_peer_resolution);
     RUN_TEST(server_response_peer_resolution_single_direct);
     RUN_TEST(server_response_peer_resolution_two_direct_clients);

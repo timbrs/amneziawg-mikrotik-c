@@ -213,7 +213,18 @@ The container should show `running` status, and the peer should have a `last-han
 
 The obfuscation parameters (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`, `H1`--`H4`) are in the `[Interface]` section, while `Endpoint` and `PublicKey` are in the `[Peer]` section.
 
-**If some of them are missing** -- as in AWG configs for Cloudflare WARP, which carry only `Jc`/`Jmin`/`Jmax` (sometimes `I1` too) -- the configurator takes the AmneziaWG defaults, exactly as the AmneziaWG apps do: `S1 = S2 = 0`, `H1`--`H4` = `1`--`4` (the plain WireGuard message types), a missing `Jc`/`Jmin`/`Jmax` = `0`. Filled-in fields are marked as defaults, with a note below. For WARP this is the working setup: Cloudflare speaks plain WireGuard, and what gets the handshake past DPI are the junk and CPS packets the proxy sends before it. If a config has no obfuscation at all (a bare WARP config from wgcf), the configurator says it is plain WireGuard and offers a button that adds junk packets, as for WARP (`Jc = 4`, `Jmin = 40`, `Jmax = 70`) -- a plain WireGuard server simply drops them. A hostname endpoint (`engage.cloudflareclient.com`) needs a DNS server for the container; left empty, a public DNS from the config (`1.1.1.1`) is taken by itself.
+**If some of them are missing** -- as in AWG configs for Cloudflare WARP, which carry only `Jc`/`Jmin`/`Jmax` (sometimes `I1` too) -- the configurator takes the AmneziaWG defaults, exactly as the AmneziaWG apps do: `S1 = S2 = 0`, `H1`--`H4` = `1`--`4` (the plain WireGuard message types), a missing `Jc`/`Jmin`/`Jmax` = `0`. Filled-in fields are marked as defaults, with a note below. For WARP this is the working setup: Cloudflare speaks plain WireGuard, and what gets the handshake past DPI are the junk and CPS packets the proxy sends before it. If a config has no obfuscation at all and is not WARP, the configurator says it is plain WireGuard and offers a button that adds junk packets (`Jc = 4`, `Jmin = 40`, `Jmax = 70`) -- a plain WireGuard server simply drops them.
+
+### No AmneziaVPN: a Cloudflare WARP config
+
+Above the `.conf` field there is a collapsible **"No AmneziaVPN — generate a config on Cloudflare WARP"**: open the [WARP config generator](https://lanrat.github.io/wireguard-warp-generator/) (or the [wgcf](https://github.com/ViRb3/wgcf) command-line tool), press "Generate WARP Config", copy the config and paste it into the field. The configurator itself contacts nothing.
+
+The configurator recognises a WARP config by Cloudflare's server key or by `engage.cloudflareclient.com` and switches to a short form:
+
+- **the extra settings are hidden** -- their defaults fit WARP; "Show all settings" brings them back;
+- **the container DNS is asked for only when it is needed**: the endpoint is a name and the config has no public DNS (usually it has `1.1.1.1`, which is taken by itself);
+- **"Random WARP port" is ticked**: Cloudflare takes WireGuard on ports 2408, 500, 1701 and 4500, and all of them go into `AWG_REMOTE` (the config's own port first). The proxy picks a port at random for every connection and leaves one that does not answer after ~15 s. A `# AllowedPorts = ...` line in the config takes precedence over the box;
+- **the "Make the packet before the handshake look like Chrome QUIC" button** writes an `I1` into the config with the header of an ordinary QUIC v1 Initial as Chrome sends it to Cloudflare (a 1250-byte datagram, random 8-byte DCID, empty SCID), and `Jc = 0`, so no small junk packets go in front of it. Cloudflare ignores the packet. The encrypted part is random bytes: the proxy has no keys to build a real TLS ClientHello, so an analyser that decrypts QUIC Initials will see there is no ClientHello inside. Ordinary QUIC goes to port 443, while WARP takes WireGuard on 2408/500/1701/4500 -- by its port the packet does not look like QUIC, and the configurator says so.
 
 ## Server Mode (1:N) — Detailed Setup
 
@@ -636,7 +647,7 @@ AWG_REMOTE=[2001:db8::1]:6000-6100             # same for IPv6
 
 The port is drawn from the list **at random, anew on every connection** -- at startup and on every reconnect (timeout, a new IP from DNS, an `AWG_FB_*` stage switch). Two reasons. First, a fixed port is a distinctive detail for DPI, all the more so when every client of the server sits on the same one; a random port out of a wide range offers no such handle. Second, a blocked port stops being fatal: when the server stays silent, the proxy moves to another port after **15 seconds** instead of waiting out the full `AWG_TIMEOUT` (60 seconds by default). The log shows `no answer on this port, trying another one`, and the port in use as `connected to <address> port <port>`.
 
-This only works if the **server really accepts every listed port** -- that is, it DNATs/REDIRECTs all of them to its AmneziaWG port. Listing ports nothing is listening on buys silence and endless hopping. The web configurator fills these ranges into `AWG_REMOTE` when the `.conf` carries an `# AllowedPorts = ...` line (written by the bot that issued the key).
+This only works if the **server really accepts every listed port** -- that is, it DNATs/REDIRECTs all of them to its AmneziaWG port. Listing ports nothing is listening on buys silence and endless hopping. The web configurator fills these ranges into `AWG_REMOTE` when the `.conf` carries an `# AllowedPorts = ...` line (written by the bot that issued the key). For a Cloudflare WARP config it fills in Cloudflare's WireGuard ports by itself: `2408,500,1701,4500`.
 
 
 Note that IPv6 is supported **on the server-facing leg only**. `AWG_LISTEN` (receiving from the router's WireGuard client) stays IPv4 — it is a local veth inside the router, where a second stack buys nothing.
@@ -713,7 +724,7 @@ AWG_S3=0    # default, no padding
 AWG_S4=16   # +16 bytes to each transport data packet
 ```
 
-**`AWG_I1`--`AWG_I5`** -- CPS templates (Constant Packet Size). Up to 5 templates for generating fixed-format packets before handshake. If set without S3/S4/H ranges, the proxy operates in v1.5 mode.
+**`AWG_I1`--`AWG_I5`** -- CPS templates (Constant Packet Size). Up to 5 templates for generating fixed-format packets before handshake. If set without S3/S4/H ranges, the proxy operates in v1.5 mode. They go out before every handshake even with `AWG_JC=0` -- that is how a single cover packet without junk packets is configured. Random bytes (`<r>`, `<rc>`, `<rd>`) and junk packets come from ChaCha20 keyed from `/dev/urandom`: they are new in every packet and cannot be worked out from the bytes next to them.
 
 Supported tags (matching upstream `device/obf.go`): `<b 0xHEX>` -- static bytes, `<r N>` -- N random bytes, `<rc N>` -- N random letters (52 letters, no digits), `<rd N>` -- N random digits, `<t>` -- unix time as 4 big-endian bytes, `<dz N>` -- N zero bytes, `<d>` and `<ds>` -- accepted and contribute nothing (upstream feeds I-packets an empty source). The `<c>` counter tag is our own extension; upstream will reject it.
 

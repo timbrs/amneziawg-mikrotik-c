@@ -311,6 +311,9 @@ typedef struct {
      * session_set_server_index(). */
     _Atomic uint32_t sidx_map[SESSION_TABLE_SIZE];
 
+    /* Last, so the layout of everything above stays as it was. */
+    csprng_t cs_c2s;                /* I-packets and junk, c2s thread only */
+    csprng_t cs_s2c;                /* I-packets and junk, s2c thread only */
 } proxy_t;
 
 /* Session table operations */
