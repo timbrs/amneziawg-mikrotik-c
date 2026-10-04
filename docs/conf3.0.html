@@ -310,6 +310,21 @@
             margin-bottom: 4px;
         }
 
+        /* A field that blocks Generate: red border, and the error repeated right
+           under it - the page scrolls there, and the message at the top is out
+           of sight by then. */
+        .field-invalid {
+            border-color: var(--error) !important;
+            box-shadow: 0 0 0 3px var(--error-bg);
+        }
+
+        .field-error {
+            color: var(--error);
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-top: 4px;
+        }
+
         #parsed-section, #output-section, #routing-section, #uninstall-section, #s2s-output-section {
             display: none;
         }
@@ -723,6 +738,12 @@
         <label for="conf-input" data-i18n="confLabel">.conf file contents</label>
         <textarea id="conf-input"
                   placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.1.1.1/32&#10;DNS = 1.1.1.1&#10;Jc = 2&#10;Jmin = 1&#10;Jmax = 500&#10;S1 = 123&#10;S2 = 12&#10;H1 = 12345&#10;...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = 1.2.3.4:12345&#10;AllowedIPs = 0.0.0.0/0"></textarea>
+        <div id="dns-row" style="margin-top:10px">
+            <label for="awg-dns" data-i18n="awgDnsLabel">Container DNS server (required if the endpoint is a domain)</label>
+            <input type="text" id="awg-dns" placeholder="e.g. 192.168.88.1" oninput="clearFieldFlag('awg-dns', 'awg-dns-error')">
+            <div id="awg-dns-error" class="field-error" role="alert" style="display:none"></div>
+            <div class="hint" data-i18n="awgDnsHint">Written to the container as AWG_DNS. The container image is scratch and has no resolver of its own, so a hostname endpoint cannot be resolved without this. It has to be reachable from the container without the tunnel &mdash; the router itself or a public resolver. Left empty, a public DNS from the config (1.1.1.1 and the like) is taken by itself; a private one (10.x, 100.64.x...) is not &mdash; it usually lives inside the tunnel.</div>
+        </div>
         <details class="promo">
             <summary class="promo-title" data-i18n="promoTitle">VPS без ограничений по трафику</summary>
             <p>
@@ -825,11 +846,6 @@
             <label><input type="checkbox" id="offline-enable">
             <span data-i18n="offlineLabel">Offline mode</span></label>
             <div class="hint" data-i18n="offlineHint">Adds a step 0 to the output: a script that changes nothing and prints exactly which files to download and where to put them. Download them elsewhere, upload them to the router, then run the install. Nothing is fetched from GitHub &mdash; no registry pull, no release download, and the RU list stops waiting a minute for a name that will never resolve.</div>
-        </div>
-        <div id="dns-row" style="margin-top:8px">
-            <label for="awg-dns" data-i18n="awgDnsLabel">Container DNS server (required if the endpoint is a domain)</label>
-            <input type="text" id="awg-dns" placeholder="e.g. 192.168.88.1">
-            <div class="hint" data-i18n="awgDnsHint">Written to the container as AWG_DNS. The container image is scratch and has no resolver of its own, so a hostname endpoint cannot be resolved without this. It has to be reachable from the container <strong>without</strong> the tunnel &mdash; the router itself or a public resolver, not the DNS from the config, which usually lives inside the tunnel.</div>
         </div>
         <div id="path-mtu-row" style="margin-top:8px">
             <label for="path-mtu" data-i18n="pathMtuLabel">Underlay path MTU</label>
@@ -1192,6 +1208,9 @@
             v3MtuNote: 'This S4 pushes the outer datagram past 1500 bytes, so the WireGuard MTU is lowered to keep it from fragmenting.',
             mtuNoteConf: 'The MTU from the config is kept as is — it is lower than the ceiling this transport allows.',
             fieldDefault: 'default',
+            awgDnsAuto: 'Container DNS server was not set, so the public DNS from the config is used (filled into the field):',
+            plainWgJunkHint: 'For WARP that is not enough to get past DPI: it takes the junk packets sent before the handshake. The button adds them to the config - a plain WireGuard server, WARP included, simply drops them.',
+            btnAddJunk: 'Add junk packets, as for WARP (Jc = 4, Jmin = 40, Jmax = 70)',
             awgDefaultsNote: 'Not in the config, so the AmneziaWG defaults are used — exactly what the AmneziaWG apps do with such a config. Typical for WARP: Cloudflare speaks plain WireGuard, and only the junk packets (Jc/Jmin/Jmax) and the CPS packets (I1–I5) sent before the handshake differ from it — they are what gets the handshake past DPI. Filled in:',
             plainWgNote: 'There is no AmneziaWG obfuscation in this config at all: no junk packets, no CPS, no padding, standard message types. It is a plain WireGuard config — MikroTik connects it natively, and the proxy would add nothing. If the config was meant to be AmneziaWG, check that it was copied whole.',
             mtuNotePath: 'The WireGuard MTU is lowered to fit the underlay path MTU of',
@@ -1203,7 +1222,7 @@
             btnCopyOffline: 'Copy step 0',
             offlineNote: 'Run this FIRST. It only prints file names. Download the files it names, upload them to the router, and only then run step 1.',
             awgDnsLabel: 'Container DNS server (required if the endpoint is a domain)',
-            awgDnsHint: 'Written to the container as AWG_DNS. The container image is scratch and has no resolver of its own, so a hostname endpoint cannot be resolved without this. It has to be reachable from the container without the tunnel — the router itself or a public resolver, not the DNS from the config, which usually lives inside the tunnel.',
+            awgDnsHint: 'Written to the container as AWG_DNS. The container image is scratch and has no resolver of its own, so a hostname endpoint cannot be resolved without this. It has to be reachable from the container without the tunnel - the router itself or a public resolver. Left empty, a public DNS from the config (1.1.1.1 and the like) is taken by itself; a private one (10.x, 100.64.x...) is not - it usually lives inside the tunnel.',
             pathMtuLabel: 'Underlay path MTU',
             pathMtuHint: 'The MTU of the link the outer UDP datagram has to cross: 1500 for plain Ethernet, 1492 for PPPoE, lower for PPPoE over VLAN. With S4 set, a 1500-byte assumption on a 1492-byte path fragments every full-size packet, and a TCP MSS clamp does not help — the overflow is on the outer UDP datagram and hits QUIC too.',
             v3UpdateTitle: 'Updating an existing installation',
@@ -1424,6 +1443,9 @@
             v3MtuNote: 'При таком S4 внешняя датаграмма выходит за 1500 байт, поэтому MTU WireGuard понижается, чтобы не было фрагментации.',
             mtuNoteConf: 'MTU из конфига оставлен как есть — он ниже потолка, который допускает этот транспорт.',
             fieldDefault: 'по умолчанию',
+            awgDnsAuto: 'DNS-сервер контейнера не был задан, поэтому взят публичный DNS из конфига (подставлен в поле):',
+            plainWgJunkHint: 'Для WARP этого мало, чтобы пройти DPI: нужны junk-пакеты перед рукопожатием. Кнопка добавит их в конфиг — обычный WireGuard-сервер, и WARP тоже, их просто отбрасывает.',
+            btnAddJunk: 'Добавить junk-пакеты, как для WARP (Jc = 4, Jmin = 40, Jmax = 70)',
             awgDefaultsNote: 'Этого нет в конфиге, поэтому взяты значения AmneziaWG по умолчанию — ровно так поступают с таким конфигом приложения AmneziaWG. Обычное дело для WARP: Cloudflare говорит на обычном WireGuard, и от него отличаются только junk-пакеты (Jc/Jmin/Jmax) и CPS-пакеты (I1–I5) перед рукопожатием — именно они проводят его через DPI. Подставлено:',
             plainWgNote: 'В этом конфиге нет никакой обфускации AmneziaWG: ни junk-пакетов, ни CPS, ни паддинга, типы сообщений стандартные. Это обычный WireGuard — MikroTik подключит его и сам, прокси ничего не добавит. Если конфиг задумывался как AmneziaWG, проверьте, что он скопирован целиком.',
             mtuNotePath: 'MTU WireGuard понижен, чтобы уложиться в MTU нижележащего канала',
@@ -1435,7 +1457,7 @@
             btnCopyOffline: 'Копировать шаг 0',
             offlineNote: 'Запустите ЭТО первым. Скрипт только печатает имена файлов. Скачайте названные файлы, загрузите их на роутер и только после этого запускайте шаг 1.',
             awgDnsLabel: 'DNS-сервер для контейнера (обязателен, если endpoint — домен)',
-            awgDnsHint: 'Записывается в контейнер как AWG_DNS. Образ контейнера — scratch, своего резолвера в нём нет, поэтому без этого hostname в endpoint не резолвится. Адрес должен быть доступен из контейнера без туннеля — сам роутер или публичный резолвер, но не DNS из конфига: тот обычно живёт внутри туннеля.',
+            awgDnsHint: 'Записывается в контейнер как AWG_DNS. Образ контейнера — scratch, своего резолвера в нём нет, поэтому без этого hostname в endpoint не резолвится. Адрес должен быть доступен из контейнера без туннеля — сам роутер или публичный резолвер. Если поле пустое, публичный DNS из конфига (1.1.1.1 и т.п.) подставится сам; частный (10.x, 100.64.x…) — нет: он обычно живёт внутри туннеля.',
             pathMtuLabel: 'MTU нижележащего канала',
             pathMtuHint: 'MTU канала, по которому идёт внешняя UDP-датаграмма: 1500 для обычного Ethernet, 1492 для PPPoE, меньше для PPPoE поверх VLAN. При заданном S4 расчёт на 1500 в канале с 1492 фрагментирует каждый полноразмерный пакет, и TCP MSS clamp тут не помогает — переполняется внешняя UDP-датаграмма, задевая в том числе QUIC.',
             v3UpdateTitle: 'Обновление существующей установки',
@@ -2128,7 +2150,10 @@
         if (!d.length) return '';
         var html = '';
         if (isPlainWireGuard(parsed.interface)) {
-            html += '<div class="alert alert-warning" style="margin-top:14px">' + esc(t('plainWgNote')) + '</div>';
+            html += '<div class="alert alert-warning" style="margin-top:14px">' + esc(t('plainWgNote')) +
+                '<br>' + esc(t('plainWgJunkHint')) +
+                '<br><button class="btn btn-secondary" style="margin-top:8px" onclick="addWarpJunk()">' +
+                esc(t('btnAddJunk')) + '</button></div>';
         }
         html += '<div class="alert alert-info" style="margin-top:' + (html ? '8' : '14') + 'px">' +
             esc(t('awgDefaultsNote')) + ' ' +
@@ -6388,6 +6413,7 @@
     function generate() {
         var mode = getDeployMode();
         document.getElementById('errors-container').innerHTML = '';
+        clearFieldFlag('awg-dns', 'awg-dns-error');
         document.getElementById('parsed-section').style.display = 'none';
         document.getElementById('output-section').style.display = 'none';
         document.getElementById('routing-section').style.display = 'none';
@@ -6446,9 +6472,19 @@
         // the image is scratch and writes /etc/resolv.conf from AWG_DNS alone.
         // Failing here beats a container that starts and never connects.
         var endpointHostName = endpointHost(parsed.peer.Endpoint);
+        var dnsAutoNote = '';
         if (endpointHostName && !isIPLiteral(endpointHostName) && !awgDnsValue()) {
-            showError(t('errDnsRequired'));
-            return;
+            // A public resolver from the config is reachable without the tunnel
+            // and is what the user would have typed anyway; take it and say so.
+            var pubDns = firstPublicDns(parsed.interface.DNS);
+            if (pubDns) {
+                document.getElementById('awg-dns').value = pubDns;
+                dnsAutoNote = t('awgDnsAuto') + ' ' + pubDns + '.';
+            } else {
+                showError(t('errDnsRequired'));
+                flagField('awg-dns', 'awg-dns-error', t('errDnsRequired'));
+                return;
+            }
         }
 
         var scenario = getScenario();
@@ -6482,6 +6518,9 @@
         document.getElementById('output').dataset.plain = commands;
         document.getElementById('output').innerHTML = highlight(commands);
         document.getElementById('output-section').style.display = 'block';
+        if (dnsAutoNote)
+            document.getElementById('errors-container').innerHTML =
+                '<div class="alert alert-info">' + esc(dnsAutoNote) + '</div>';
 
         var dohFwd = getSelectedDohForwarder();
         var storageDisk = getStorageDisk();
@@ -6577,6 +6616,64 @@
     function showError(msg) {
         document.getElementById('errors-container').innerHTML =
             '<div class="alert alert-error">' + esc(msg) + '</div>';
+    }
+
+    // Point at the input that blocks Generate. The error at the top of the page
+    // does not say which of a dozen options it means, and on a phone the field
+    // can be screens away - so mark it red, repeat the message under it, scroll
+    // there and put the cursor in it.
+    function flagField(inputId, errId, msg) {
+        var input = document.getElementById(inputId);
+        var err = document.getElementById(errId);
+        if (err) { err.textContent = msg; err.style.display = ''; }
+        if (!input) return;
+        input.classList.add('field-invalid');
+        if (input.scrollIntoView) {
+            try { input.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { /* old engine */ }
+        }
+        try { input.focus({ preventScroll: true }); } catch (e) { try { input.focus(); } catch (e2) { /* ignore */ } }
+    }
+
+    function clearFieldFlag(inputId, errId) {
+        var input = document.getElementById(inputId);
+        var err = document.getElementById(errId);
+        if (input) input.classList.remove('field-invalid');
+        if (err) { err.textContent = ''; err.style.display = 'none'; }
+    }
+
+    // The first public IPv4 resolver in the config's DNS line, or ''. A private
+    // one (10.x, 100.64/10, ...) usually lives inside the tunnel and cannot
+    // resolve the endpoint that the tunnel still has to reach.
+    function firstPublicDns(dns) {
+        var parts = String(dns || '').split(',');
+        for (var i = 0; i < parts.length; i++) {
+            var ip = parts[i].trim();
+            if (ip && ip.indexOf(':') < 0 && isPublicIPv4(ip)) return ip;
+        }
+        return '';
+    }
+
+    // Plain WireGuard has nothing for the proxy to add; for WARP the fix is the
+    // junk packets in front of the handshake. A plain WireGuard server drops
+    // them as garbage, so adding them is safe for any such server.
+    function addWarpJunk() {
+        var ta = document.getElementById('conf-input');
+        var lines = ta.value.split(String.fromCharCode(10)).filter(function (l) {
+            var k = l.split('=')[0].trim().toLowerCase();
+            return k !== 'jc' && k !== 'jmin' && k !== 'jmax';
+        });
+        var at = -1;
+        for (var i = 0; i < lines.length; i++) {
+            if (lines[i].trim().toLowerCase() === '[peer]') { at = i; break; }
+        }
+        var junk = ['Jc = 4', 'Jmin = 40', 'Jmax = 70'];
+        if (at < 0) lines = lines.concat(junk);
+        else {
+            while (at > 0 && lines[at - 1].trim() === '') at--;
+            lines.splice.apply(lines, [at, 0].concat(junk));
+        }
+        ta.value = lines.join(String.fromCharCode(10));
+        generate();
     }
 
     function clearAll() {

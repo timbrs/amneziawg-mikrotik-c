@@ -143,6 +143,44 @@ eq('the page generates a script for a WARP config', g.err, '');
 ok('the CPS template reaches the container', /key=AWG_I1 value="<b 0xc2/.test(g.out));
 ok('the endpoint reaches the container', g.out.indexOf('162.159.192.1:2408') >= 0);
 
+/* ---- a bare wgcf-style WARP config, as people actually paste it ----------
+ * Hostname endpoint, public DNS, not a single AmneziaWG key: it has to go
+ * through, take the config's DNS for the container, and offer the junk packets
+ * that are the whole point of running it through the proxy. */
+const bare = [
+    '[Interface]',
+    'PrivateKey = ' + KEY,
+    'Address = 172.16.0.2/32, 2606:4700:110:84de:d5b5:abc3:c864:f390/128',
+    'DNS = 1.1.1.1, 1.0.0.1, 2606:4700:4700::1111, 2606:4700:4700::1001',
+    'MTU = 1280',
+    '',
+    '[Peer]',
+    'PublicKey = ' + CF_PUB,
+    'AllowedIPs = 0.0.0.0/0, ::/0',
+    'Endpoint = engage.cloudflareclient.com:2408',
+].join(NL);
+w.document.getElementById('awg-dns').value = '';
+const gb = generate(bare);
+ok('a bare WARP config with a hostname endpoint generates',
+   gb.out.length > 0 && !w.document.getElementById('errors-container').querySelector('.alert-error'), gb.err);
+ok('saying it took the DNS from the config', /1\.1\.1\.1/.test(gb.err), gb.err);
+ok('the container resolves it through the DNS from the config', gb.out.indexOf('key=AWG_DNS value="1.1.1.1"') >= 0);
+const shownBare = w.document.getElementById('fields-display').innerHTML;
+ok('it is called plain WireGuard', shownBare.indexOf('addWarpJunk()') >= 0);
+w.addWarpJunk();
+const ta = w.document.getElementById('conf-input').value;
+ok('the junk button adds Jc/Jmin/Jmax to the config', /Jc = 4/.test(ta) && /Jmin = 40/.test(ta) && /Jmax = 70/.test(ta));
+ok('inside [Interface], before [Peer]', ta.indexOf('Jmax = 70') < ta.indexOf('[Peer]'));
+const afterJunk = w.document.getElementById('output').dataset.plain || '';
+ok('and regenerates with the junk packets in the container env',
+   afterJunk.indexOf('key=AWG_JC value="4"') >= 0 && afterJunk.indexOf('key=AWG_JMAX value="70"') >= 0);
+ok('the plain-WireGuard warning is gone after that',
+   w.document.getElementById('fields-display').innerHTML.indexOf('addWarpJunk()') < 0);
+w.addWarpJunk();
+const twice = w.document.getElementById('conf-input').value;
+eq('pressing it again does not duplicate the lines', (twice.match(/Jc = 4/g) || []).length, 1);
+w.document.getElementById('awg-dns').value = '';
+
 console.log('');
 console.log(fails ? (passes + '/' + (passes + fails) + ' checks passed, ' + fails + ' FAILED')
                   : (passes + '/' + passes + ' checks passed'));

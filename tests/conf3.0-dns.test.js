@@ -282,5 +282,54 @@ ok('an explicit AWG_DNS is honoured even for an IP endpoint',
 
 w.document.getElementById('awg-dns').value = '';
 
+/* ---- the field that blocks Generate is pointed at, not just named -------- */
+const dnsErr = w.document.getElementById('awg-dns-error');
+const refused = runGenerate('vpn.example.com:443', '');
+ok('a refused DNS field is marked red', dnsField.classList.contains('field-invalid'));
+ok('the error is repeated right under the field',
+   dnsErr && dnsErr.style.display !== 'none' && dnsErr.textContent === refused.err, dnsErr && dnsErr.textContent);
+ok('and the cursor is put in it', w.document.activeElement === dnsField);
+dnsField.value = '1';
+dnsField.dispatchEvent(new w.Event('input', { bubbles: true }));
+ok('typing into it clears the mark', !dnsField.classList.contains('field-invalid') && dnsErr.style.display === 'none');
+dnsField.value = '';
+runGenerate('vpn.example.com:443', '');
+runGenerate('198.51.100.1:443', '');
+ok('a later successful run clears the mark too', !dnsField.classList.contains('field-invalid'));
+
+/* The row sits right under the config, not a dozen options down. */
+const dnsRow = w.document.getElementById('dns-row');
+const scenarioRow = w.document.getElementById('scenario-row');
+ok('the DNS row comes before the routing options',
+   !!(dnsRow.compareDocumentPosition(scenarioRow) & w.Node.DOCUMENT_POSITION_FOLLOWING));
+ok('and right after the config box',
+   !!(w.document.getElementById('conf-input').compareDocumentPosition(dnsRow) & w.Node.DOCUMENT_POSITION_FOLLOWING));
+
+/* A public resolver in the config is reachable without the tunnel: taken as is. */
+function runWithConfDns(endpoint, confDns) {
+    w.document.getElementById('awg-dns').value = '';
+    w.document.getElementById('conf-input').value =
+        confWith(endpoint).replace('Address = 10.13.13.2/32', 'Address = 10.13.13.2/32' + NL + 'DNS = ' + confDns);
+    w.document.getElementById('errors-container').innerHTML = '';
+    w.document.getElementById('output').dataset.plain = '';
+    w.generate();
+    return {
+        err: w.document.getElementById('errors-container').querySelector('.alert-error') ? 'error' : '',
+        note: w.document.getElementById('errors-container').textContent.trim(),
+        out: w.document.getElementById('output').dataset.plain || '',
+        field: w.document.getElementById('awg-dns').value
+    };
+}
+const pub = runWithConfDns('vpn.example.com:443', '1.1.1.1, 2606:4700:4700::1111');
+eq('a public DNS in the config is taken for the container', pub.field, '1.1.1.1');
+ok('and generation goes through', pub.err === '' && pub.out.indexOf('key=AWG_DNS value="1.1.1.1"') >= 0, pub.note);
+ok('the page says it filled the field in', /1\.1\.1\.1/.test(pub.note), pub.note);
+const priv = runWithConfDns('vpn.example.com:443', '10.8.0.1');
+ok('a private DNS from the config is not taken - it lives inside the tunnel',
+   priv.err === 'error' && priv.field === '' && priv.out === '');
+const cgnat = runWithConfDns('vpn.example.com:443', '100.64.0.1, 8.8.8.8');
+eq('the first public one wins over a CGNAT address before it', cgnat.field, '8.8.8.8');
+w.document.getElementById('awg-dns').value = '';
+
 console.log(NL + passes + '/' + (passes + fails) + ' checks passed' + (fails ? ', ' + fails + ' FAILED' : ''));
 process.exit(fails ? 1 : 0);
