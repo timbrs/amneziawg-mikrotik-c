@@ -3443,8 +3443,12 @@
         src.push('          :log info "' + prefix + ': repull started"');
         // Stale .backup copies from an earlier pull confuse the rename dance RouterOS
         // does around root-dir: it can move the live directory aside and never put it
-        // back, which is exactly how a container ends up bricked.
-        src.push('          :do { /file/remove [find where name~($disk . "/' + prefix + '.backup")] } on-error={}');
+        // back, which is exactly how a container ends up bricked. RouterOS puts them
+        // next to the container's own root-dir, which is not always <disk>/<prefix>:
+        // an install swapped blue/green lives in <root>-n every other time, and the
+        // older installs carried a version suffix. Matching on the prefix missed those
+        // copies entirely, so they piled up until a pull broke.
+        src.push('          :do { /file/remove [find where name~($rootDirOrig . ".backup")] } on-error={}');
         src.push('          :do { [:parse "/container/set $cid ignore-remote-image-change=yes"] } on-error={}');
         src.push('          /container/repull $cid');
         src.push('          :local waited 0');
@@ -3482,7 +3486,7 @@
         src.push('            :delay 5s');
         src.push('            :do { /container/remove $cid } on-error={}');
         src.push('            :delay 3s');
-        src.push('            :do { /file/remove [find where name~($disk . "/' + prefix + '.backup")] } on-error={}');
+        src.push('            :do { /file/remove [find where name~($rootDirOrig . ".backup")] } on-error={}');
         src.push('            :do { /container/add remote-image=$img ' + addArgs + ' } on-error={}');
         src.push('            :set waited 0');
         src.push('            :local newCids [/container/find where interface=' + veth + ' and start-on-boot=yes]');
@@ -3518,7 +3522,7 @@
         src.push('            :do { /container/envs/remove [find where list="' + env + '" key="AWG_IMAGE_VER"] } on-error={}');
         src.push('            :do { /container/envs/add list=' + env + ' key=AWG_IMAGE_VER value=$newVer } on-error={}');
         src.push('          }');
-        src.push('          :do { /file/remove [find where name~($disk . "/' + prefix + '.backup")] } on-error={}');
+        src.push('          :do { /file/remove [find where name~($rootDirOrig . ".backup")] } on-error={}');
         src.push('          :if ($backUp) do={');
         src.push('            :put ("Update done: " . $img)');
         src.push('            :log info "' + prefix + ': update done"');

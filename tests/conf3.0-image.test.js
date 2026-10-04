@@ -196,14 +196,19 @@ ok('and rebuilt from the registry if it stayed down',
    /\/container\/add remote-image=\$img interface=veth-awg-proxy-1 /.test(script));
 // Stale .backup directories are what confuses the rename dance in the first place.
 ok('leftovers are cleared before the pull, not only after',
-   lineWith(script, '/file/remove [find where name~($disk . "/awg-proxy-1.backup")]').length === 3);
+   lineWith(script, '/file/remove [find where name~($rootDirOrig . ".backup")]').length === 3);
+// RouterOS puts the copy next to the container's real root-dir. A blue/green swap
+// leaves it in <root>-n, older installs carry a version suffix - a pattern built
+// from the prefix missed those copies, and they piled up until a pull broke.
+ok('leftovers are looked for next to the real root-dir, not by prefix',
+   script.indexOf('"/awg-proxy-1.backup"') < 0);
 
 // Layers land in tmpdir: on a 16MB-flash router with the container on USB, the
 // default (internal flash) has nowhere to put them.
 ok('tmpdir is moved onto the disk that holds root-dir',
    /\/container\/config set tmpdir=\(\$disk \. "\/pull"\)/.test(script));
 ok('repull leftovers are swept',
-   /\/file\/remove \[find where name~\(\$disk \. "\/awg-proxy-1\.backup"\)\]/.test(script));
+   /\/file\/remove \[find where name~\(\$rootDirOrig \. "\.backup"\)\]/.test(script));
 
 /* ---- the scheduler follows the checkbox ---- */
 ok('ticked: the daily scheduler is there',
