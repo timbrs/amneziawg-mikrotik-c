@@ -492,20 +492,21 @@
             color: var(--promo);
         }
 
-        .warp-gen {
-            --promo: #c2410c;
-            --promo-line: #fb923c;
-            margin: 0 0 12px;
-            border-color: #fed7aa;
-            background: #fff7ed;
+        #warp-panel {
+            font-size: 0.88rem;
         }
 
-        .warp-gen .promo-title::before {
-            content: "\2601";
+        .warp-steps {
+            margin: 0 0 6px 20px;
+            line-height: 1.6;
         }
 
-        .warp-gen ol {
-            margin: 4px 0 6px 20px;
+        #warp-panel p {
+            margin: 2px 0;
+        }
+
+        #warp-panel a {
+            color: var(--accent);
         }
 
         /* A WARP config needs none of the advanced rows: their defaults fit. */
@@ -632,9 +633,7 @@
             .btn-secondary:hover { background: #333; }
 
             .scenario-panel { background: #242424; }
-            .promo { --promo: #86efac; --promo-line: #4ade80; background: #14231a; border-color: #1f3d29; }
-            .warp-gen { --promo: #fdba74; --promo-line: #fb923c; background: #26180c; border-color: #4a2c14; }
-            .checkbox-grid label:hover { background: #2a2a2a; }
+            .promo { --promo: #86efac; --promo-line: #4ade80; background: #14231a; border-color: #1f3d29; }            .checkbox-grid label:hover { background: #2a2a2a; }
 
             .alert-warning { background: #2a1a00; border-color: #92400e; color: #fcd34d; }
 
@@ -753,13 +752,13 @@
                 <label><input type="radio" name="deploy-mode" value="container" checked onchange="onModeChange()"> <span data-i18n="modeContainer">MikroTik + Container (Docker)</span></label>
                 <label><input type="radio" name="deploy-mode" value="standalone" onchange="onModeChange()"> <span data-i18n="modeStandalone">MikroTik + Server (Standalone)</span></label>
                 <label><input type="radio" name="deploy-mode" value="site-to-site" onchange="onModeChange()"> <span data-i18n="modeSiteToSite">Site-to-site (two MikroTik)</span></label>
+                <label><input type="radio" name="deploy-mode" value="warp" onchange="onModeChange()"> <span data-i18n="modeWarp">No AmneziaVPN — Cloudflare WARP</span></label>
                 <label><input type="radio" name="deploy-mode" value="server" onchange="onModeChange()"> <span data-i18n="modeServer">Server (1:N hub)</span></label>
             </div>
             <div id="mode-hint" class="hint" data-i18n="modeContainerHint">WireGuard client on MikroTik + awg-proxy runs inside a Docker container directly on the router</div>
         </div>
-        <details id="warp-gen" class="promo warp-gen">
-            <summary class="promo-title" data-i18n="warpGenTitle">No AmneziaVPN — generate a config on Cloudflare WARP</summary>
-            <ol>
+        <div id="warp-panel" class="scenario-panel" style="display:none;margin-bottom:14px">
+            <ol class="warp-steps">
                 <li><span data-i18n="warpGenStep1">Open the WARP config generator:</span>
                     <a href="https://lanrat.github.io/wireguard-warp-generator/" target="_blank" rel="noopener">lanrat.github.io/wireguard-warp-generator</a></li>
                 <li data-i18n="warpGenStep2">Press "Generate WARP Config", then "Copy to Clipboard" (or "Download warp.conf").</li>
@@ -768,7 +767,7 @@
             <p><span data-i18n="warpGenAlt">Another way is the wgcf command-line tool:</span>
                 <a href="https://github.com/ViRb3/wgcf" target="_blank" rel="noopener">github.com/ViRb3/wgcf</a></p>
             <p data-i18n="warpGenNote">This page stays offline: it only reads the config you paste.</p>
-        </details>
+        </div>
         <label for="conf-input" data-i18n="confLabel">.conf file contents</label>
         <textarea id="conf-input"
                   placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.1.1.1/32&#10;DNS = 1.1.1.1&#10;Jc = 2&#10;Jmin = 1&#10;Jmax = 500&#10;S1 = 123&#10;S2 = 12&#10;H1 = 12345&#10;...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = 1.2.3.4:12345&#10;AllowedIPs = 0.0.0.0/0"></textarea>
@@ -779,7 +778,7 @@
             <div class="hint" data-i18n="awgDnsHint">Written to the container as AWG_DNS. The container image is scratch and has no resolver of its own, so a hostname endpoint cannot be resolved without this. It has to be reachable from the container without the tunnel &mdash; the router itself or a public resolver. Left empty, a public DNS from the config (1.1.1.1 and the like) is taken by itself; a private one (10.x, 100.64.x...) is not &mdash; it usually lives inside the tunnel.</div>
         </div>
         <div id="warp-row" class="alert alert-info" style="display:none;margin-top:10px">
-            <div data-i18n="warpSimpleNote">This is a Cloudflare WARP config: only what it needs is asked, everything else keeps its defaults.</div>
+            <div data-i18n="warpSimpleNote">Only what WARP needs is asked here; everything else keeps its defaults.</div>
             <label style="margin-top:8px"><input type="checkbox" id="warp-ports-enable" checked>
             <span data-i18n="warpPortsLabel">Random WARP port</span></label>
             <div class="hint"><span data-i18n="warpPortsNote">Cloudflare takes WARP on several ports, so the proxy gets them all: a port is picked at random for each connection, and one that does not answer is left after about 15 s. Ports:</span>
@@ -1258,11 +1257,12 @@
             warpQuicPort: 'Ordinary QUIC goes to UDP port 443, while Cloudflare takes WireGuard on 2408, 500, 1701 and 4500: the packet looks like QUIC by its header, not by its port.',
             warpPortsNote: 'Cloudflare takes WARP on several ports, so the proxy gets them all: a port is picked at random for each connection, and one that does not answer is left after about 15 s. Ports:',
             btnWarpQuic: 'Make the packet before the handshake look like Chrome QUIC (I1, Jc = 0)',
-            warpSimpleNote: 'This is a Cloudflare WARP config: only what it needs is asked, everything else keeps its defaults.',
+            warpSimpleNote: 'Only what WARP needs is asked here; everything else keeps its defaults.',
             warpPortsLabel: 'Random WARP port',
             warpShowAll: 'Show all settings',
             warpHideAll: 'Hide extra settings',
-            warpGenTitle: 'No AmneziaVPN — generate a config on Cloudflare WARP',
+            modeWarp: 'No AmneziaVPN — Cloudflare WARP',
+            modeWarpHint: 'No AmneziaWG server of your own: a free Cloudflare WARP config, awg-proxy runs in a container on the router',
             warpGenStep1: 'Open the WARP config generator:',
             warpGenStep2: 'Press "Generate WARP Config", then "Copy to Clipboard" (or "Download warp.conf").',
             warpGenStep3: 'Paste it into the field below. The page fills in the missing AmneziaWG values itself and offers to make the packet before the handshake look like ordinary Chrome QUIC traffic to Cloudflare.',
@@ -1508,11 +1508,12 @@
             warpQuicPort: 'Обычный QUIC идёт на UDP-порт 443, а WireGuard Cloudflare принимает на 2408, 500, 1701 и 4500: по заголовку пакет похож на QUIC, по порту — нет.',
             warpPortsNote: 'Cloudflare принимает WARP на нескольких портах, поэтому прокси получает их все: порт выбирается случайно при каждом подключении, а неотвечающий бросается примерно через 15 с. Порты:',
             btnWarpQuic: 'Сделать пакет перед рукопожатием похожим на QUIC Chrome (I1, Jc = 0)',
-            warpSimpleNote: 'Это конфиг Cloudflare WARP: спрашивается только нужное ему, остальное остаётся по умолчанию.',
+            warpSimpleNote: 'Здесь спрашивается только то, что нужно WARP, остальное остаётся по умолчанию.',
             warpPortsLabel: 'Случайный порт WARP',
             warpShowAll: 'Показать все настройки',
             warpHideAll: 'Скрыть лишние настройки',
-            warpGenTitle: 'Нет AmneziaVPN — сгенерировать конфиг на Cloudflare WARP',
+            modeWarp: 'Нет AmneziaVPN — Cloudflare WARP',
+            modeWarpHint: 'Своего сервера AmneziaWG нет: бесплатный конфиг Cloudflare WARP, awg-proxy в контейнере на роутере',
             warpGenStep1: 'Откройте генератор конфигов WARP:',
             warpGenStep2: 'Нажмите «Generate WARP Config», затем «Copy to Clipboard» (или «Download warp.conf»).',
             warpGenStep3: 'Вставьте конфиг в поле ниже. Недостающие значения AmneziaWG страница подставит сама и предложит сделать пакет перед рукопожатием похожим на обычный QUIC-трафик Chrome к Cloudflare.',
@@ -2249,18 +2250,30 @@
 
     var warpShowAll = false;
 
-    // A WARP config gets the short form: the advanced rows step aside with
-    // their defaults, the DNS field shows only for a hostname endpoint the
-    // config has no public resolver for, and the port list comes switched on.
+    // The WARP mode is the short form: the advanced rows step aside with their
+    // defaults, the DNS field shows only for a hostname endpoint the config has
+    // no public resolver for, and the port list comes switched on. The mode
+    // follows the config: a WARP config pasted in the container mode switches
+    // to WARP, any other config pasted in WARP switches back.
     function applyWarpUi() {
         var parsed = parseConf(document.getElementById('conf-input').value);
-        var mode = getDeployMode();
-        var warp = (mode === 'container' || mode === 'standalone') && isCloudflareWarp(parsed);
+        var choice = deployChoice();
+        var cf = isCloudflareWarp(parsed);
+        var follow = (choice === 'container' && cf) ? 'warp' :
+            (choice === 'warp' && parsed.peer.Endpoint && !cf) ? 'container' : '';
+        if (follow) {
+            setDeployChoice(follow);
+            onModeChange();
+            return;
+        }
+        var warp = choice === 'warp';
+        document.getElementById('warp-panel').style.display = warp ? 'block' : 'none';
         document.getElementById('warp-row').style.display = warp ? 'block' : 'none';
         document.body.classList.toggle('warp-simple', warp && !warpShowAll);
-        var needDns = !isIPLiteral(endpointHost(parsed.peer.Endpoint)) && !firstPublicDns(parsed.interface.DNS);
+        var needDns = !!parsed.peer.Endpoint && !isIPLiteral(endpointHost(parsed.peer.Endpoint)) &&
+            !firstPublicDns(parsed.interface.DNS);
         document.getElementById('dns-row').classList.toggle('warp-adv', !needDns);
-        document.getElementById('warp-ports-list').textContent = warp ? warpPorts(parsed).join(',') : '';
+        document.getElementById('warp-ports-list').textContent = (cf ? warpPorts(parsed) : WARP_PORTS).join(',');
         var btn = document.getElementById('warp-adv-toggle');
         var key = warpShowAll ? 'warpHideAll' : 'warpShowAll';
         btn.setAttribute('data-i18n', key);
@@ -4415,12 +4428,25 @@
     // ============================================================
     // Mode selector
     // ============================================================
-    function getDeployMode() {
+    // The radio as picked, WARP included.
+    function deployChoice() {
         var radios = document.getElementsByName('deploy-mode');
         for (var i = 0; i < radios.length; i++) {
             if (radios[i].checked) return radios[i].value;
         }
         return 'container';
+    }
+
+    function setDeployChoice(value) {
+        var radios = document.getElementsByName('deploy-mode');
+        for (var i = 0; i < radios.length; i++) radios[i].checked = radios[i].value === value;
+    }
+
+    // WARP is the container install with a short form, so everything that
+    // builds the script sees it as one.
+    function getDeployMode() {
+        var c = deployChoice();
+        return c === 'warp' ? 'container' : c;
     }
 
     function dfEnabled() {
@@ -4641,7 +4667,6 @@
         document.getElementById('srv-panel').style.display = isSrv ? 'block' : 'none';
         document.getElementById('conf-input').style.display = hideConf ? 'none' : 'block';
         document.querySelector('label[for="conf-input"]').style.display = hideConf ? 'none' : 'block';
-        document.getElementById('warp-gen').style.display = hideConf ? 'none' : 'block';
         document.getElementById('scenario-row').style.display = hideConf ? 'none' : 'block';
         if (hideConf) {
             document.getElementById('doh-panel').style.display = 'none';
@@ -4655,7 +4680,8 @@
             onScenarioChange();
         }
         document.getElementById('prefix-select').parentElement.style.display = 'block';
-        var hintKey = isSrv ? 'modeServerHint' : (isS2S ? 'modeSiteToSiteHint' : (mode === 'container' ? 'modeContainerHint' : 'modeStandaloneHint'));
+        var hintKey = isSrv ? 'modeServerHint' : (isS2S ? 'modeSiteToSiteHint' :
+            (deployChoice() === 'warp' ? 'modeWarpHint' : (mode === 'container' ? 'modeContainerHint' : 'modeStandaloneHint')));
         document.getElementById('mode-hint').setAttribute('data-i18n', hintKey);
         document.getElementById('mode-hint').textContent = t(hintKey);
         // Show/hide hub prefix options

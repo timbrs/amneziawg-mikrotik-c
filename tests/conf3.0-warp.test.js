@@ -318,19 +318,51 @@ ok('site-to-site ignores the pasted WARP config', !body.classList.contains('warp
 w.clearAll();
 ok('clearing resets the form', !body.classList.contains('warp-simple'));
 
-/* ---- no AmneziaVPN: generate a WARP config -------------------------------- */
-const gen = w.document.getElementById('warp-gen');
-ok('the WARP generator option is on the page', !!gen);
-ok('it links the generator',
-   !!gen.querySelector('a[href="https://lanrat.github.io/wireguard-warp-generator/"]'));
-ok('and wgcf as the other way', !!gen.querySelector('a[href="https://github.com/ViRb3/wgcf"]'));
-ok('every line of it is translated', ['warpGenTitle', 'warpGenStep1', 'warpGenStep2', 'warpGenStep3', 'warpGenAlt', 'warpGenNote']
-   .every(function (k) { return w.I18N.en[k] && w.I18N.ru[k] && w.I18N.en[k] !== w.I18N.ru[k]; }));
-w.document.querySelector('input[name="deploy-mode"][value="server"]').checked = true;
-w.onModeChange();
-eq('hidden where there is no config to paste', gen.style.display, 'none');
+/* ---- the deployment mode "No AmneziaVPN — Cloudflare WARP" ----------------
+ * A mode of its own: picked, it shows how to get a WARP config and the short
+ * form; underneath it is the container install. The mode follows the config
+ * both ways between container and WARP. */
+const radio = function (v) { return w.document.querySelector('input[name="deploy-mode"][value="' + v + '"]'); };
+const panel = w.document.getElementById('warp-panel');
+const pick = function (v) { radio(v).checked = true; w.onModeChange(); };
+ok('WARP is a deployment mode', !!radio('warp'));
+eq('the fourth one', [].map.call(w.document.getElementsByName('deploy-mode'), function (r) { return r.value; }).indexOf('warp'), 3);
+ok('no separate WARP banner any more', !w.document.getElementById('warp-gen'));
 w.clearAll();
-eq('shown again in the container mode', gen.style.display, 'block');
+eq('the instructions are hidden in the container mode', panel.style.display, 'none');
+pick('warp');
+eq('picking WARP shows them', panel.style.display, 'block');
+ok('they link the generator',
+   !!panel.querySelector('a[href="https://lanrat.github.io/wireguard-warp-generator/"]'));
+ok('and wgcf as the other way', !!panel.querySelector('a[href="https://github.com/ViRb3/wgcf"]'));
+ok('the short form is on before anything is pasted', body.classList.contains('warp-simple'));
+ok('no DNS question before there is an endpoint', w.document.getElementById('dns-row').classList.contains('warp-adv'));
+eq('the port list is already shown', w.document.getElementById('warp-ports-list').textContent, '2408,500,1701,4500');
+eq('the hint says what the mode is', w.document.getElementById('mode-hint').textContent,
+   w.I18N[w.currentLang].modeWarpHint);
+eq('it builds the container install', w.getDeployMode(), 'container');
+paste(bare);
+ok('pasting WARP keeps the mode', radio('warp').checked);
+w.document.getElementById('awg-dns').value = '';
+w.generate();
+const gw = w.document.getElementById('output').dataset.plain || '';
+ok('the WARP mode generates a container script',
+   gw.indexOf('/container/add') >= 0 && remoteEnv(gw) === 'engage.cloudflareclient.com:2408,500,1701,4500');
+paste(otherText);
+ok('an AmneziaWG config pasted in WARP switches to the container mode', radio('container').checked);
+eq('and the instructions go away', panel.style.display, 'none');
+paste(bare);
+ok('a WARP config pasted in the container mode switches to WARP', radio('warp').checked);
+eq('and the instructions come up', panel.style.display, 'block');
+pick('standalone');
+paste(bare);
+ok('standalone is left alone', radio('standalone').checked && !body.classList.contains('warp-simple'));
+pick('server');
+eq('nothing of WARP in the hub mode', panel.style.display, 'none');
+w.clearAll();
+ok('clearing goes back to the container mode', radio('container').checked && panel.style.display === 'none');
+ok('every line is translated', ['modeWarp', 'modeWarpHint', 'warpGenStep1', 'warpGenStep2', 'warpGenStep3', 'warpGenAlt', 'warpGenNote']
+   .every(function (k) { return w.I18N.en[k] && w.I18N.ru[k] && w.I18N.en[k] !== w.I18N.ru[k]; }));
 const words = Object.keys(w.I18N.en).filter(function (k) { return /^warp/.test(k); })
     .map(function (k) { return w.I18N.en[k] + ' ' + w.I18N.ru[k]; }).join(' ');
 ok('neutral wording', !/bypass|circumvent|censor|обход|цензур/i.test(words));

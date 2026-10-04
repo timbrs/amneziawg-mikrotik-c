@@ -217,9 +217,9 @@ The obfuscation parameters (`Jc`, `Jmin`, `Jmax`, `S1`, `S2`, `H1`--`H4`) are in
 
 ### No AmneziaVPN: a Cloudflare WARP config
 
-Above the `.conf` field there is a collapsible **"No AmneziaVPN — generate a config on Cloudflare WARP"**: open the [WARP config generator](https://lanrat.github.io/wireguard-warp-generator/) (or the [wgcf](https://github.com/ViRb3/wgcf) command-line tool), press "Generate WARP Config", copy the config and paste it into the field. The configurator itself contacts nothing.
+The "Deployment mode" list has **"No AmneziaVPN — Cloudflare WARP"**. It shows where to get a config: open the [WARP config generator](https://lanrat.github.io/wireguard-warp-generator/) (or the [wgcf](https://github.com/ViRb3/wgcf) command-line tool), press "Generate WARP Config", copy the config and paste it into the field. What gets installed is the same as in the "Container" mode. The configurator itself contacts nothing.
 
-The configurator recognises a WARP config by Cloudflare's server key or by `engage.cloudflareclient.com` and switches to a short form:
+A WARP config pasted in the "Container" mode switches to the WARP mode by itself — the configurator recognises it by Cloudflare's server key or by `engage.cloudflareclient.com`. The WARP mode is a short form:
 
 - **the extra settings are hidden** -- their defaults fit WARP; "Show all settings" brings them back;
 - **the container DNS is asked for only when it is needed**: the endpoint is a name and the config has no public DNS (usually it has `1.1.1.1`, which is taken by itself);
