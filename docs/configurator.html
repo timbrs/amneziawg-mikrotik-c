@@ -2701,10 +2701,10 @@
             '  :local arch [/system/resource/get architecture-name]',
             '  :local ver [/system/resource/get version]',
             '  :local dotPos [:find $ver "."]',
-            '  :local rest [:pick $ver ($dotPos + 1) [:len $ver]]',
-            '  :local endPos [:find $rest "."]',
-            '  :if ([:typeof $endPos] = "nil") do={ :set endPos [:find $rest " "] }',
-            '  :local minor [:tonum [:pick $rest 0 $endPos]]',
+            '  :local rest ([:pick $ver ($dotPos + 1) [:len $ver]] . " ")',
+            '  :local minor 0',
+            '  :local mi 0',
+            '  :while ([:typeof [:find "0123456789" [:pick $rest $mi ($mi + 1)]]] != "nil") do={ :set minor ($minor * 10 + [:tonum [:pick $rest $mi ($mi + 1)]]); :set mi ($mi + 1) }',
             '  :local suffix ""',
             '  :if ($minor <= 20) do={ :set suffix "-7.20-Docker" }',
             '  :local file ""',
@@ -4368,10 +4368,10 @@
         lines.push('  :local arch [/system/resource/get architecture-name]');
         lines.push('  :local ver [/system/resource/get version]');
         lines.push('  :local dotPos [:find $ver "."]');
-        lines.push('  :local rest [:pick $ver ($dotPos + 1) [:len $ver]]');
-        lines.push('  :local endPos [:find $rest "."]');
-        lines.push('  :if ([:typeof $endPos] = "nil") do={ :set endPos [:find $rest " "] }');
-        lines.push('  :local minor [:tonum [:pick $rest 0 $endPos]]');
+        lines.push('  :local rest ([:pick $ver ($dotPos + 1) [:len $ver]] . " ")');
+        lines.push('  :local minor 0');
+        lines.push('  :local mi 0');
+        lines.push('  :while ([:typeof [:find "0123456789" [:pick $rest $mi ($mi + 1)]]] != "nil") do={ :set minor ($minor * 10 + [:tonum [:pick $rest $mi ($mi + 1)]]); :set mi ($mi + 1) }');
         lines.push('  :local suffix ""');
         lines.push('  :if ($minor <= 20) do={ :set suffix "-7.20-Docker" }');
         lines.push('  :local file ""');

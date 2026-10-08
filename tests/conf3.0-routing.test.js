@@ -116,6 +116,26 @@ const unOff = w.buildUninstallScriptSource(true, 'disk1', 'awg-proxy-1',
 ok('and nothing when the option was never used',
    unOff.indexOf('address-list-extra-time') < 0);
 
+/* ---- #67: исключения non-ru ---- */
+const nexL = w.buildNonRuScenario('awg-proxy-1', ['steam', 'epic'], 'CloudFlare', '198.51.100.1', 'disk1', 'container');
+function idx(re) { for (let i = 0; i < nexL.length; i++) if (re.test(nexL[i])) return i; return -1; }
+const iSteam = idx(/mangle.add .*action=accept dst-address-list=Steam /);
+const iEpic = idx(/mangle.add .*action=accept dst-address-list=EpicGames /);
+const iMarkConn = idx(/mangle.add .*action=mark-connection/);
+const iMarkRoute = idx(/mangle.add .*action=mark-routing/);
+ok('exclusion accept rules exist', iSteam >= 0 && iEpic >= 0);
+ok('accept stands above mark-connection and mark-routing',
+   iSteam < iMarkConn && iEpic < iMarkConn && iMarkConn < iMarkRoute);
+const iClean = idx(/mangle.remove \[find where comment=awg-proxy-1-non-ru\]/);
+ok('a re-run first drops its own earlier mangle rules', iClean >= 0 && iClean < iSteam, String(iClean));
+ok('and its earlier masquerade', idx(/nat.remove \[find where comment=awg-proxy-1-non-ru\]/) >= 0);
+ok('the cleanup is exact-match, not a prefix wildcard',
+   !/mangle.remove .*comment~/.test(nexL.join(NL)));
+const nexS = nexL.join(NL);
+['steamcontent.com', 'steamserver.net', 'steam-chat.com'].forEach(function (d) {
+    ok('Steam exclusion forwards ' + d, nexS.indexOf('"' + d + '"') >= 0);
+});
+
 console.log('');
 console.log(fails ? (passes + '/' + (passes + fails) + ' checks passed, ' + fails + ' FAILED')
                   : (passes + '/' + passes + ' checks passed'));

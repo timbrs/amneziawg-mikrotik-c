@@ -2766,7 +2766,7 @@
         rezka:     {list:'Rezka',     d:['stream.voidboost.cc','zerocdn.com'], r:['rezka'], on:false},
         samsung:   {list:'Samsung',   d:['samsung.com','samsungcloud.com','samsungapps.com','samsungdm.com','samsungelectronics.com'], r:[], on:false},
         spotify:   {list:'Spotify',   d:['spotify.com','spoti.fi','scdn.co','spotifycdn.com','spotifycdn.net','byspotify.com','pscdn.co','spotify-everywhere.com','spotify.design','spotifycharts.com','spotifycodes.com','spotifyforbrands.com','spotifyjobs.com'], r:[], on:true},
-        steam:     {list:'Steam',     d:['steampowered.com','steamcommunity.com','steamstatic.com','steamcdn-a.akamaihd.net','steamgames.com','steamusercontent.com','valve.software','valvesoftware.com'], r:[], on:false},
+        steam:     {list:'Steam',     d:['steampowered.com','steamcommunity.com','steamstatic.com','steamcdn-a.akamaihd.net','steamgames.com','steamusercontent.com','steamcontent.com','steamserver.net','steam-chat.com','valve.software','valvesoftware.com'], r:[], on:false},
         // MTProto dials Telegram's own ranges by IP, with no DNS lookup for the
         // router to see, so the domains alone never route a running client (#41).
         // Published set for AS62041/AS59930.
@@ -2779,7 +2779,7 @@
     };
 
     var EXCLUSIONS = {
-        steam:   {list:'Steam',      label:'Steam',       d:['steampowered.com','steamcommunity.com','steamstatic.com','steamcdn-a.akamaihd.net','steamgames.com','steamusercontent.com','valve.software','valvesoftware.com'], r:[], on:true},
+        steam:   {list:'Steam',      label:'Steam',       d:['steampowered.com','steamcommunity.com','steamstatic.com','steamcdn-a.akamaihd.net','steamgames.com','steamusercontent.com','steamcontent.com','steamserver.net','steam-chat.com','valve.software','valvesoftware.com'], r:[], on:true},
         epic:    {list:'EpicGames',   label:'Epic Games',  d:['epicgames.com','unrealengine.com','fortnite.com','epicgames.dev'], r:[], on:false},
         blizzard:{list:'Blizzard',    label:'Battle.net',  d:['blizzard.com','battle.net','blizzard.net'], r:[], on:false},
         apple:   {list:'Apple',       label:'Apple',       d:['apple.com','icloud.com','mzstatic.com','apple-dns.net','cdn-apple.com'], r:[], on:false},
@@ -3342,6 +3342,14 @@
         lines.push('  }');
         lines.push('} on-error={}');
 
+        // mangle/add дописывает в конец цепочки, а exclusion-accept работает, только
+        // пока стоит ВЫШЕ mark-connection/mark-routing. Повторный запуск (добавили
+        // исключение к уже стоящему non-ru) оставлял старую пару mark-* выше новых
+        // accept, и исключения молча не срабатывали (#67). Поэтому правила прошлого
+        // запуска снимаем и собираем заново в нужном порядке.
+        lines.push('# Drop the rules of an earlier run: accept must stay above the marking rules');
+        lines.push(':do { /ip/firewall/mangle/remove [find where comment=' + prefix + '-non-ru] } on-error={}');
+        lines.push(':do { /ip/firewall/nat/remove [find where comment=' + prefix + '-non-ru] } on-error={}');
         if (serverHost && isIPv6Literal(serverHost)) {
             // An IPv6 server needs no loop guard here: everything below is
             // IPv4-only policy routing (/ip/firewall/mangle + /ip/route), so
@@ -3587,11 +3595,7 @@
         src.push('    :local cid [:pick $cids ([:len $cids] - 1)]');
         src.push('    :local img [/container/get $cid remote-image]');
         src.push('    :local ver [/system/resource/get version]');
-        src.push('    :local dotPos [:find $ver "."]');
-        src.push('    :local rest [:pick $ver ($dotPos + 1) [:len $ver]]');
-        src.push('    :local endPos [:find $rest "."]');
-        src.push('    :if ([:typeof $endPos] = "nil") do={ :set endPos [:find $rest " "] }');
-        src.push('    :local minor [:tonum [:pick $rest 0 $endPos]]');
+        Array.prototype.push.apply(src, minorParseLines('    '));
 
         // --- how the container is doing right now -------------------------------
         src.push('    :local wantRunning true');
@@ -4474,11 +4478,7 @@
         // --- RouterOS: версия решает, что вообще доступно
         L.push(':local ver [/system/resource/get version]');
         pv('("RouterOS version: " . $ver)');
-        L.push(':local dotPos [:find $ver "."]');
-        L.push(':local rest [:pick $ver ($dotPos + 1) [:len $ver]]');
-        L.push(':local endPos [:find $rest "."]');
-        L.push(':if ([:typeof $endPos] = "nil") do={ :set endPos [:find $rest " "] }');
-        L.push(':local minor [:tonum [:pick $rest 0 $endPos]]');
+        Array.prototype.push.apply(L, minorParseLines(''));
         L.push(':if ($minor < 24) do={');
         p('  ! 7.24 or newer is needed for full speed (privileged container).');
         p('    Without it the proxy still works, but upload stays about 3x slower.');
@@ -6317,6 +6317,21 @@
         return !!(el && el.checked);
     }
 
+    // Минорная версия RouterOS из $ver в $minor: ведущие цифры после первой точки.
+    // Версия приходит как "7.21.3 (stable)", "7.25beta5 (testing)", "7.22rc1",
+    // "7.22": [:tonum] от куска до точки/пробела на "25beta5" даёт пусто, и
+    // бета считалась старше 7.20 (#70). Поэтому цифры собираются по одной;
+    // пробел в хвосте останавливает цикл, когда за числом ничего нет.
+    function minorParseLines(ind) {
+        return [
+            ind + ':local dotPos [:find $ver "."]',
+            ind + ':local rest ([:pick $ver ($dotPos + 1) [:len $ver]] . " ")',
+            ind + ':local minor 0',
+            ind + ':local mi 0',
+            ind + ':while ([:typeof [:find "0123456789" [:pick $rest $mi ($mi + 1)]]] != "nil") do={ :set minor ($minor * 10 + [:tonum [:pick $rest $mi ($mi + 1)]]); :set mi ($mi + 1) }'
+        ];
+    }
+
     // Release file name for this router, left in $file (plus $imgTag, $suffix
     // and $minor). Shared by the installer and the prep script so the two can
     // never disagree about which archive to look for.
@@ -6324,11 +6339,7 @@
         var lines = [];
         lines.push(ind + ':local arch [/system/resource/get architecture-name]');
         lines.push(ind + ':local ver [/system/resource/get version]');
-        lines.push(ind + ':local dotPos [:find $ver "."]');
-        lines.push(ind + ':local rest [:pick $ver ($dotPos + 1) [:len $ver]]');
-        lines.push(ind + ':local endPos [:find $rest "."]');
-        lines.push(ind + ':if ([:typeof $endPos] = "nil") do={ :set endPos [:find $rest " "] }');
-        lines.push(ind + ':local minor [:tonum [:pick $rest 0 $endPos]]');
+        Array.prototype.push.apply(lines, minorParseLines(ind));
         lines.push(ind + ':local suffix ""');
         lines.push(ind + ':if ($minor <= 20) do={ :set suffix "-7.20-Docker" }');
         lines.push(ind + ':local file ""');
