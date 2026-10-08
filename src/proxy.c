@@ -3,6 +3,7 @@
 #include "log.h"
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
@@ -664,32 +665,67 @@ static void log_socket_buffers(int listen_fd, int remote_fd, const awg_config_t 
 /* Warn once per connection when the tunnel actually runs over IPv6: the 40-byte
  * IPv6 header pushes a full-size WireGuard packet past 1500 at the MTU that is
  * safe over IPv4. The proxy cannot fix this — the MTU belongs to the router's
- * wireguard interface — so it just states the ceiling. */
+ * wireguard interface — so it just states the ceiling. RouterOS cuts a
+ * container log line at 179 characters, so the number goes first. */
 static void log_ipv6_mtu_hint(proxy_t *p, const char *why) {
     if (g_log_level < LOG_ERROR) return;
     if (atomic_exchange_explicit(&p->fe_mtu_hint, 1, memory_order_relaxed)) return;
     char mb[12];
-    const char *parts[] = { why, ": set the WireGuard interface MTU to ",
-        u32_to_str(mb, (uint32_t)awg_max_wg_mtu(p->cfg->max_s4, 1)),
-        " or lower — the 40-byte IPv6 header makes a full-size packet exceed "
-        "1500 bytes and it will be dropped or fragmented" };
-    log_msgn("WARN: ", parts, 4);
+    const char *parts[] = { "set the WireGuard interface MTU to ",
+        u32_to_str(mb, (uint32_t)awg_max_wg_mtu(AWG_PATH_MTU, p->cfg->max_s4, 1)),
+        " or lower: ", why, " (header 20 bytes longer than IPv4)" };
+    log_msgn("WARN: ", parts, 5);
 }
 
-/* The IPv6 hint above only fires when the transport is v6, but a large enough
- * S4 overflows 1500 on IPv4 just as well: at S4=148 even the modest MTU 1380
- * yields a 1588-byte datagram. Nothing in the router's own counters shows the
- * resulting fragmentation — it just halves throughput — so warn on the packet
- * the proxy is actually about to put on the wire. */
+/* A data packet bigger than the path MTU leaves in two IP fragments. Nothing
+ * in the router's own counters shows it — throughput just halves — so warn on
+ * the packet the proxy is actually about to put on the wire, naming the MTU
+ * that would fit. The limit starts at 1500, which S4 alone can overflow (at
+ * S4=148 even MTU 1380 makes 1588 bytes), and check_path_mtu() lowers it to
+ * what the path really takes. c2s_headroom is the S4 the remote leg carries:
+ * max_s4 in normal mode, 0 where the remote is plain WireGuard. */
 static void log_frag_warn(proxy_t *p, int v6, int outer) {
-    if (g_log_level < LOG_ERROR) return;
-    if (atomic_exchange_explicit(&p->fe_frag_warn, 1, memory_order_relaxed)) return;
-    char ob[12], mb[12];
-    const char *parts[] = { "outgoing packet is ", u32_to_str(ob, (uint32_t)outer),
-        " bytes and will be fragmented: set the WireGuard interface MTU to ",
-        u32_to_str(mb, (uint32_t)awg_max_wg_mtu(p->cfg->max_s4, v6)),
-        " or lower (S4 padding is added to every data packet)" };
-    log_msgn("WARN: ", parts, 5);
+    int lim = atomic_exchange_explicit(&p->frag_lim, INT_MAX, memory_order_relaxed);
+    if (outer <= lim || g_log_level < LOG_ERROR) return;
+    char mb[12], ob[12], lb[12];
+    const char *parts[] = { "set the WireGuard interface MTU to ",
+        u32_to_str(mb, (uint32_t)awg_max_wg_mtu(lim, p->c2s_headroom, v6)),
+        " or lower: packets to the server are ", u32_to_str(ob, (uint32_t)outer),
+        " bytes, the path takes ", u32_to_str(lb, (uint32_t)lim),
+        ", each one is fragmented" };
+    log_msgn("WARN: ", parts, 7);
+}
+
+/* The path MTU the kernel has learned for the server, reported once per value.
+ *
+ * An ICMP "fragmentation needed" (IPv6: "packet too big") for a packet sent
+ * with DF lowers the route's MTU, and from then on the kernel fragments
+ * anything larger itself. The ICMP also lands on the socket as a one-shot
+ * EMSGSIZE, but whichever recv or send meets it first takes it, and a send
+ * that falls back from GSO or completes a partial sendmmsg drops it unseen.
+ * So the main loop just asks: IP_MTU on a connected socket is the learned
+ * value. The fragmentation warning is re-armed at it, so the MTU it names is
+ * the one this path takes and it fires only if data packets really exceed
+ * it — an oversized junk or I1-I5 packet costs nothing worth a warning. The
+ * route forgets the value after ten minutes and learns the same one again,
+ * hence once per value. */
+static void check_path_mtu(proxy_t *p) {
+    int fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
+    if (fd < 0) return;
+    int v6 = (p->remote.sa.ss_family == AF_INET6);
+    int mtu = 0;
+    socklen_t len = sizeof(mtu);
+    if (getsockopt(fd, v6 ? IPPROTO_IPV6 : IPPROTO_IP, v6 ? IPV6_MTU : IP_MTU,
+                   &mtu, &len) < 0 ||
+        mtu <= 0 || mtu >= AWG_PATH_MTU || mtu == p->path_mtu)
+        return;
+    p->path_mtu = mtu;
+    atomic_store_explicit(&p->frag_lim, mtu, memory_order_relaxed);
+    char mb[12];
+    const char *parts[] = { "remote: path MTU to the server is ",
+                            u32_to_str(mb, (uint32_t)mtu),
+                            ", larger packets are fragmented" };
+    log_infon(parts, 3);
 }
 
 /* Open and connect one socket to a resolved endpoint. */
@@ -1340,6 +1376,7 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     p->signal_fd = -1;
     p->timer_fd = -1;
     p->gso_ok = !cfg->no_gso;
+    atomic_store_explicit(&p->frag_lim, AWG_PATH_MTU, memory_order_relaxed);
     atomic_store_explicit(&p->rb_remote, cfg->socket_buf_auto ? RB_FLOOR : cfg->socket_buf,
                           memory_order_relaxed);
 
@@ -1659,9 +1696,33 @@ static void note_remote_send_err(proxy_t *p, int err) {
     if (!send_err_is_fatal(err)) return;
     if (atomic_exchange_explicit(&p->reconnect_needed, 1, memory_order_relaxed))
         return;
-    log_info3("remote send error (", strerror(err), "), will reconnect");
+    log_info3("remote: send failed (", strerror(err), "), reconnecting");
     int rfd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
     if (rfd >= 0) shutdown(rfd, SHUT_RDWR);
+}
+
+/* A read on the remote socket brought nothing. Two outcomes say nothing bad
+ * about the socket and must not cost a reconnect — a second of silence, a new
+ * source port and, with a port list, a new server port:
+ *   n == 0    a shutdown() woke this thread (whoever did it has already set
+ *             reconnect_needed or stopped and said why), or the peer sent an
+ *             empty datagram. errno is stale either way; printing it used to
+ *             put an unrelated error into the log.
+ *   EMSGSIZE  an ICMP "fragmentation needed" for a packet we sent. The kernel
+ *             has lowered the path MTU and fragments from now on;
+ *             check_path_mtu() reports the number.
+ * Anything else — ICMP port or host unreachable, a vanished address — ends
+ * the socket. */
+static void note_remote_read_err(proxy_t *p, int n, int err) {
+    if (n == 0 || err == EAGAIN || err == EWOULDBLOCK || err == EINTR) return;
+    if (err == EMSGSIZE) {
+        log_debug("remote: a router on the way rejected a packet as too big");
+        return;
+    }
+    if (atomic_load_explicit(&p->stopped, memory_order_relaxed)) return;
+    if (atomic_exchange_explicit(&p->reconnect_needed, 1, memory_order_relaxed))
+        return;
+    log_info3("remote: receive failed (", strerror(err), "), reconnecting");
 }
 
 /* Callers classify the failure with note_remote_send_err(p, errno), so errno
@@ -1822,11 +1883,10 @@ static int send_batch_gso(proxy_t *p, int fd, struct mmsghdr *msgs,
 static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
                                      struct iovec *iovecs, int nsend) {
     he_stash(p, iovecs[0].iov_base, (int)iovecs[0].iov_len, 0);
-    if (!atomic_load_explicit(&p->fe_frag_warn, memory_order_relaxed)) {
-        int v6 = (p->remote.sa.ss_family == AF_INET6);
-        int outer = (int)iovecs[0].iov_len + (v6 ? 48 : 28);
-        if (outer > 1500) log_frag_warn(p, v6, outer);
-    }
+    int v6 = (p->remote.sa.ss_family == AF_INET6);
+    int outer = (int)iovecs[0].iov_len + (v6 ? 48 : 28);
+    if (outer > atomic_load_explicit(&p->frag_lim, memory_order_relaxed))
+        log_frag_warn(p, v6, outer);
     int sent = 0;
     int err = send_batch_gso(p, fd, msgs, iovecs, nsend, NULL, &sent,
                              &p->st_c2s_gso_msgs, &p->st_c2s_gso_segs);
@@ -2643,13 +2703,7 @@ static void *s2c_thread(void *arg) {
             } else {
                 n = recv_gro(p, remote_fd, &seg_size);
                 if (n <= 0) {
-                    int saved_errno = errno;
-                    if (n == 0 || (saved_errno != EAGAIN && saved_errno != EWOULDBLOCK && saved_errno != EINTR)) {
-                        if (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
-                            log_info3("remote read error (", strerror(saved_errno), "), will reconnect");
-                            atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);
-                        }
-                    }
+                    note_remote_read_err(p, n, errno);
                     continue;
                 }
                 gro_pend_off = 0;
@@ -2717,13 +2771,7 @@ static void *s2c_thread(void *arg) {
 
             int nrecv = spin_recvmmsg(p, remote_fd, p->recv_s2c.msgs, BATCH_SIZE);
             if (nrecv <= 0) {
-                int saved_errno = errno;
-                if (nrecv == 0 || (saved_errno != EAGAIN && saved_errno != EWOULDBLOCK && saved_errno != EINTR)) {
-                    if (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
-                        log_info3("remote read error (", strerror(saved_errno), "), will reconnect");
-                        atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);
-                    }
-                }
+                note_remote_read_err(p, nrecv, errno);
                 continue;
             }
             prev_nrecv = nrecv;
@@ -3106,6 +3154,7 @@ int proxy_run(proxy_t *p) {
             if (fd == p->timer_fd) {
                 uint64_t expirations;
                 read(p->timer_fd, &expirations, sizeof(expirations));
+                check_path_mtu(p);
                 int had_activity = atomic_exchange_explicit(&p->last_active, 0, memory_order_relaxed);
                 int had_remote_rx = atomic_exchange_explicit(&p->last_remote_rx, 0, memory_order_relaxed);
                 int had_init = atomic_exchange_explicit(&p->client_init, 0, memory_order_relaxed);

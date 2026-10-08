@@ -547,7 +547,7 @@ Two practical rules follow:
   IPv6:  floor((1420 - S4) / 16) * 16      # S4=0 -> 1408,  S4=16 -> 1392
   ```
 
-  This is the same reason `wg-quick` picks 1420 for IPv4 and 1400 for IPv6. The configurator generates S4 in 12--16 and leaves the IPv4 MTU alone; for an IPv6 endpoint, or someone else's `.conf` with a larger S4, it lowers `mtu=` on the WireGuard interface. The proxy itself never changes the MTU — it only logs a WARN with the ceiling once the connection actually runs over IPv6.
+  This is the same reason `wg-quick` picks 1420 for IPv4 and 1400 for IPv6. The configurator generates S4 in 12--16 and leaves the IPv4 MTU alone; for an IPv6 endpoint, or someone else's `.conf` with a larger S4, it lowers `mtu=` on the WireGuard interface. The proxy itself never changes the MTU — it logs a WARN with the ceiling once the connection runs over IPv6, or when a data packet does not fit the path to the server (see [MTU on narrow links](#mtu-on-narrow-links-pppoe-lte)).
 
 With no key set, the proxy behaves **byte for byte** like v2 (`hp_off_matches_v2` in the unit tests; the ChaCha20 branch is never entered). `amneziawg-go` works the same way: a zero key means `cipher == nil`.
 
@@ -597,7 +597,7 @@ The probe waits in `poll()` on the two descriptors and never reads, so the winni
 **MTU.** The IPv6 header is 20 bytes longer and a full-size packet no longer fits 1500 — formulas and ceilings are in the AmneziaWG 3.0 section above. The proxy does not change the MTU (it belongs to the router's WireGuard interface); it logs this on connect instead:
 
 ```
-WARN: remote is IPv6: set the WireGuard interface MTU to 1408 or lower — ...
+WARN: set the WireGuard interface MTU to 1408 or lower: remote is IPv6 (header 20 bytes longer than IPv4)
 ```
 
 The configurator sets `mtu=` itself: the "Server is reachable over IPv6" box is ticked automatically as soon as the endpoint is recognised as an IPv6 literal. For a DNS name the box stays off (the browser deliberately does not resolve your server's name — it would go to a third party), but the generated script asks the router itself:
@@ -948,6 +948,36 @@ To route DNS queries through the tunnel, set DNS servers and add routes to them:
 /ip/route/add dst-address=8.8.4.4/32 gateway=wg-awg-proxy
 ```
 
+### MTU on narrow links (PPPoE, LTE)
+
+The outer UDP datagram is
+
+```
+IP (20 for IPv4, 40 for IPv6) + UDP 8 + S4 + WG header 16 + MTU + tag 16
+```
+
+At the stock MTU of 1420 and `S4 = 16` that is 1500 bytes over IPv4 — it does not fit a PPPoE link (1492), and every full-size packet goes out as two IP fragments.
+
+**The proxy tells you the MTU to set.** Packets to the server carry DF (don't fragment). When a link on the way is narrower than the packet, the node in front of it drops the packet and answers with ICMP "fragmentation needed" (IPv6: "packet too big") carrying the size that fits. The kernel remembers this path MTU and from then on fragments larger packets itself: the tunnel works, but throughput drops. Every 5 seconds the proxy asks the kernel for that path MTU and logs:
+
+```
+INFO: remote: path MTU to the server is 1492, larger packets are fragmented
+WARN: set the WireGuard interface MTU to 1408 or lower: packets to the server are 1496 bytes, the path takes 1492, each one is fragmented
+```
+
+The number in `WARN` is the value for the router's WireGuard interface, computed with the formula above from the real path MTU and your `S4`:
+
+```routeros
+/interface/wireguard/set [find name=wg-awg-proxy] mtu=1408
+```
+
+- `WARN` appears only when data packets do not fit the path. If the log has only the `path MTU` line, the oversized packet was one sent before the handshake (junk or `I1`–`I5`). It is garbage anyway, costs no throughput, and needs no change.
+- The kernel forgets the path MTU after 10 minutes and learns it again. The proxy logs the same value once.
+- If ICMP is filtered on the way, the kernel never learns the path MTU and oversized packets are simply lost. `WARN` then appears only for packets over 1500 bytes. Find the path MTU by hand: `/ping <server IP> size=1492 do-not-fragment`, lowering `size` until the ping passes. The largest `size` that passes is the path MTU.
+- With `AWG_NO_DF=1` over IPv4, nodes on the way fragment silently, without ICMP. There will be no `path MTU` line, and the slowdown stays.
+
+Up to and including 1.4.2 the proxy took this ICMP for a broken connection: the log said `remote read error (Message too large), will reconnect`, the tunnel went quiet for about a second, and the source port changed.
+
 ### Address-List Based Routing (Advanced)
 
 For selective traffic routing through the tunnel, use routing tables and mangle rules.
@@ -1161,7 +1191,7 @@ Restart the containers and check logs — they will show DNS resolution errors, 
 
 Site-to-site and server configs from the configurator carry a primary profile plus a fallback chain. If the primary obfuscation gets blocked, after `AWG_FB_AFTER` seconds of remote silence the initiator moves to the next stage on its own — the logs show `fallback: remote silent, trying profile stage N` (initiator) and `c2s: peer uses a different profile stage, switched` (responder). The startup line `config: fallback chain of N profiles` confirms the chain is set. Both ends must be generated by the same configurator run, otherwise their profiles won't match.
 
-**No handshake** -- make sure all AWG parameters (Jc, Jmin, Jmax, S1, S2, H1--H4) exactly match the server. Verify `AWG_REMOTE`, `AWG_SERVER_PUB`, and `AWG_CLIENT_PUB`. For diagnostics, set `AWG_LOG_LEVEL=debug` -- logs will show handshake init and junk packet sending. If you see `remote read error (Connection refused)` -- the server is unreachable or the port is wrong. On ARM64, try `AWG_NO_GRO=1` -- if the kernel doesn't support GRO, the proxy may hang waiting for a response.
+**No handshake** -- make sure all AWG parameters (Jc, Jmin, Jmax, S1, S2, H1--H4) exactly match the server. Verify `AWG_REMOTE`, `AWG_SERVER_PUB`, and `AWG_CLIENT_PUB`. For diagnostics, set `AWG_LOG_LEVEL=debug` -- logs will show handshake init and junk packet sending. If you see `remote: receive failed (Connection refused)` -- the server is unreachable or the port is wrong. On ARM64, try `AWG_NO_GRO=1` -- if the kernel doesn't support GRO, the proxy may hang waiting for a response.
 
 **No traffic after handshake** -- check the NAT rule (`/ip/firewall/nat/print`), routing, and the peer's `endpoint-address` (should be `172.18.0.2`).
 

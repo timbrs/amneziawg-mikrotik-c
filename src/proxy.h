@@ -121,6 +121,12 @@ static inline uint32_t prof_cache_key(const cliaddr_t *a) {
 #ifndef IPV6_PMTUDISC_DONT
 #define IPV6_PMTUDISC_DONT 0
 #endif
+#ifndef IP_MTU
+#define IP_MTU            14
+#endif
+#ifndef IPV6_MTU
+#define IPV6_MTU          24
+#endif
 #ifndef IPV6_V6ONLY
 #define IPV6_V6ONLY       26
 #endif
@@ -171,7 +177,9 @@ typedef struct {
      * above this one is never reset, or the same warning repeats verbatim on
      * every reconnect. */
     _Atomic uint8_t fe_mtu_hint;
-    _Atomic uint8_t fe_frag_warn;   /* fragmentation warning already logged */
+    /* Size an outgoing datagram may reach before log_frag_warn() speaks: 1500
+     * at start, the path MTU once an ICMP taught it, INT_MAX once said. */
+    _Atomic int frag_lim;
     cliaddr_t client_addr;          /* 16B v4 / 28B v6 */
     socklen_t cli_len;              /* 4B — namelen for every client-leg msg */
     int gso_ok;                     /* 4B */
@@ -224,6 +232,7 @@ typedef struct {
     portset_t remote_ports;          /* every port AWG_REMOTE allows */
     int auto_src_port;
     int local_port;
+    int path_mtu;                    /* last one check_path_mtu() reported, main loop only */
 
     /* Learned transport preference: which family to dial first. Read from
      * cfg->state_file at init, updated at most once per run (state_written) so
@@ -516,13 +525,16 @@ int parse_host_ports(const char *s, char *host, int hostmax, portset_t *ps);
  * just abandoned) gets one redraw. */
 uint16_t portset_pick(const portset_t *ps, fastrand_t *rng, uint16_t avoid);
 
-/* Largest WireGuard MTU whose full-size transport packet still fits a
- * 1500-byte path:
- *   IP(20|40) + UDP(8) + S4 + WG hdr(16) + round_up(mtu,16) + tag(16) <= 1500
+/* Path MTU assumed until the kernel learns a smaller one from ICMP. */
+#define AWG_PATH_MTU 1500
+
+/* Largest WireGuard MTU whose full-size transport packet still fits a path
+ * of path_mtu bytes:
+ *   IP(20|40) + UDP(8) + S4 + WG hdr(16) + round_up(mtu,16) + tag(16) <= path_mtu
  * The IPv6 header is 20 bytes longer, so the same config needs a lower MTU —
  * the reason wg-quick picks 1420 for IPv4 and 1400 for IPv6. */
-static inline int awg_max_wg_mtu(int s4, int ipv6) {
-    int room = (ipv6 ? 1420 : 1440) - s4;
+static inline int awg_max_wg_mtu(int path_mtu, int s4, int ipv6) {
+    int room = path_mtu - (ipv6 ? 80 : 60) - s4;
     if (room < 0) room = 0;
     return (room / 16) * 16;
 }
