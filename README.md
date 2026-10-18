@@ -362,49 +362,58 @@ docker compose up -d
 
 **Вариант B: бинарник + systemd**
 
+В репозитории есть шаблон юнита [`contrib/systemd/awg-proxy@.service`](contrib/systemd/awg-proxy@.service), устроенный как `wg-quick@.service`: экземпляр `awg-proxy@NAME` берёт все параметры из файла `/etc/awg-proxy/NAME.conf`. На одной машине можно держать несколько прокси - к разным серверам, клиент и сервер одновременно, - у каждого свой файл параметров, свой журнал и свой файл состояния.
+
 ```bash
-# Скачайте бинарник для вашей платформы
+# Бинарник для вашей платформы
 wget https://github.com/timbrs/amneziawg-mikrotik-c/releases/latest/download/awg-proxy-linux-amd64
-chmod +x awg-proxy-linux-amd64
+install -m 0755 awg-proxy-linux-amd64 /usr/local/bin/awg-proxy
 
-# Создайте systemd-сервис
-cat > /etc/systemd/system/awg-proxy.service << 'EOF'
-[Unit]
-Description=AWG Proxy Server
-After=network.target wg-quick@wg0.service
+# Шаблон юнита
+wget -O /etc/systemd/system/awg-proxy@.service \
+  https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/contrib/systemd/awg-proxy@.service
 
-[Service]
-Type=simple
-Environment=AWG_MODE=server
-Environment=AWG_LISTEN=:443
-Environment=AWG_REMOTE=127.0.0.1:51820
-Environment=AWG_JC=4
-Environment=AWG_JMIN=50
-Environment=AWG_JMAX=1000
-Environment=AWG_S1=84
-Environment=AWG_S2=40
-Environment=AWG_H1=1263070671
-Environment=AWG_H2=1883150219
-Environment=AWG_H3=1505218884
-Environment=AWG_H4=1343091225
-Environment=AWG_SERVER_PUB=<публичный_ключ_WG_сервера>
-Environment=AWG_CLIENT_PUB=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-Environment=AWG_CLIENT_PUBS=<публичный_ключ_клиента_1>,<публичный_ключ_клиента_2>
+# Параметры экземпляра "server"
+install -d -m 0755 /etc/awg-proxy
+install -m 0600 /dev/null /etc/awg-proxy/server.conf
+cat > /etc/awg-proxy/server.conf << 'EOF'
+AWG_MODE=server
+AWG_LISTEN=:443
+AWG_REMOTE=127.0.0.1:51820
+AWG_JC=4
+AWG_JMIN=50
+AWG_JMAX=1000
+AWG_S1=84
+AWG_S2=40
+AWG_H1=1263070671
+AWG_H2=1883150219
+AWG_H3=1505218884
+AWG_H4=1343091225
+AWG_SERVER_PUB=<публичный_ключ_WG_сервера>
+AWG_CLIENT_PUB=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+AWG_CLIENT_PUBS=<публичный_ключ_клиента_1>,<публичный_ключ_клиента_2>
 # Или вместо AWG_CLIENT_PUBS:
-# Environment=AWG_CLIENT_PUBS_FILE=/etc/awg-proxy/client-pubs.txt
-Environment=AWG_LOG_LEVEL=info
-ExecStart=/usr/local/bin/awg-proxy-linux-amd64
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
+# AWG_CLIENT_PUBS_FILE=/etc/awg-proxy/client-pubs.txt
+AWG_LOG_LEVEL=info
 EOF
 
-cp awg-proxy-linux-amd64 /usr/local/bin/
 systemctl daemon-reload
-systemctl enable --now awg-proxy
+systemctl enable --now awg-proxy@server
 ```
+
+- Файл параметров - это `EnvironmentFile` systemd: `KEY=value` без пробелов вокруг `=`, значения с пробелами или `<...>` (`AWG_I1`–`AWG_I5`) - в двойных кавычках. Пример клиентского файла: [`contrib/systemd/example.conf`](contrib/systemd/example.conf).
+- Сервис работает от динамического пользователя (`DynamicUser=yes`) только с `CAP_NET_BIND_SERVICE` (порт ниже 1024, как `:443`) и `CAP_NET_ADMIN` (буферы сокета больше `net.core.rmem_max`). Поэтому файл из `AWG_CLIENT_PUBS_FILE` должен быть доступен на чтение всем - в нём только публичные ключи, `0644` достаточно; иначе прокси завершится с `FATAL: AWG_CLIENT_PUBS_FILE: cannot open`.
+- Файл состояния - `/var/lib/awg-proxy/NAME.state`. `AWG_DNS` и `AWG_RPS` нужны только в контейнере и на хосте не действуют: юнит не даёт прокси переписать `/etc/resolv.conf` и `/sys`.
+
+**Тот же шаблон на клиенте (Linux вместо MikroTik).** Обычный WireGuard ядра (`wg-quick@NAME`) с `Endpoint = 127.0.0.1:51820`, рядом `awg-proxy@NAME` с `AWG_LISTEN=127.0.0.1:51820` и адресом AWG-сервера в `AWG_REMOTE`. Порядок запуска задаёт drop-in `/etc/systemd/system/wg-quick@NAME.service.d/awg-proxy.conf`:
+
+```ini
+[Unit]
+Wants=awg-proxy@NAME.service
+After=awg-proxy@NAME.service
+```
+
+В `[Interface]` такого WireGuard укажите `MTU` явно (обычно 1420, или MTU пути до сервера минус 60, для IPv6 - минус 80): wg-quick берёт MTU из маршрута до endpoint, а маршрут до `127.0.0.1` - это loopback с MTU 65536, и без явного значения интерфейс получит 65456.
 
 ### 2. Настройка клиентской стороны (MikroTik)
 
@@ -445,7 +454,7 @@ systemctl enable --now awg-proxy
 # Логи awg-proxy
 docker logs awg-proxy-server
 # или
-journalctl -u awg-proxy -f
+journalctl -u awg-proxy@server -f
 
 # Проверка WireGuard peers
 wg show wg0
