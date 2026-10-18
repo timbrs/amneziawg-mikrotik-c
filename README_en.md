@@ -314,49 +314,58 @@ docker compose up -d
 
 **Option B: binary + systemd**
 
+The repository ships a unit template, [`contrib/systemd/awg-proxy@.service`](contrib/systemd/awg-proxy@.service), modelled on `wg-quick@.service`: the instance `awg-proxy@NAME` takes all of its parameters from `/etc/awg-proxy/NAME.conf`. One machine can run several proxies - to different servers, or a client and a server at once - each with its own parameter file, log stream and state file.
+
 ```bash
-# Download the binary for your platform
+# Binary for your platform
 wget https://github.com/timbrs/amneziawg-mikrotik-c/releases/latest/download/awg-proxy-linux-amd64
-chmod +x awg-proxy-linux-amd64
+install -m 0755 awg-proxy-linux-amd64 /usr/local/bin/awg-proxy
 
-# Create a systemd service
-cat > /etc/systemd/system/awg-proxy.service << 'EOF'
-[Unit]
-Description=AWG Proxy Server
-After=network.target wg-quick@wg0.service
+# Unit template
+wget -O /etc/systemd/system/awg-proxy@.service \
+  https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/contrib/systemd/awg-proxy@.service
 
-[Service]
-Type=simple
-Environment=AWG_MODE=server
-Environment=AWG_LISTEN=:443
-Environment=AWG_REMOTE=127.0.0.1:51820
-Environment=AWG_JC=4
-Environment=AWG_JMIN=50
-Environment=AWG_JMAX=1000
-Environment=AWG_S1=84
-Environment=AWG_S2=40
-Environment=AWG_H1=1263070671
-Environment=AWG_H2=1883150219
-Environment=AWG_H3=1505218884
-Environment=AWG_H4=1343091225
-Environment=AWG_SERVER_PUB=<wg_server_public_key>
-Environment=AWG_CLIENT_PUB=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-Environment=AWG_CLIENT_PUBS=<client_public_key_1>,<client_public_key_2>
+# Parameters of the "server" instance
+install -d -m 0755 /etc/awg-proxy
+install -m 0600 /dev/null /etc/awg-proxy/server.conf
+cat > /etc/awg-proxy/server.conf << 'EOF'
+AWG_MODE=server
+AWG_LISTEN=:443
+AWG_REMOTE=127.0.0.1:51820
+AWG_JC=4
+AWG_JMIN=50
+AWG_JMAX=1000
+AWG_S1=84
+AWG_S2=40
+AWG_H1=1263070671
+AWG_H2=1883150219
+AWG_H3=1505218884
+AWG_H4=1343091225
+AWG_SERVER_PUB=<wg_server_public_key>
+AWG_CLIENT_PUB=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+AWG_CLIENT_PUBS=<client_public_key_1>,<client_public_key_2>
 # Or instead of AWG_CLIENT_PUBS:
-# Environment=AWG_CLIENT_PUBS_FILE=/etc/awg-proxy/client-pubs.txt
-Environment=AWG_LOG_LEVEL=info
-ExecStart=/usr/local/bin/awg-proxy-linux-amd64
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
+# AWG_CLIENT_PUBS_FILE=/etc/awg-proxy/client-pubs.txt
+AWG_LOG_LEVEL=info
 EOF
 
-cp awg-proxy-linux-amd64 /usr/local/bin/
 systemctl daemon-reload
-systemctl enable --now awg-proxy
+systemctl enable --now awg-proxy@server
 ```
+
+- The parameter file is a systemd `EnvironmentFile`: `KEY=value` with no spaces around `=`; values containing spaces or `<...>` (`AWG_I1`–`AWG_I5`) go in double quotes. A client-side example: [`contrib/systemd/example.conf`](contrib/systemd/example.conf).
+- The service runs as a dynamic user (`DynamicUser=yes`) with only `CAP_NET_BIND_SERVICE` (ports below 1024, such as `:443`) and `CAP_NET_ADMIN` (socket buffers above `net.core.rmem_max`). A file named by `AWG_CLIENT_PUBS_FILE` must therefore be world-readable - it holds public keys only, `0644` is fine; otherwise the proxy exits with `FATAL: AWG_CLIENT_PUBS_FILE: cannot open`.
+- The state file is `/var/lib/awg-proxy/NAME.state`. `AWG_DNS` and `AWG_RPS` exist for the container and have no effect on a host: the unit does not let the proxy rewrite `/etc/resolv.conf` or `/sys`.
+
+**The same template on a client (Linux instead of MikroTik).** A plain kernel WireGuard (`wg-quick@NAME`) with `Endpoint = 127.0.0.1:51820`, next to `awg-proxy@NAME` with `AWG_LISTEN=127.0.0.1:51820` and the AWG server in `AWG_REMOTE`. A drop-in `/etc/systemd/system/wg-quick@NAME.service.d/awg-proxy.conf` orders the two:
+
+```ini
+[Unit]
+Wants=awg-proxy@NAME.service
+After=awg-proxy@NAME.service
+```
+
+Set `MTU` explicitly in that WireGuard's `[Interface]` (usually 1420, or the path MTU to the server minus 60, minus 80 over IPv6): wg-quick derives the MTU from the route to the endpoint, the route to `127.0.0.1` is loopback with MTU 65536, and without an explicit value the interface ends up at 65456.
 
 ### 2. Client Side Setup (MikroTik)
 
@@ -397,7 +406,7 @@ On VPS:
 # awg-proxy logs
 docker logs awg-proxy-server
 # or
-journalctl -u awg-proxy -f
+journalctl -u awg-proxy@server -f
 
 # Check WireGuard peers
 wg show wg0

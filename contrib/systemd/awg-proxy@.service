@@ -1,0 +1,73 @@
+# awg-proxy instance template, in the spirit of wg-quick@.service:
+#
+#   awg-proxy@NAME.service  runs  /usr/local/bin/awg-proxy
+#   with every AWG_* parameter taken from  /etc/awg-proxy/NAME.conf
+#
+# NAME.conf is a systemd EnvironmentFile: one KEY=value per line, '#' comments,
+# values containing spaces or <...> (AWG_I1..AWG_I5) in double quotes. It holds
+# no private keys, but keep it root:root 0600 anyway - systemd reads it as root
+# before the service drops to its dynamic user.
+#
+# Install:
+#   install -m 0755 awg-proxy-linux-<arch> /usr/local/bin/awg-proxy
+#   install -m 0644 awg-proxy@.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now awg-proxy@NAME
+#
+# Several instances (several servers, or client + server) run side by side,
+# each with its own NAME.conf, log stream and state file.
+
+[Unit]
+Description=AmneziaWG proxy (awg-proxy) for %I
+Documentation=https://github.com/timbrs/amneziawg-mikrotik-c
+After=network-online.target nss-lookup.target
+Wants=network-online.target nss-lookup.target
+
+[Service]
+Type=simple
+# Per-instance learned-transport state instead of the shared /etc/awg-proxy.state;
+# NAME.conf may still override it.
+Environment=AWG_STATE_FILE=/var/lib/awg-proxy/%i.state
+EnvironmentFile=/etc/awg-proxy/%i.conf
+ExecStart=/usr/local/bin/awg-proxy
+Restart=always
+RestartSec=5
+SyslogIdentifier=awg-proxy-%i
+
+DynamicUser=yes
+StateDirectory=awg-proxy
+# CAP_NET_BIND_SERVICE: AWG_LISTEN below 1024 (e.g. :443 in server mode).
+# CAP_NET_ADMIN: SO_RCVBUFFORCE/SO_SNDBUFFORCE (AWG_SOCKET_BUF above
+# net.core.rmem_max/wmem_max) and the opt-in AWG_BUSY_POLL.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+NoNewPrivileges=yes
+
+# The service runs as a dynamic user, so a file named by AWG_CLIENT_PUBS_FILE
+# must be readable by others (it only holds public keys: 0644 is fine).
+#
+# Two options exist for the RouterOS container and are meant to write outside
+# the proxy's own state; on a host they are blocked here on purpose:
+#   AWG_DNS  rewrites /etc/resolv.conf -> no effect under ProtectSystem=strict
+#   AWG_RPS  writes /sys/.../rps_cpus  -> no effect under ProtectKernelTunables
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
