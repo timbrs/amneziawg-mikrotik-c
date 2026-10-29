@@ -5,7 +5,7 @@
 [![C11](https://img.shields.io/badge/C-11-blue)](https://en.cppreference.com/w/c/11)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[English version](README_en.md) | [**Конфигуратор**](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html) | [Релизы](https://github.com/timbrs/amneziawg-mikrotik-c/releases) | [FAQ](docs/faq.md)
+[English version](README_en.md) | [**Конфигуратор**](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html) | [Релизы](https://github.com/timbrs/amneziawg-mikrotik-c/releases) | [FAQ](docs/faq.md) | [VPS для своего VPN — $34 в год](https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/)
 
 **awg-proxy подключает роутер MikroTik к VPN-серверу AmneziaWG** (его ставит, например, приложение AmneziaVPN). AmneziaWG — это WireGuard с замаскированными пакетами: по их виду протокол не распознать. Сам MikroTik умеет только обычный WireGuard, поэтому awg-proxy ставится на роутер маленьким контейнером, и дальше всё работает как обычный VPN-туннель роутера: для всех устройств в сети, без приложений на телефонах и компьютерах.
 
@@ -49,7 +49,18 @@
 
 В приложении **AmneziaVPN**: выберите подключение → **Поделиться** → протокол **AmneziaWG**, формат **AmneziaWG Format** → сохраните файл. Своего сервера нет — подойдёт бесплатный конфиг Cloudflare WARP, в конфигураторе для него есть отдельный режим с инструкцией.
 
-> **Кнопка Sponsor наверху страницы — не сбор денег.** Она ведёт на VPS для своего VPN: [Freakhosting BVPS-2](https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/) за **$34 в год** (около 2700 ₽) — 2 vCPU, 2 ГБ RAM, 40 ГБ NVMe, порт 10 Гбит/с без ограничений по трафику. Вы платите хостеру обычную цену, а проекту от хостера достаётся небольшой бонус: выгодно обоим. Сервер AmneziaWG на этот VPS ставит само приложение AmneziaVPN. Цена — на момент проверки, может меняться.
+> [!TIP]
+> **Кнопка «Sponsor» наверху страницы — это аренда VPS, а не сбор денег.**
+>
+> Она ведёт на [Freakhosting BVPS-2](https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/) — сервер для своего VPN:
+>
+> - **$34 в год**, около 2700 ₽;
+> - 2 vCPU, 2 ГБ RAM, 40 ГБ NVMe;
+> - порт 10 Гбит/с, трафик без ограничений.
+>
+> Вы платите хостеру обычную цену, а проекту хостер отчисляет небольшой бонус — выгодно обоим. Сервер AmneziaWG на этот VPS ставит само приложение AmneziaVPN.
+>
+> <sub>Цена на момент проверки, может меняться.</sub>
 
 ### 4. Сгенерируйте команды и вставьте в терминал
 

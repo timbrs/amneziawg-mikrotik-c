@@ -5,7 +5,7 @@
 [![C11](https://img.shields.io/badge/C-11-blue)](https://en.cppreference.com/w/c/11)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[Русская версия](README.md) | [**Configurator**](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html) | [Releases](https://github.com/timbrs/amneziawg-mikrotik-c/releases) | [FAQ](docs/en/faq.md)
+[Русская версия](README.md) | [**Configurator**](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html) | [Releases](https://github.com/timbrs/amneziawg-mikrotik-c/releases) | [FAQ](docs/en/faq.md) | [A VPS for your own VPN — $34 a year](https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/)
 
 **awg-proxy connects a MikroTik router to an AmneziaWG VPN server** (the kind the AmneziaVPN app sets up, for example). AmneziaWG is WireGuard with disguised packets: you cannot tell the protocol by how they look. MikroTik itself only speaks plain WireGuard, so awg-proxy runs on the router as a tiny container, and from then on it is an ordinary VPN tunnel of the router: for every device on the network, with no apps on phones or laptops.
 
@@ -49,7 +49,18 @@ Without this step the configurator's commands will not work.
 
 In the **AmneziaVPN** app: pick the connection → **Share** → protocol **AmneziaWG**, format **AmneziaWG Format** → save the file. No server of your own? A free Cloudflare WARP config will do; the configurator has a separate mode for it, with instructions.
 
-> **The Sponsor button at the top of the page is not a donation box.** It leads to a VPS for your own VPN: [Freakhosting BVPS-2](https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/) for **$34 a year** — 2 vCPU, 2 GB RAM, 40 GB NVMe, a 10 Gbit/s port with unlimited traffic. You pay the host the usual price, and the host gives the project a small bonus: a win for both. The AmneziaVPN app installs the AmneziaWG server on that VPS by itself. Price as of the last check; it may change.
+> [!TIP]
+> **The "Sponsor" button at the top of the page rents a VPS — it is not a donation box.**
+>
+> It leads to [Freakhosting BVPS-2](https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/), a server for your own VPN:
+>
+> - **$34 a year**;
+> - 2 vCPU, 2 GB RAM, 40 GB NVMe;
+> - a 10 Gbit/s port, unlimited traffic.
+>
+> You pay the host the usual price, and the host gives the project a small bonus — a win for both. The AmneziaVPN app installs the AmneziaWG server on that VPS by itself.
+>
+> <sub>Price as of the last check; it may change.</sub>
 
 ### 4. Generate the commands and paste them into the terminal
 
