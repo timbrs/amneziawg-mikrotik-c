@@ -1,1 +1,3 @@
-vps: https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/
+# The Sponsor button. GitHub knows a fixed set of platforms; any other link
+# goes under custom (up to four, quoted: the URL carries ? and &).
+custom: ["https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/"]
