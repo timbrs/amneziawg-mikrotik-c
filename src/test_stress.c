@@ -22,6 +22,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <dirent.h>
 
 #include "test.h"
 #include "transform.h"
@@ -231,6 +232,11 @@ static const char *g_timeout = "30";
  * Scenarios that move an address shorten it so the follow-up takes seconds. */
 static const char *g_dns_refresh;
 
+/* AWG_PORT_ROTATE(_MB) for the scenarios that exercise them; unset elsewhere. */
+static const char *g_port_rotate;
+static const char *g_port_rotate_mb;
+static const char *g_port_rotate_soft;
+
 /* Leave AWG_SRC_PORT unset so the run takes its own default. Only
  * test_default_src_port_is_ephemeral needs this; every other scenario pins the
  * port to keep its packet counts stable. */
@@ -274,6 +280,12 @@ static pid_t start_proxy_listen_remote(const char *mode, const char *listen_str,
         setenv("AWG_STATE_FILE", g_state_off ? "" : g_state_file, 1);
         if (g_dns_refresh) setenv("AWG_DNS_REFRESH", g_dns_refresh, 1);
         else               unsetenv("AWG_DNS_REFRESH");
+        if (g_port_rotate) setenv("AWG_PORT_ROTATE", g_port_rotate, 1);
+        else               unsetenv("AWG_PORT_ROTATE");
+        if (g_port_rotate_mb) setenv("AWG_PORT_ROTATE_MB", g_port_rotate_mb, 1);
+        else                  unsetenv("AWG_PORT_ROTATE_MB");
+        if (g_port_rotate_soft) setenv("AWG_PORT_ROTATE_SOFT", g_port_rotate_soft, 1);
+        else                    unsetenv("AWG_PORT_ROTATE_SOFT");
 
         if (g_proxy_log) {
             int lf = open(g_proxy_log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -957,6 +969,24 @@ static void test_server_client_moves(void) {
             at_new ? "yes" : "no", at_old ? "yes" : "no");
     ASSERT(at_new);
     ASSERT(!at_old);
+
+    /* Changing ports, a client sends each packet down both until the new one
+     * answers, and the copy from the old port comes second. It still goes to
+     * WireGuard (which drops it as a replay), but must not drag the replies
+     * back: before, every move against a hub fell back for exactly this. */
+    make_awg_transport(buf, sidx, 1, sizeof(buf));
+    sendto(old_fd, buf, sizeof(buf), 0,
+           (struct sockaddr *)&proxy_addr, sizeof(proxy_addr));
+    ASSERT(recv_one(server_fd, rbuf, sizeof(rbuf), 1000) == (int)sizeof(buf));
+    make_wg_transport(buf, cidx, 2, sizeof(buf));
+    sendto(server_fd, buf, sizeof(buf), 0,
+           (struct sockaddr *)&proxy_remote_addr, sizeof(proxy_remote_addr));
+    int dup_new = recv_one(new_fd, rbuf, sizeof(rbuf), 1000) == (int)sizeof(buf);
+    int dup_old = recv_one(old_fd, rbuf, sizeof(rbuf), 300) > 0;
+    fprintf(stderr, "          (after the old port's copy: reply at new: %s, at old: %s)\n",
+            dup_new ? "yes" : "no", dup_old ? "yes" : "no");
+    ASSERT(dup_new);
+    ASSERT(!dup_old);
 
     stop_proxy(proxy);
     close(old_fd);
@@ -3252,6 +3282,669 @@ done:
     unlink(logpath);
 }
 
+
+/* ---- Scenario 25: port rotation (AWG_PORT_ROTATE) ----
+ *
+ * Once the port is due, the first batch that finds the tunnel quiet and
+ * carries something the server answers moves it — a rekey init or somebody's
+ * packet. The move must cost the client nothing: what the server still sends
+ * to the old port has to arrive, a new port that stays silent has to hand the
+ * traffic back to the old one, and real use must keep the port where it is.
+ * The idle wait is in the binary's 5 s ticks, so this costs ~50 real seconds. */
+
+/* Wait for the AWG init on any of the server sockets but skip (-1: none),
+ * swallowing the junk in front of it. A move sends on both ports until the new
+ * one answers, so the port being left gets its copy too. Returns the socket's
+ * index, -1 on timeout. */
+static int rot_wait_init(const int *fds, int n, int skip, int timeout_ms,
+                         struct sockaddr_storage *from, socklen_t *fl) {
+    int64_t end = now_us() + (int64_t)timeout_ms * 1000;
+    while (now_us() < end) {
+        struct pollfd pfd[4];
+        for (int i = 0; i < n; i++) pfd[i] = (struct pollfd){ .fd = fds[i], .events = POLLIN };
+        if (poll(pfd, (nfds_t)n, 100) <= 0) continue;
+        for (int i = 0; i < n; i++) {
+            if (!(pfd[i].revents & POLLIN)) continue;
+            uint8_t rb[2048];
+            *fl = sizeof(*from);
+            int len = (int)recvfrom(fds[i], rb, sizeof(rb), MSG_DONTWAIT,
+                                    (struct sockaddr *)from, fl);
+            uint32_t h = 0;
+            if (len == TEST_S1 + WG_INIT_SIZE) memcpy(&h, rb + TEST_S1, 4);
+            if (h == TEST_H1 && i != skip) return i;
+        }
+    }
+    return -1;
+}
+
+/* Wait for a transport packet of exactly len bytes on any server socket but
+ * skip (-1: none). */
+static int rot_wait_transport(const int *fds, int n, int skip, int len, int timeout_ms) {
+    int64_t end = now_us() + (int64_t)timeout_ms * 1000;
+    while (now_us() < end) {
+        struct pollfd pfd[4];
+        for (int i = 0; i < n; i++) pfd[i] = (struct pollfd){ .fd = fds[i], .events = POLLIN };
+        if (poll(pfd, (nfds_t)n, 100) <= 0) continue;
+        for (int i = 0; i < n; i++) {
+            if (!(pfd[i].revents & POLLIN)) continue;
+            uint8_t rb[2048];
+            int got = (int)recvfrom(fds[i], rb, sizeof(rb), MSG_DONTWAIT, NULL, NULL);
+            uint32_t h = 0;
+            if (got >= 4) memcpy(&h, rb, 4);
+            if (got == len && h == TEST_H4 && i != skip) return i;
+        }
+    }
+    return -1;
+}
+
+static void rot_answer(int fd, const struct sockaddr_storage *to, socklen_t tl) {
+    uint8_t resp[TEST_S2 + WG_RESP_SIZE];
+    make_awg_response(resp, 0x9200);
+    sendto(fd, resp, sizeof(resp), 0, (const struct sockaddr *)to, tl);
+}
+
+/* WireGuard transport from the client: a 32-byte keepalive, or traffic. */
+static void rot_send_transport(int cfd, struct sockaddr_in *pa, int len) {
+    uint8_t b[1500];
+    if (len > (int)sizeof(b)) len = (int)sizeof(b);
+    memset(b, 0, sizeof(b));
+    uint32_t t = WG_TRANSPORT_DATA;
+    memcpy(b, &t, 4);
+    sendto(cfd, b, (size_t)len, 0, (struct sockaddr *)pa, sizeof(*pa));
+}
+
+/* Keep the client warm with keepalives, and nothing else, for ms. */
+static void rot_idle(int cfd, struct sockaddr_in *pa, const int *fds, int n, int ms) {
+    int64_t end = now_us() + (int64_t)ms * 1000;
+    while (now_us() < end) {
+        rot_send_transport(cfd, pa, WG_TRANSPORT_MIN);
+        usleep(1000000);
+        for (int i = 0; i < n; i++) drain_socket(fds[i]);
+    }
+}
+
+/* Everything queued on the server sockets, in the order the kernel received
+ * it: a real server behind REDIRECT reads every port from one socket, so of
+ * two copies of a packet it keeps whichever arrived first. Reading the ports
+ * one after another would always hand the race to the lowest index. The
+ * sockets need SO_TIMESTAMPNS. */
+typedef struct { int64_t ts; int port; int n; uint8_t b[1300]; } rot_dgram_t;
+
+static int rot_dgram_cmp(const void *a, const void *b) {
+    int64_t x = ((const rot_dgram_t *)a)->ts, y = ((const rot_dgram_t *)b)->ts;
+    return (x > y) - (x < y);
+}
+
+static int rot_recv_ordered(const int *fds, int nfd, rot_dgram_t *q, int max) {
+    int nq = 0;
+    for (int i = 0; i < nfd; i++) {
+        while (nq < max) {
+            struct iovec iov = { q[nq].b, sizeof(q[nq].b) };
+            union { char buf[CMSG_SPACE(sizeof(struct timespec))]; struct cmsghdr a; } cb;
+            struct msghdr mh = { .msg_iov = &iov, .msg_iovlen = 1,
+                                 .msg_control = cb.buf, .msg_controllen = sizeof(cb.buf) };
+            int n = (int)recvmsg(fds[i], &mh, MSG_DONTWAIT);
+            if (n <= 0) break;
+            q[nq].ts = 0;
+            for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c))
+                if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_TIMESTAMPNS) {
+                    struct timespec t;
+                    memcpy(&t, CMSG_DATA(c), sizeof(t));
+                    q[nq].ts = (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
+                }
+            q[nq].port = i;
+            q[nq].n = n;
+            nq++;
+        }
+    }
+    qsort(q, (size_t)nq, sizeof(*q), rot_dgram_cmp);
+    return nq;
+}
+
+static int rot_count(const char *log, const char *needle) {
+    int c = 0;
+    for (const char *s = log; (s = strstr(s, needle)) != NULL; s += strlen(needle)) c++;
+    return c;
+}
+
+static void test_port_rotate_idle(void) {
+    enum { NP = 3 };
+    int ports[NP], fds[NP];
+    char spec[64];
+    int off = 0;
+    for (int i = 0; i < NP; i++) {
+        ports[i] = find_free_port();
+        ASSERT(ports[i] > 0);
+        fds[i] = make_udp_socket(ports[i]);
+        ASSERT(fds[i] >= 0);
+        off += snprintf(spec + off, sizeof(spec) - (size_t)off, "%s%d", i ? "," : "", ports[i]);
+    }
+    char remote_env[96];
+    snprintf(remote_env, sizeof(remote_env), "127.0.0.1:%s", spec);
+    char logpath[96];
+    snprintf(logpath, sizeof(logpath), "/tmp/awg-rot-%d", (int)getpid());
+    unlink(logpath);
+
+    int listen_port = find_free_port();
+    ASSERT(listen_port > 0);
+    g_proxy_log = logpath;
+    g_log_level = "info";
+    g_port_rotate = "5";            /* a port is kept one tick, 5 s idle suffices */
+    pid_t proxy = start_proxy_remote("normal", listen_port, remote_env, NULL);
+    g_proxy_log = NULL;
+    g_log_level = "error";
+    g_port_rotate = NULL;
+    ASSERT(proxy > 0);
+
+    int cfd = make_client_socket();
+    ASSERT(cfd >= 0);
+    struct sockaddr_in pa = make_addr(listen_port);
+    uint8_t init[WG_INIT_SIZE];
+    make_wg_init(init, 0x9200);
+    struct sockaddr_storage from, pxy;
+    socklen_t fl, pl;
+    uint8_t rb[2048], tr[200];
+    make_awg_transport(tr, 0x9200, 1, 100);
+
+    /* 1. Fresh start: the first handshake keeps the dialled port. The address
+     *    it comes from is the proxy's, the same whichever port it talks to. */
+    sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)&pa, sizeof(pa));
+    int cur = rot_wait_init(fds, NP, -1, 3000, &from, &fl);
+    ASSERT(cur >= 0);
+    pxy = from;
+    pl = fl;
+    rot_answer(fds[cur], &from, fl);
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 2000), WG_RESP_SIZE);
+
+    /* 2. Quiet, then a rekey: the init itself carries the move, and the
+     *    server's answer from the new port confirms it. */
+    rot_idle(cfd, &pa, fds, NP, 11000);
+    sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)&pa, sizeof(pa));
+    int moved = rot_wait_init(fds, NP, cur, 3000, &from, &fl);
+    ASSERT(moved >= 0);
+    rot_answer(fds[moved], &from, fl);
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 2000), WG_RESP_SIZE);
+    rot_send_transport(cfd, &pa, 120);
+    ASSERT_EQ(rot_wait_transport(fds, NP, cur, 120, 2000), moved);
+    cur = moved;
+
+    /* 3. Quiet, then somebody's packet: no rekey needed, it moves the port
+     *    itself. What the server still sends to the old port reaches the
+     *    client, and its first word from the new one confirms the move. */
+    rot_idle(cfd, &pa, fds, NP, 11000);
+    rot_send_transport(cfd, &pa, 120);
+    int data_to = rot_wait_transport(fds, NP, cur, 120, 2000);
+    ASSERT(data_to >= 0);
+    sendto(fds[cur], tr, 100, 0, (struct sockaddr *)&pxy, pl);
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 2000), 100);
+    sendto(fds[data_to], tr, 100, 0, (struct sockaddr *)&pxy, pl);
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 2000), 100);
+    cur = data_to;
+
+    /* 4. The new port stays silent. The old one got its copy of the init and
+     *    answers it: the client has its handshake at once, the move costs it
+     *    nothing. After ROT_VERIFY_DUAL_MS the socket goes back for good. */
+    rot_idle(cfd, &pa, fds, NP, 11000);
+    sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)&pa, sizeof(pa));
+    int silent = rot_wait_init(fds, NP, cur, 3000, &from, &fl);
+    ASSERT(silent >= 0);
+    rot_answer(fds[cur], &pxy, pl);
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 1000), WG_RESP_SIZE);
+    usleep(3500000);                /* past the verify window and the grace period */
+    for (int i = 0; i < NP; i++) drain_socket(fds[i]);
+    sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)&pa, sizeof(pa));
+    ASSERT_EQ(rot_wait_init(fds, NP, -1, 3000, &from, &fl), cur);
+    rot_answer(fds[cur], &from, fl);
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 2000), WG_RESP_SIZE);
+
+    /* 5. Real use — more than ROT_QUIET_BYTES in the tick: the port stays. */
+    for (int k = 0; k < 70; k++) {
+        rot_send_transport(cfd, &pa, 1200);
+        if (k % 16 == 15) usleep(2000);
+    }
+    usleep(100000);
+    for (int i = 0; i < NP; i++) drain_socket(fds[i]);
+    sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)&pa, sizeof(pa));
+    ASSERT_EQ(rot_wait_init(fds, NP, -1, 2000, &from, &fl), cur);
+    rot_answer(fds[cur], &from, fl);
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 2000), WG_RESP_SIZE);
+
+    stop_proxy(proxy);
+    char *log = slurp_file(logpath);
+    ASSERT(log != NULL);
+    int moves = rot_count(log, "rotate: tunnel quiet, moving to port");
+    int ok = rot_count(log, " answered, staying");
+    int back = rot_count(log, "stayed silent, back to");
+    int unkept = rot_count(log, "old port not kept");
+    fprintf(stderr, "          (moves=%d answered=%d silent=%d unkept=%d)\n",
+            moves, ok, back, unkept);
+    free(log);
+    ASSERT_EQ(moves, 3);
+    ASSERT_EQ(ok, 2);
+    ASSERT_EQ(back, 1);
+    ASSERT_EQ(unkept, 0);
+
+    close(cfd);
+    for (int i = 0; i < NP; i++) close(fds[i]);
+    unlink(logpath);
+}
+
+/* Soak: two dozen moves in a row, some onto a port that stays silent, some onto
+ * one that refuses (ICMP). Whatever the server answers must reach the client —
+ * including what it still sends from the port just left — and the proxy must
+ * end with exactly the descriptors it started with. Built with sanitizers
+ * (-fsanitize=address,undefined, or thread), the same run is the leak and race
+ * check for the second socket. */
+static int proc_fd_count(pid_t pid) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/fd", (int)pid);
+    DIR *d = opendir(path);
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL)
+        if (e->d_name[0] != '.') n++;
+    closedir(d);
+    return n;
+}
+
+static long proc_rss_kb(pid_t pid) {
+    char path[64], line[256];
+    snprintf(path, sizeof(path), "/proc/%d/status", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    long kb = -1;
+    while (fgets(line, sizeof(line), f))
+        if (strncmp(line, "VmRSS:", 6) == 0) kb = strtol(line + 6, NULL, 10);
+    fclose(f);
+    return kb;
+}
+
+static void test_port_rotate_soak(void) {
+    enum { NP = 4, DEAD = 3, SECS = 150 };
+    int ports[NP], fds[NP];
+    char spec[96];
+    int off = 0;
+    for (int i = 0; i < NP; i++) {
+        ports[i] = find_free_port();
+        ASSERT(ports[i] > 0);
+        fds[i] = make_udp_socket(ports[i]);
+        ASSERT(fds[i] >= 0);
+        int one = 1;
+        setsockopt(fds[i], SOL_SOCKET, SO_TIMESTAMPNS, &one, sizeof(one));
+        off += snprintf(spec + off, sizeof(spec) - (size_t)off, "%s%d", i ? "," : "", ports[i]);
+    }
+    /* And a port nobody listens on: the kernel answers it with ICMP "port
+     * unreachable", which has to send a move back, not redial the socket. */
+    int shut = find_free_port();
+    ASSERT(shut > 0);
+    off += snprintf(spec + off, sizeof(spec) - (size_t)off, ",%d", shut);
+    char remote_env[128];
+    snprintf(remote_env, sizeof(remote_env), "127.0.0.1:%s", spec);
+    char logpath[96];
+    snprintf(logpath, sizeof(logpath), "/tmp/awg-soak-%d", (int)getpid());
+    unlink(logpath);
+
+    int listen_port = find_free_port();
+    ASSERT(listen_port > 0);
+    g_proxy_log = logpath;
+    g_log_level = "info";
+    g_port_rotate = "5";
+    pid_t proxy = start_proxy_remote("normal", listen_port, remote_env, NULL);
+    g_proxy_log = NULL;
+    g_log_level = "error";
+    g_port_rotate = NULL;
+    ASSERT(proxy > 0);
+
+    int cfd = make_client_socket();
+    ASSERT(cfd >= 0);
+    struct sockaddr_in pa = make_addr(listen_port);
+    uint8_t init[WG_INIT_SIZE];
+    make_wg_init(init, 0x9300);
+    struct sockaddr_storage pxy;
+    socklen_t pl = sizeof(pxy);
+
+    /* Bring the session up on a live port. When the dead one was dialled,
+     * WireGuard's retries outlast the hop (15 s of silence) to another. */
+    int good = -1;
+    for (int tries = 0; tries < 40 && good < 0; tries++) {
+        /* A sanitized build starts slowly: repeat, as WireGuard would. */
+        sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)&pa, sizeof(pa));
+        good = rot_wait_init(fds, NP, DEAD, 1000, &pxy, &pl);
+    }
+    ASSERT(good >= 0);
+    rot_answer(fds[good], &pxy, pl);
+    uint8_t rb[2048];
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 2000), WG_RESP_SIZE);
+
+    /* The baseline is the fewest descriptors over a while: a move may already
+     * be holding the old port's socket, for at most ROT_GRACE_MS. */
+    int fd0 = 1 << 30;
+    for (int k = 0; k < 9; k++) {
+        int c = proc_fd_count(proxy);
+        if (c >= 0 && c < fd0) fd0 = c;
+        usleep(500000);
+    }
+    /* Dialling the shut port at start is a plain redial; from here on none. */
+    char *head = slurp_file(logpath);
+    size_t mark = head ? strlen(head) : 0;
+    free(head);
+
+    uint8_t echo[200], strag[200], up[120];
+    make_awg_transport(echo, 0x9300, 1, 100);
+    make_awg_transport(strag, 0x9300, 2, 101);
+    memset(up, 0, sizeof(up));
+    uint32_t t4 = WG_TRANSPORT_DATA;
+    memcpy(up, &t4, 4);
+    static uint8_t seen[1024];
+    memset(seen, 0, sizeof(seen));
+    static rot_dgram_t q[64];
+    int sent = 0, echoed = 0, stragglers = 0, got_echo = 0, got_strag = 0, dead_hits = 0;
+    int replays = 0;
+    long rss_early = -1;
+    int64_t start = now_us(), next = start;
+    while (now_us() - start < (int64_t)SECS * 1000000) {
+        if (now_us() >= next) {
+            memcpy(up + 16, &sent, 4);
+            sendto(cfd, up, sizeof(up), 0, (struct sockaddr *)&pa, sizeof(pa));
+            sent++;
+            next += 1000000;
+        }
+        if (rss_early < 0 && now_us() - start > 20000000)
+            rss_early = proc_rss_kb(proxy);
+        struct pollfd pfd[NP + 1];
+        for (int i = 0; i < NP; i++) pfd[i] = (struct pollfd){ .fd = fds[i], .events = POLLIN };
+        pfd[NP] = (struct pollfd){ .fd = cfd, .events = POLLIN };
+        if (poll(pfd, NP + 1, 50) <= 0) continue;
+        /* The server as WireGuard: the first copy of a packet is taken and
+         * moves the endpoint, a second one is a replay. */
+        int nq = rot_recv_ordered(fds, NP, q, 64);
+        for (int k = 0; k < nq; k++) {
+            int i = q[k].port;
+            uint32_t h = 0, sq = 0;
+            if (q[k].n >= 20) { memcpy(&h, q[k].b, 4); memcpy(&sq, q[k].b + 16, 4); }
+            if (q[k].n != 120 || h != TEST_H4 || sq >= sizeof(seen)) continue;   /* junk */
+            if (i == DEAD) { dead_hits++; continue; }    /* a port nobody answers */
+            if (seen[sq]) { replays++; continue; }
+            seen[sq] = 1;
+            if (i != good) {
+                /* The client moved: the old port still has something to say. */
+                sendto(fds[good], strag, 101, 0, (struct sockaddr *)&pxy, pl);
+                stragglers++;
+                good = i;
+            }
+            sendto(fds[i], echo, 100, 0, (struct sockaddr *)&pxy, pl);
+            echoed++;
+        }
+        if (pfd[NP].revents & POLLIN) {
+            int n;
+            while ((n = (int)recvfrom(cfd, rb, sizeof(rb), MSG_DONTWAIT, NULL, NULL)) > 0) {
+                if (n == 100) got_echo++;
+                else if (n == 101) got_strag++;
+            }
+        }
+    }
+    /* Quiet long enough for the last grace period to run out. */
+    int64_t tail = now_us();
+    while (now_us() - tail < 5000000) {
+        int n = recv_one(cfd, rb, sizeof(rb), 200);
+        if (n == 100) got_echo++;
+        else if (n == 101) got_strag++;
+    }
+    int fd1 = proc_fd_count(proxy);
+    long rss_end = proc_rss_kb(proxy);
+    stop_proxy(proxy);
+
+    char *log = slurp_file(logpath);
+    ASSERT(log != NULL);
+    int moves = rot_count(log, "rotate: tunnel quiet, moving to port");
+    int back = rot_count(log, "stayed silent, back to");
+    int refused = rot_count(log, " refused, back to");
+    int ok = rot_count(log, " answered, staying");
+    int redial = strlen(log) >= mark ? rot_count(log + mark, "reconnecting") : -1;
+    int unkept = rot_count(log, "old port not kept");
+    int san = rot_count(log, "Sanitizer") + rot_count(log, "runtime error:");
+    fprintf(stderr, "          (moves=%d answered=%d back=%d refused=%d redial=%d dead_hits=%d replays=%d "
+            "sent=%d echoed=%d got=%d stragglers=%d got=%d fd %d->%d rss %ld->%ld KB "
+            "sanitizer=%d)\n",
+            moves, ok, back, refused, redial, dead_hits, replays, sent, echoed, got_echo,
+            stragglers, got_strag, fd0, fd1, rss_early, rss_end, san);
+    if (san) fprintf(stderr, "%s\n", strstr(log, "Sanitizer") ? strstr(log, "Sanitizer") - 20 : log);
+    free(log);
+    ASSERT(moves >= 10);
+    ASSERT_EQ(echoed, sent);              /* nothing the client sent was lost... */
+    ASSERT_EQ(got_echo, echoed);          /* ...nor anything the server said */
+    ASSERT_EQ(got_strag, stragglers);     /* ...not even on the port just left */
+    /* Every confirmed move left a straggler behind; a dead port drawn again
+     * and again (it costs nothing, so it is not written off) only thins them. */
+    ASSERT(ok >= 3);
+    ASSERT(stragglers >= ok - 1);
+    ASSERT_EQ(moves, ok + back + refused);
+    ASSERT_EQ(unkept, 0);
+    ASSERT_EQ(redial, 0);                 /* a refused port only sends the move back */
+    ASSERT_EQ(fd1, fd0);
+    ASSERT_EQ(san, 0);
+    if (dead_hits) ASSERT(back >= 1);
+
+    close(cfd);
+    for (int i = 0; i < NP; i++) close(fds[i]);
+    unlink(logpath);
+}
+
+/* Soft moves: the tunnel never goes quiet, so after ROT_FORCE_S (one tick
+ * here) the port moves under load, sending on both ports until the new one
+ * answers. The mock server behaves like WireGuard: the first copy of a
+ * packet is taken and moves its endpoint, a second copy is a replay and is
+ * dropped, and it answers wherever the last packet came from. One port is
+ * dead. Not one packet may be lost either way — the doubled sends are what
+ * guarantee it even on the dead port — and reordering is counted. */
+static void test_port_rotate_soft(void) {
+    enum { NP = 3, DEAD = 2, SECS = 45, MAXSEQ = 1 << 16 };
+    int ports[NP], fds[NP];
+    char spec[96];
+    int off = 0;
+    for (int i = 0; i < NP; i++) {
+        ports[i] = find_free_port();
+        ASSERT(ports[i] > 0);
+        fds[i] = make_udp_socket(ports[i]);
+        ASSERT(fds[i] >= 0);
+        int big = 4 << 20, one = 1;
+        setsockopt(fds[i], SOL_SOCKET, SO_RCVBUF, &big, sizeof(big));
+        setsockopt(fds[i], SOL_SOCKET, SO_TIMESTAMPNS, &one, sizeof(one));
+        off += snprintf(spec + off, sizeof(spec) - (size_t)off, "%s%d", i ? "," : "", ports[i]);
+    }
+    char remote_env[128];
+    snprintf(remote_env, sizeof(remote_env), "127.0.0.1:%s", spec);
+    char logpath[96];
+    snprintf(logpath, sizeof(logpath), "/tmp/awg-soft-%d", (int)getpid());
+    unlink(logpath);
+
+    int listen_port = find_free_port();
+    ASSERT(listen_port > 0);
+    g_proxy_log = logpath;
+    g_log_level = "info";
+    g_port_rotate = "5";
+    g_port_rotate_soft = "on";
+    pid_t proxy = start_proxy_remote("normal", listen_port, remote_env, NULL);
+    g_proxy_log = NULL;
+    g_log_level = "error";
+    g_port_rotate = NULL;
+    g_port_rotate_soft = NULL;
+    ASSERT(proxy > 0);
+
+    int cfd = make_client_socket();
+    ASSERT(cfd >= 0);
+    int big = 4 << 20;
+    setsockopt(cfd, SOL_SOCKET, SO_RCVBUF, &big, sizeof(big));
+    struct sockaddr_in pa = make_addr(listen_port);
+    uint8_t init[WG_INIT_SIZE];
+    make_wg_init(init, 0x9400);
+    struct sockaddr_storage pxy;
+    socklen_t pl = sizeof(pxy);
+    int ep = -1;
+    for (int tries = 0; tries < 40 && ep < 0; tries++) {
+        sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)&pa, sizeof(pa));
+        ep = rot_wait_init(fds, NP, DEAD, 1000, &pxy, &pl);
+    }
+    ASSERT(ep >= 0);
+    rot_answer(fds[ep], &pxy, pl);
+    uint8_t rb[2048];
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 2000), WG_RESP_SIZE);
+
+    static uint8_t seen[MAXSEQ];
+    memset(seen, 0, sizeof(seen));
+    uint8_t up[1200], down[400];
+    memset(up, 0, sizeof(up));
+    uint32_t t4 = WG_TRANSPORT_DATA;
+    memcpy(up, &t4, 4);
+    make_awg_transport(down, 0x9400, 1, 400);
+    uint32_t seq = 0, uniq = 0, replays = 0, echoed = 0, got = 0, inversions = 0;
+    int32_t top = -1;
+    int dead_hits = 0, endpoint_moves = 0;
+    int64_t start = now_us(), next = start;
+    while (now_us() - start < (int64_t)SECS * 1000000) {
+        /* ~250 packets a second of 1200 bytes: far above the quiet line. */
+        while (now_us() >= next && seq < MAXSEQ) {
+            memcpy(up + 16, &seq, 4);
+            sendto(cfd, up, sizeof(up), 0, (struct sockaddr *)&pa, sizeof(pa));
+            seq++;
+            next += 4000;
+        }
+        struct pollfd pfd[NP + 1];
+        for (int i = 0; i < NP; i++) pfd[i] = (struct pollfd){ .fd = fds[i], .events = POLLIN };
+        pfd[NP] = (struct pollfd){ .fd = cfd, .events = POLLIN };
+        if (poll(pfd, NP + 1, 2) <= 0) continue;
+        static rot_dgram_t q[256];
+        int nq = rot_recv_ordered(fds, NP, q, 256);
+        for (int k = 0; k < nq; k++) {
+            int i = q[k].port, n = q[k].n;
+            uint32_t h = 0, s = 0;
+            if (n >= 20) { memcpy(&h, q[k].b, 4); memcpy(&s, q[k].b + 16, 4); }
+            if (n != 1200 || h != TEST_H4 || s >= MAXSEQ) continue;   /* junk */
+            if (i == DEAD) { dead_hits++; continue; }
+            if (seen[s]) { replays++; continue; }                     /* the other copy */
+            seen[s] = 1;
+            uniq++;
+            if (i != ep) { ep = i; endpoint_moves++; }               /* WireGuard roams */
+            memcpy(down + 16, &s, 4);
+            sendto(fds[ep], down, 400, 0, (struct sockaddr *)&pxy, pl);
+            echoed++;
+        }
+        if (pfd[NP].revents & POLLIN) {
+            int n;
+            while ((n = (int)recvfrom(cfd, rb, sizeof(rb), MSG_DONTWAIT, NULL, NULL)) > 0) {
+                if (n != 400) continue;
+                int32_t s;
+                memcpy(&s, rb + 16, 4);
+                got++;
+                if (s < top) inversions++;
+                else top = s;
+            }
+        }
+    }
+    /* Let the tail drain. */
+    int64_t tail = now_us();
+    while (now_us() - tail < 3000000) {
+        int n = recv_one(cfd, rb, sizeof(rb), 100);
+        if (n == 400) got++;
+        for (int i = 0; i < NP; i++) {
+            int m;
+            while ((m = (int)recvfrom(fds[i], rb, sizeof(rb), MSG_DONTWAIT, NULL, NULL)) > 0) {
+                uint32_t h = 0, s = 0;
+                if (m >= 20) { memcpy(&h, rb, 4); memcpy(&s, rb + 16, 4); }
+                if (m != 1200 || h != TEST_H4 || s >= MAXSEQ || i == DEAD || seen[s]) continue;
+                seen[s] = 1;
+                uniq++;
+            }
+        }
+    }
+    stop_proxy(proxy);
+
+    char *log = slurp_file(logpath);
+    ASSERT(log != NULL);
+    int soft = rot_count(log, "tunnel busy, moving to port");
+    int quiet = rot_count(log, "tunnel quiet, moving to port");   /* before the load */
+    int ok = rot_count(log, " answered, staying");
+    int back = rot_count(log, "stayed silent, back to");
+    int forced = rot_count(log, "moving under load");
+    fprintf(stderr, "          (soft=%d quiet=%d answered=%d back=%d forced=%d | sent=%u taken=%u "
+            "replays=%u dead_hits=%d endpoint_moves=%d | echoed=%u got=%u inversions=%u)\n",
+            soft, quiet, ok, back, forced, seq, uniq, replays, dead_hits, endpoint_moves,
+            echoed, got, inversions);
+    free(log);
+    ASSERT(soft >= 2);
+    ASSERT_EQ(soft + quiet, ok + back);
+    ASSERT_EQ(uniq, seq);               /* every client packet reached the server */
+    ASSERT_EQ(got, echoed);             /* every answer reached the client */
+    if (dead_hits) ASSERT(back >= 1);
+
+    close(cfd);
+    for (int i = 0; i < NP; i++) close(fds[i]);
+    unlink(logpath);
+}
+
+/* The volume trigger counts what the port carried both ways: 1 MB of upload
+ * has to raise the flag on the next tick, and a run that carried less must
+ * not. The move itself is the idle scenario's business. */
+static void test_port_rotate_volume(void) {
+    int pa_port = find_free_port(), pb_port = find_free_port();
+    ASSERT(pa_port > 0 && pb_port > 0);
+    int fa = make_udp_socket(pa_port), fb = make_udp_socket(pb_port);
+    ASSERT(fa >= 0 && fb >= 0);
+    int fds[2] = { fa, fb };
+    char remote_env[96];
+    snprintf(remote_env, sizeof(remote_env), "127.0.0.1:%d,%d", pa_port, pb_port);
+    char logpath[96];
+    snprintf(logpath, sizeof(logpath), "/tmp/awg-rotv-%d", (int)getpid());
+    unlink(logpath);
+
+    int listen_port = find_free_port();
+    ASSERT(listen_port > 0);
+    g_proxy_log = logpath;
+    g_log_level = "info";
+    g_port_rotate_mb = "1";
+    pid_t proxy = start_proxy_remote("normal", listen_port, remote_env, NULL);
+    g_proxy_log = NULL;
+    g_log_level = "error";
+    g_port_rotate_mb = NULL;
+    ASSERT(proxy > 0);
+
+    int cfd = make_client_socket();
+    ASSERT(cfd >= 0);
+    struct sockaddr_in pa = make_addr(listen_port);
+
+    /* 0.4 MB first: under the line, no flag after a full tick. */
+    for (int i = 0; i < 350; i++) {
+        rot_send_transport(cfd, &pa, 1200);
+        if (i % 32 == 31) { usleep(2000); drain_socket(fa); drain_socket(fb); }
+    }
+    usleep(6000000);
+    char *log = slurp_file(logpath);
+    ASSERT(log != NULL);
+    int early = rot_count(log, "rotate: port due");
+    free(log);
+    ASSERT_EQ(early, 0);
+
+    /* Another 0.8 MB crosses it, with room for a few drops on loopback. */
+    for (int i = 0; i < 700; i++) {
+        rot_send_transport(cfd, &pa, 1200);
+        if (i % 32 == 31) { usleep(2000); drain_socket(fa); drain_socket(fb); }
+    }
+    usleep(6000000);
+    for (int i = 0; i < 2; i++) drain_socket(fds[i]);
+    stop_proxy(proxy);
+    log = slurp_file(logpath);
+    ASSERT(log != NULL);
+    int due = rot_count(log, "MB carried)");
+    free(log);
+    ASSERT_EQ(due, 1);
+
+    close(cfd);
+    close(fa);
+    close(fb);
+    unlink(logpath);
+}
+
 int main(void) {
     fprintf(stderr, "=== stress tests ===\n");
     RUN_TEST(normal_burst);
@@ -3280,5 +3973,9 @@ int main(void) {
     RUN_TEST(server_listen6);
     RUN_TEST(default_src_port_is_ephemeral);
     RUN_TEST(port_set_hop);
+    RUN_TEST(port_rotate_idle);
+    RUN_TEST(port_rotate_volume);
+    RUN_TEST(port_rotate_soak);
+    RUN_TEST(port_rotate_soft);
     TEST_MAIN_END();
 }

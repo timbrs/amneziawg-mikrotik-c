@@ -498,6 +498,32 @@ int main(void) {
         cfg->dns_refresh = parse_int_str(v);
     if (cfg->dns_refresh < 0) cfg->dns_refresh = 0;
 
+    /* Port rotation over the AWG_REMOTE port list: a timer span, a volume
+     * span, or both — whichever runs out first. The timer is on by default
+     * (30-120 min); it only ever acts on a port list, which is only there for
+     * a server that redirects the whole band. "0" or "off" turns it off. */
+    cfg->rot_t_lo = 1800;
+    cfg->rot_t_hi = 7200;
+    cfg->rot_mb_lo = cfg->rot_mb_hi = 0;
+    if ((v = getenv("AWG_PORT_ROTATE")) && v[0]) {
+        if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) {
+            cfg->rot_t_lo = cfg->rot_t_hi = 0;
+        } else if (rot_parse_span(v, 1, &cfg->rot_t_lo, &cfg->rot_t_hi) < 0) {
+            log_error("config: AWG_PORT_ROTATE not understood (e.g. 30m-2h), keeping 30m-2h");
+            cfg->rot_t_lo = 1800;
+            cfg->rot_t_hi = 7200;
+        }
+    }
+    /* Moving under load, see ROT_FORCE_S. Decided by the hardware unless set:
+     * a weak router would pay for the doubled sends and the burst on the old
+     * port with exactly the stalls the move is meant to avoid. */
+    cfg->rot_soft = -1;
+    if ((v = getenv("AWG_PORT_ROTATE_SOFT")) && v[0] && strcmp(v, "auto") != 0)
+        cfg->rot_soft = parse_bool_str(v);
+    if ((v = getenv("AWG_PORT_ROTATE_MB")) && v[0] && strcmp(v, "0") != 0 &&
+        strcmp(v, "off") != 0 && rot_parse_span(v, 0, &cfg->rot_mb_lo, &cfg->rot_mb_hi) < 0)
+        log_error("config: AWG_PORT_ROTATE_MB ignored, expected e.g. 1000 or 800-1200");
+
     /* Happy Eyeballs head start for IPv4 (RFC 8305 uses 250 ms) — only ever
      * consulted when AWG_REMOTE resolves to both an A and an AAAA record. */
     cfg->he_delay = 250;
@@ -749,8 +775,11 @@ int main(void) {
         log_info("config: DF bit cleared on UDP sockets (AWG_NO_DF=1)");
     /* A strong router keeps the fixed 32 MB of 1.4.0: there the buffer only
      * absorbs bursts, and the traffic-sized one cost it drops and speed. */
-    if (fit_perf_to_hardware(cfg) && cfg->socket_buf_auto)
+    int strong = fit_perf_to_hardware(cfg);
+    if (strong && cfg->socket_buf_auto)
         cfg->socket_buf_auto = 0;
+    if (cfg->rot_soft < 0)
+        cfg->rot_soft = strong;
     if (cfg->cpu_c2s >= 0 || cfg->cpu_s2c >= 0 || cfg->busy_poll > 0 ||
         cfg->spin_us > 0) {
         char c2sb[12], s2cb[12], bpb[12], spb[12];

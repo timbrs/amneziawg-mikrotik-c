@@ -36,6 +36,9 @@
 | `AWG_SRC_PORT` | No | random | Outgoing port to server: `random` / `auto` / number |
 | `AWG_TIMEOUT` | No | `60` | How long the server may stay silent on an unanswered handshake before the proxy reconnects (sec) |
 | `AWG_DNS_REFRESH` | No | `60` | Background DNS re-check interval for a hostname in AWG_REMOTE (sec, `0` = off) |
+| `AWG_PORT_ROTATE` | No | `30m-2h` | Move to another port of the `AWG_REMOTE` list on a random timer from a span: `30m-2h`, `1800-7200` (sec); `0` = off. Only acts on a port list |
+| `AWG_PORT_ROTATE_MB` | No | -- | ...or after a volume on the port, MB: `1000`, `800-1200`, `1G`. Whichever comes first |
+| `AWG_PORT_ROTATE_SOFT` | No | `auto` | Move under load too when no quiet spell comes for 15 minutes: `on` / `off` / `auto` (64-bit CPU and 4+ cores) |
 | `AWG_HE_DELAY` | No | `250` | Happy Eyeballs: ms of IPv4 head start before probing IPv6 (only when the name has both an A and an AAAA) |
 | `AWG_STATE_FILE` | No | `/etc/awg-proxy.state` | File with the learned address-family preference; an empty value means do not save it |
 | `AWG_LOG_LEVEL` | No | `info` | Log level |
@@ -95,7 +98,24 @@ AWG_REMOTE=[2001:db8::1]:6000-6100             # same for IPv6
 
 The port is drawn from the list **at random, anew on every connection** -- at startup and on every reconnect (timeout, a new IP from DNS, an `AWG_FB_*` stage switch). Two reasons. First, a fixed port is a distinctive detail for DPI, all the more so when every client of the server sits on the same one; a random port out of a wide range offers no such handle. Second, a blocked port stops being fatal: when the server stays silent, the proxy moves to another port after **15 seconds** instead of waiting out the full `AWG_TIMEOUT` (60 seconds by default). The log shows `no answer on this port, trying another one`, and the port in use as `connected to <address> port <port>`.
 
-This only works if the **server really accepts every listed port** -- that is, it DNATs/REDIRECTs all of them to its AmneziaWG port. Listing ports nothing is listening on buys silence and endless hopping. The web configurator fills these ranges into `AWG_REMOTE` when the `.conf` carries an `# AllowedPorts = ...` line (written by the bot that issued the key). For a Cloudflare WARP config it fills in Cloudflare's WireGuard ports by itself: `2408,500,1701,4500`.
+This only works if the **server really accepts every listed port** -- that is, it DNATs/REDIRECTs all of them to its AmneziaWG port. Listing ports nothing is listening on buys silence and endless hopping. How to switch a range on for your own server with one command — [ports.md](ports.md). The web configurator fills these ranges into `AWG_REMOTE` when the `.conf` carries an `# AllowedPorts = ...` line (written by the bot that issued the key). For a Cloudflare WARP config it fills in Cloudflare's WireGuard ports by itself: `2408,500,1701,4500`.
+
+**`AWG_PORT_ROTATE`**, **`AWG_PORT_ROTATE_MB`** -- move to another port of the `AWG_REMOTE` list without a reconnect, unnoticed by users. It happens in two steps. First the port falls due: it has served a random time drawn from `AWG_PORT_ROTATE`, or carried a random volume drawn from `AWG_PORT_ROTATE_MB` (both ways), whichever comes first. Every new port draws fresh numbers, so neither the time nor the volume repeats. A due port moves as soon as the tunnel **goes quiet**: for 30 seconds no more than 64 KB per 5 s went through it in either direction. The router's own background -- netwatch probes, DNS, phones' push heartbeats -- is a few kilobytes, so at night the move comes almost at once, by day it waits for a lull.
+
+The move happens on the first client packet the server answers: somebody's packet or a WireGuard handshake. The socket stays the same, `connect()` just points it at another port; the server follows on that very packet, as it follows any roaming peer, and the session keys do not change. The new flow opens like a fresh connection, with junk and I1--I5. Until the new port answers, every client packet goes out **on both ports**, the new and the old: the server takes whichever copy arrives first and drops the other as a replay. Whatever the server had already sent to the old port is not lost either: for another 3 seconds a second socket on the same local port keeps hearing it and hands it to the client. The answer from the new port is the check: none within a second and the proxy stops doubling and stays on the old port (its NAT entries are still alive), trying another in 5 minutes. A dead port therefore costs not a single packet. A port the server answers with ICMP "port unreachable" is dropped at once, without the wait, and is not drawn again (`refused, back to M` in the log). Should the second socket be unavailable, the move goes without doubling: a 2-second check, and the silent port is remembered.
+
+The server does not answer keepalives, so they never move the port; on a fully idle tunnel the move waits for a scheduled handshake, which needs a `persistent-keepalive` on the WireGuard peer (the configurator sets 25 s). Works only in `normal` and only with a port list -- there it is on by default (30-120 minutes); as for the hop, the server must accept the whole range ([ports.md](ports.md)), and a MikroTik hub must run awg-proxy 1.4.4 or newer. With a single port in `AWG_REMOTE` the variable has no effect.
+
+**`AWG_PORT_ROTATE_SOFT`** -- when no quiet spell comes, a due port still moves, but **under load**: after 15 minutes of waiting (or the low end of `AWG_PORT_ROTATE`, if that is shorter). The move is the same as in a lull: both ports carry the traffic until the new one answers, so the flow does not stop for a moment, even when the new port is dead. Under load the doubling lasts one RTT, from a few dozen to a few hundred packets. By default (`auto`) it is on only on strong hardware: a 64-bit CPU and 4+ cores (hAP ax², ax³, RB5009). On a weak router doubled sends under load would take cycles from WireGuard's crypto, so there the port waits for a lull.
+
+```
+AWG_PORT_ROTATE=30m-2h          # default: every 30-120 minutes, as soon as the tunnel is quiet
+AWG_PORT_ROTATE=0               # turn it off
+AWG_PORT_ROTATE_MB=800-1200     # or after 0.8-1.2 GB on the port
+AWG_PORT_ROTATE_SOFT=off        # never under load, only in a lull
+```
+
+In the log: `rotate: port due (timer)` / `(1003 MB carried)` -- the port fell due, `rotate: tunnel quiet, moving to port N, both ports carry until it answers` -- the move, `rotate: no quiet spell for N s, moving under load` and `rotate: tunnel busy, moving to port N, both ports carry until it answers` -- a soft move under load, `rotate: port N answered, staying (12 ms, 40 sent twice)` -- the port is confirmed: it answered after 12 ms, 40 packets went out on both ports; `stayed silent, back to M` -- the new port kept quiet, the traffic stayed on the old one.
 
 Receiving over IPv6 is set up separately, through `AWG_LISTEN` (see above): in `normal` it is not needed -- that is a local veth inside the router -- while in `server`/`reverse` it is exactly what makes the hub reachable for clients.
 

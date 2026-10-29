@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 
@@ -63,6 +64,10 @@ typedef struct {
     _Atomic int peer_slot;
     _Atomic int prof;      /* obfuscation profile this client speaks */
     _Atomic int valid;
+    /* c2s only, see session_follow_client(): the session the counter belongs
+     * to, and one past the newest counter it has carried (0 = none yet). */
+    uint32_t ctr_sidx;
+    uint64_t ctr_next;
 } session_entry_t;
 
 /* Per-source profile cache (server mode, fallback chain enabled). Direct
@@ -130,6 +135,9 @@ static inline uint32_t prof_cache_key(const cliaddr_t *a) {
 #ifndef IPV6_V6ONLY
 #define IPV6_V6ONLY       26
 #endif
+#ifndef SO_DOMAIN
+#define SO_DOMAIN         39
+#endif
 
 /* One resolved remote endpoint. len == 0 means "this family has no record". */
 typedef struct {
@@ -150,6 +158,73 @@ typedef struct {
     uint8_t  n;
     uint32_t total;      /* sum of (hi-lo+1) — the weight for a uniform draw */
 } portset_t;
+
+/* Port rotation (AWG_PORT_ROTATE, AWG_PORT_ROTATE_MB). With a port list in
+ * AWG_REMOTE the tunnel moves to another server port from time to time, in two
+ * steps that never meet on the hot path:
+ *
+ *   due     the main loop raises a flag once the port has served a timer drawn
+ *           at random from AWG_PORT_ROTATE, or carried a volume drawn from
+ *           AWG_PORT_ROTATE_MB, whichever comes first (rot_is_due());
+ *   move    the c2s thread acts on the flag at the first batch that finds the
+ *           tunnel quiet and carries something the server answers
+ *           (rot_window()) — by day that waits for a lull, at night it is the
+ *           next DNS query or netwatch probe.
+ *
+ * The move is one connect() on the same socket: local port, GRO, buffers and
+ * counters carry over, and the server follows on that very packet the way
+ * WireGuard follows a roaming peer. Whatever it had already sent to the old
+ * port is not lost: a second socket on the same local port, connected to the
+ * old one, keeps hearing it for ROT_GRACE_MS and the main loop forwards it.
+ * The new flow opens the way a fresh connection does, with junk and I1-I5.
+ * Until the new port answers every packet goes out on both ports: the server
+ * takes whichever copy comes first and drops the other as a replay, so the old
+ * path carries everything while the new one proves itself, and a new port that
+ * never answers costs nothing but ROT_VERIFY_DUAL_MS of doubled sends. No
+ * answer by then, or an ICMP refusal, and the socket goes back to the old
+ * port, whose NAT entries are all still alive; the session keys are untouched
+ * either way. Without the second socket there is no doubling and the wait is
+ * ROT_VERIFY_MS. Ticks are the main loop's 5 s.
+ *
+ * A tunnel that never goes quiet — the main route of a busy household — would
+ * keep its port all day. After ROT_FORCE_S of being due it moves under load,
+ * the same way, on hardware that can afford it (AWG_PORT_ROTATE_SOFT). */
+#define ROT_IDLE_S      30    /* no busy tick for this long, either way */
+#define ROT_QUIET_BYTES 65536 /* bytes one tick may carry one way and still count as
+                               * idle. Counted in bytes, not packets: the router's own
+                               * netwatch probes, DNS and push heartbeats run a steady
+                               * 2-4 packets a second (measured on a hAP ax2 at night),
+                               * yet only ~10 KB a tick; anybody actually using the
+                               * tunnel moves hundreds */
+#define ROT_WARM_TICKS  6     /* an init moves the port only if the client sent within
+                               * this many ticks: its session is alive, so the init is
+                               * a rekey, not a cold start with packets queued behind */
+#define ROT_VERIFY_MS   2000  /* the new port must answer within this */
+#define ROT_VERIFY_DUAL_MS 1000 /* ...under load, where its answer is a round trip away */
+#define ROT_FORCE_S     900   /* due this long without a quiet spell: move under load */
+#define ROT_GRACE_MS    3000  /* how long the old port is still heard */
+#define ROT_RETRY_TICKS 60    /* after a silent port, the next try is 5 min away */
+#define ROT_BAD_N       8     /* ports that stayed silent, skipped by the draw */
+#define ROT_IDLE        0
+#define ROT_PENDING     1     /* moved, waiting for the new port to answer */
+#define ROT_PKT_USER    1     /* rot_window(): the batch carries somebody's packet */
+#define ROT_PKT_INIT    2     /* ...or a handshake init */
+
+typedef struct {
+    uint32_t t_lo, t_hi;      /* timer span, ticks; 0 = none */
+    uint32_t mb_lo, mb_hi;    /* volume span, MB; 0 = none */
+    uint32_t idle;            /* ticks that must pass with no busy tick */
+    uint32_t retry;           /* ticks from a silent port to the next try */
+    uint32_t force;           /* ticks of being due before a move under load */
+} rot_cfg_t;
+
+/* The main loop's view of the port in use: when it falls due. */
+typedef struct {
+    uint32_t deadline;        /* tick the drawn timer runs out */
+    uint32_t retry;           /* no flag before this tick */
+    uint64_t bytes;           /* carried on this port, both ways */
+    uint64_t vol;             /* drawn volume that makes it due, 0 = none */
+} rot_sched_t;
 
 typedef struct {
     /* === Hot fields === */
@@ -226,6 +301,9 @@ typedef struct {
      * connect()ed and every send goes through send(), so nothing on the hot
      * path ever looks at these. */
     awg_addr_t remote;              /* endpoint behind remote_fd */
+    /* Its family, for the c2s hot path: p->remote itself is rewritten under
+     * remote_mu by a reconnect or a port rotation, the family only on dial. */
+    _Atomic int remote_v6;
     awg_addr_t remote_alt;          /* endpoint behind remote_fd2 (probe) */
     char remote_host[256];
     uint16_t remote_port;            /* the port this connection is dialing */
@@ -323,6 +401,45 @@ typedef struct {
     /* Last, so the layout of everything above stays as it was. */
     csprng_t cs_c2s;                /* I-packets and junk, c2s thread only */
     csprng_t cs_s2c;                /* I-packets and junk, s2c thread only */
+
+    /* Port rotation, see ROT_*. tick is the main loop's clock; the I/O
+     * threads stamp it on what they carry. */
+    _Atomic uint32_t tick;
+    _Atomic int rot_due;             /* main raises it; a confirmed move or a silent port drops it */
+    _Atomic int rot_changed;         /* the port changed (move confirmed, reconnect): draw anew */
+    _Atomic int rot_failed;          /* a port stayed silent: back off */
+    _Atomic int rot_state;           /* ROT_IDLE / ROT_PENDING */
+    _Atomic uint32_t s2c_busy_tick;  /* last tick the server sent > ROT_QUIET_BYTES */
+    _Atomic uint32_t rot_bytes_c2s;  /* bytes carried; one writer each, wrap freely */
+    _Atomic uint32_t rot_bytes_s2c;
+    int rot_on;                      /* read-only once the threads run */
+    rot_cfg_t rot;
+    uint16_t rot_from, rot_to;       /* written before rot_state turns PENDING */
+    uint64_t rot_t0_ms;              /* c2s writes it before rot_state turns PENDING */
+    uint16_t rot_bad[ROT_BAD_N];     /* c2s only */
+    int rot_bad_i;
+    _Atomic int rot_old_fd;          /* the old port, still heard; c2s opens, main closes */
+    _Atomic int rot_force;           /* main: due for ROT_FORCE_S, a move under load is due */
+    _Atomic int rot_dual;            /* c2s sends on both ports until the new one answers */
+    _Atomic uint32_t rot_twice;      /* packets that went out on both ports this move */
+    _Atomic int rot_refused;         /* the new port answered with ICMP "unreachable" */
+    int rot_soft_on;                 /* moves under load allowed: read-only once running */
+    int main_epfd;                   /* the main loop's epoll, for rot_old_fd */
+    /* The main loop's batch for what the old port still receives. Under load
+     * that is a round trip's worth of the download, too much for one
+     * datagram per wake. */
+    struct {
+        uint8_t bufs[BATCH_SIZE][BUF_SIZE + AWG_PACKET_HEADROOM];
+        struct mmsghdr in[BATCH_SIZE];
+        struct iovec in_iov[BATCH_SIZE];
+        struct mmsghdr out[BATCH_SIZE];
+        struct iovec out_iov[BATCH_SIZE];
+        cliaddr_t addrs[BATCH_SIZE];
+    } rot_drain;
+    /* Serialises the cold-path rewrites of the remote endpoint: a rotation in
+     * the c2s thread against a reconnect or the Happy Eyeballs swap in the s2c
+     * one. The hot paths never take it. */
+    pthread_mutex_t remote_mu;
 } proxy_t;
 
 /* Session table operations */
@@ -479,17 +596,36 @@ static inline session_entry_t *session_get_by_server_index(proxy_t *p,
  * moves too: they are the same client (a rekey keeps the previous session
  * alive), and leaving them behind would make one client look like two.
  *
+ * Only a packet newer than anything the session has carried (ctr, its
+ * WireGuard counter) moves it, as WireGuard roams only on a packet that passed
+ * its replay window. A client changing ports sends every packet down both
+ * until the new one answers, and the copy from the old port comes second:
+ * following it dragged replies back to the old port every time, so the new
+ * one was never heard and every move fell back.
+ *
  * Unlike WireGuard, the proxy cannot authenticate the packet, so whoever knows
- * a live session index can redirect its replies. They stay encrypted, and the
- * session comes back with the client's next packet.
+ * a live session index can redirect its replies. They stay encrypted. A
+ * counter that leaps further ahead than SESSION_CTR_LEAP is not believed, so a
+ * forged one cannot lock the client out for longer than the session lives.
  *
  * Returns 1 when the address changed. The c2s thread is the only writer of
- * addr; a reply read mid-update may go out once to a half-written address, as
- * with any in-place update of this table. */
+ * addr and of the counter; a reply read mid-update may go out once to a
+ * half-written address, as with any in-place update of this table. */
+#define SESSION_CTR_LEAP (1ULL << 24)
+
 static inline int session_follow_client(proxy_t *p, uint32_t sidx,
-                                        const cliaddr_t *from) {
+                                        const cliaddr_t *from, uint64_t ctr) {
     session_entry_t *e = session_get_by_server_index(p, sidx);
-    if (!e || cliaddr_eq(&e->addr, from)) return 0;
+    if (!e) return 0;
+    if (e->ctr_sidx != sidx) {      /* a new session in this entry */
+        e->ctr_sidx = sidx;
+        e->ctr_next = 0;
+    }
+    uint64_t next = e->ctr_next;
+    if (next && (ctr < next || ctr - next > SESSION_CTR_LEAP))
+        return 0;                   /* a duplicate, a straggler or a forgery */
+    e->ctr_next = ctr + 1;
+    if (cliaddr_eq(&e->addr, from)) return 0;
     cliaddr_t old = e->addr;
     for (int i = 0; i < SESSION_TABLE_SIZE; i++)
         if (atomic_load_explicit(&p->sessions[i].valid, memory_order_acquire) &&
@@ -524,6 +660,31 @@ int parse_host_ports(const char *s, char *host, int hostmax, portset_t *ps);
  * 150-port block does not weigh the same as a single port. `avoid` (the port
  * just abandoned) gets one redraw. */
 uint16_t portset_pick(const portset_t *ps, fastrand_t *rng, uint16_t avoid);
+
+/* "30m-2h", "1800-7200", "45m" when time (s/m/h, bare = seconds); "800-1200",
+ * "1G" otherwise (MB, G = 1024 MB). A single value is a span of one. Returns 0;
+ * anything it does not understand leaves *lo = *hi = 0 and returns -1. */
+int rot_parse_span(const char *s, int time, uint32_t *lo, uint32_t *hi);
+
+/* Ticks and MB for the configured spans. A timer shorter than ROT_IDLE_S or
+ * the back-off shortens those too, or it could never run out in time. */
+rot_cfg_t rot_cfg_make(uint32_t t_lo_s, uint32_t t_hi_s, uint32_t mb_lo, uint32_t mb_hi);
+
+/* Uniform draw over [lo, hi]. */
+uint32_t rot_draw(uint32_t lo, uint32_t hi, fastrand_t *rng);
+
+/* A fresh schedule for the port that started serving at tick now. */
+void rot_sched_reset(rot_sched_t *s, const rot_cfg_t *c, uint32_t now, fastrand_t *rng);
+
+/* Has the port in use fallen due at tick now? */
+int rot_is_due(const rot_cfg_t *c, const rot_sched_t *s, uint32_t now);
+
+/* May a batch seen at tick `now` move the port? busy is the last tick either
+ * direction carried more than ROT_QUIET_BYTES, client the last tick the client
+ * sent anything, what the ROT_PKT_* it carries: keepalives draw no answer and
+ * cannot vouch for a new port, an init only does when the session is alive.
+ * Tick arithmetic is unsigned, so the wrap is harmless. */
+int rot_window(const rot_cfg_t *c, uint32_t now, uint32_t busy, uint32_t client, int what);
 
 /* Path MTU assumed until the kernel learns a smaller one from ICMP. */
 #define AWG_PATH_MTU 1500

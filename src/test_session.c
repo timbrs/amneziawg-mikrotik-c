@@ -340,11 +340,11 @@ static void test_follow_moved_client(void) {
     session_entry_t *o = session_put_prof(&g_p, 0x3001, &other, 0);
     session_set_server_index(&g_p, cur, 0xCAFE);
 
-    ASSERT(session_follow_client(&g_p, 0xCAFE, &neu) == 1);
+    ASSERT(session_follow_client(&g_p, 0xCAFE, &neu, 1) == 1);
     ASSERT(cliaddr_eq(&cur->addr, &neu));
     ASSERT(cliaddr_eq(&prev->addr, &neu));      /* тот же клиент — переехал целиком */
     ASSERT(cliaddr_eq(&o->addr, &other));       /* чужой клиент не тронут */
-    ASSERT(session_follow_client(&g_p, 0xCAFE, &neu) == 0);  /* уже там */
+    ASSERT(session_follow_client(&g_p, 0xCAFE, &neu, 2) == 0);  /* уже там */
     ASSERT(session_get(&g_p, 0x2002) != NULL);  /* ответы по индексу клиента идут */
     ASSERT(cliaddr_eq(session_get(&g_p, 0x2002), &neu));
 }
@@ -358,9 +358,44 @@ static void test_follow_unknown_index_is_ignored(void) {
     session_entry_t *e = session_put_prof(&g_p, 0x4001, &a, 0);
     session_set_server_index(&g_p, e, 0xD00D);
 
-    ASSERT(session_follow_client(&g_p, 0xD00E, &b) == 0);
-    ASSERT(session_follow_client(&g_p, 0, &b) == 0);
+    ASSERT(session_follow_client(&g_p, 0xD00E, &b, 1) == 0);
+    ASSERT(session_follow_client(&g_p, 0, &b, 1) == 0);
     ASSERT(cliaddr_eq(&e->addr, &a));
+}
+
+/* A client changing ports sends each packet down both until the new port
+ * answers; the copy from the old port comes second. It must not drag the
+ * replies back, or the new port is never heard and every move falls back. */
+static void test_follow_ignores_old_copy(void) {
+    memset(&g_p, 0, sizeof(g_p));
+    cliaddr_t old = addr_v4(0x0A000008, 40100);
+    cliaddr_t neu = addr_v4(0x0A000008, 40200);
+    session_entry_t *e = session_put_prof(&g_p, 0x6001, &old, 0);
+    session_set_server_index(&g_p, e, 0xBEEF);
+
+    for (uint64_t c = 0; c < 5; c++)                         /* до смены */
+        ASSERT(session_follow_client(&g_p, 0xBEEF, &old, c) == 0);
+    ASSERT(session_follow_client(&g_p, 0xBEEF, &neu, 5) == 1);  /* новый порт первым */
+    ASSERT(session_follow_client(&g_p, 0xBEEF, &old, 5) == 0);  /* та же копия со старого */
+    ASSERT(cliaddr_eq(&e->addr, &neu));
+    ASSERT(session_follow_client(&g_p, 0xBEEF, &old, 3) == 0);  /* опоздавший */
+    ASSERT(cliaddr_eq(&e->addr, &neu));
+
+    /* A really newer packet from the old address is a real move back. */
+    ASSERT(session_follow_client(&g_p, 0xBEEF, &neu, 6) == 0);
+    ASSERT(session_follow_client(&g_p, 0xBEEF, &old, 7) == 1);
+    ASSERT(cliaddr_eq(&e->addr, &old));
+
+    /* A counter far ahead of anything a client could send is not believed. */
+    cliaddr_t evil = addr_v4(0x0A0000EE, 666);
+    ASSERT(session_follow_client(&g_p, 0xBEEF, &evil, 8 + SESSION_CTR_LEAP + 1) == 0);
+    ASSERT(cliaddr_eq(&e->addr, &old));
+    ASSERT(session_follow_client(&g_p, 0xBEEF, &neu, 8) == 1);  /* и клиента не запер */
+
+    /* A new handshake in the same entry starts the counter over. */
+    session_set_server_index(&g_p, e, 0xBEF0);
+    ASSERT(session_follow_client(&g_p, 0xBEF0, &old, 0) == 1);
+    ASSERT(cliaddr_eq(&e->addr, &old));
 }
 
 /* A single-client hub aims server-initiated handshakes at "the only client".
@@ -373,7 +408,7 @@ static void test_follow_keeps_sole_client(void) {
     session_entry_t *cur = session_put_prof(&g_p, 0x5002, &old, 0);
     session_set_server_index(&g_p, cur, 0xF00D);
 
-    ASSERT(session_follow_client(&g_p, 0xF00D, &neu) == 1);
+    ASSERT(session_follow_client(&g_p, 0xF00D, &neu, 1) == 1);
     session_entry_t *sole = session_find_sole_entry(&g_p);
     ASSERT(sole != NULL);
     ASSERT(cliaddr_eq(&sole->addr, &neu));
@@ -456,6 +491,7 @@ int main(void) {
     RUN_TEST(follow_moved_client);
     RUN_TEST(follow_unknown_index_is_ignored);
     RUN_TEST(follow_keeps_sole_client);
+    RUN_TEST(follow_ignores_old_copy);
     RUN_TEST(real_session_v6);
     RUN_TEST(real_session_mixed);
     RUN_TEST(real_session_sole_v6);

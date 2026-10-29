@@ -313,6 +313,78 @@ uint16_t portset_pick(const portset_t *ps, fastrand_t *rng, uint16_t avoid) {
     return port;
 }
 
+static const char *span_num(const char *s, int time, uint32_t *out) {
+    const char *d = s;
+    uint64_t v = 0;
+    while (*s >= '0' && *s <= '9' && v <= 100000000u)
+        v = v * 10 + (uint64_t)(*s++ - '0');
+    if (s == d) return NULL;
+    if (time) {
+        if (*s == 'h') { v *= 3600; s++; }
+        else if (*s == 'm') { v *= 60; s++; }
+        else if (*s == 's') s++;
+    } else {
+        if (*s == 'G' || *s == 'g') { v *= 1024; s++; }
+        else if (*s == 'M' || *s == 'm') s++;
+        if (*s == 'B' || *s == 'b') s++;
+    }
+    if (v == 0 || v > 0xFFFFFFFFu) return NULL;
+    *out = (uint32_t)v;
+    return s;
+}
+
+int rot_parse_span(const char *s, int time, uint32_t *lo, uint32_t *hi) {
+    const char *e = span_num(s, time, lo);
+    if (e && *e == '-') e = span_num(e + 1, time, hi);
+    else if (e) *hi = *lo;
+    if (!e || *e || *hi < *lo) {
+        *lo = *hi = 0;
+        return -1;
+    }
+    return 0;
+}
+
+rot_cfg_t rot_cfg_make(uint32_t t_lo_s, uint32_t t_hi_s, uint32_t mb_lo, uint32_t mb_hi) {
+    rot_cfg_t c = { 0, 0, mb_lo, mb_hi, 0, ROT_RETRY_TICKS, 0 };
+    uint32_t idle_s = ROT_IDLE_S, force_s = ROT_FORCE_S;
+    if (t_lo_s) {
+        c.t_lo = (t_lo_s + 4) / 5;
+        c.t_hi = (t_hi_s + 4) / 5;
+        if (t_lo_s < idle_s) idle_s = t_lo_s;
+        if (t_lo_s < force_s) force_s = t_lo_s;
+        if (c.t_lo < c.retry) c.retry = c.t_lo;
+    }
+    c.idle = (idle_s + 4) / 5;
+    c.force = (force_s + 4) / 5;
+    return c;
+}
+
+uint32_t rot_draw(uint32_t lo, uint32_t hi, fastrand_t *rng) {
+    return lo + (uint32_t)(fastrand_u64(rng) % ((uint64_t)hi - lo + 1));
+}
+
+void rot_sched_reset(rot_sched_t *s, const rot_cfg_t *c, uint32_t now, fastrand_t *rng) {
+    s->deadline = c->t_lo ? now + rot_draw(c->t_lo, c->t_hi, rng) : 0;
+    s->vol = c->mb_lo ? (uint64_t)rot_draw(c->mb_lo, c->mb_hi, rng) << 20 : 0;
+    s->bytes = 0;
+    s->retry = now;
+}
+
+int rot_is_due(const rot_cfg_t *c, const rot_sched_t *s, uint32_t now) {
+    if ((int32_t)(now - s->retry) < 0) return 0;
+    return (c->t_lo && (int32_t)(now - s->deadline) >= 0) ||
+           (s->vol && s->bytes >= s->vol);
+}
+
+/* idle is compared strictly: busy is the tick *during* which traffic was last
+ * seen, possibly at its very end, so only idle further ticks guarantee
+ * idle * 5 s of quiet. */
+int rot_window(const rot_cfg_t *c, uint32_t now, uint32_t busy, uint32_t client, int what) {
+    if (now - busy <= c->idle) return 0;
+    if (what & ROT_PKT_USER) return 1;
+    return (what & ROT_PKT_INIT) && now - client <= ROT_WARM_TICKS;
+}
+
 static int create_udp_socket(int family, int blocking) {
     int flags = SOCK_DGRAM | SOCK_CLOEXEC;
     if (!blocking) flags |= SOCK_NONBLOCK;
@@ -712,7 +784,12 @@ static void log_frag_warn(proxy_t *p, int v6, int outer) {
 static void check_path_mtu(proxy_t *p) {
     int fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
     if (fd < 0) return;
-    int v6 = (p->remote.sa.ss_family == AF_INET6);
+    /* The family comes from the socket itself: p->remote is rewritten by a
+     * port rotation in the c2s thread and is not this thread's to read. */
+    int family = AF_INET;
+    socklen_t flen = sizeof(family);
+    getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &family, &flen);
+    int v6 = (family == AF_INET6);
     int mtu = 0;
     socklen_t len = sizeof(mtu);
     if (getsockopt(fd, v6 ? IPPROTO_IPV6 : IPPROTO_IP, v6 ? IPV6_MTU : IP_MTU,
@@ -763,6 +840,11 @@ static int dial_one(proxy_t *p, const awg_addr_t *a, int blocking) {
             close(fd);
             return -1;
         }
+    } else if (p->rot_on) {
+        /* A port rotation binds a second socket to this local port for a few
+         * seconds, to keep hearing the port it left. */
+        int opt = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     }
 
     if (connect(fd, (struct sockaddr *)&a->sa, a->len) < 0) {
@@ -894,6 +976,8 @@ static int dial_remote(proxy_t *p, int blocking) {
         he_learn(p, primary->sa.ss_family == AF_INET6);
     }
     p->remote = *primary;
+    atomic_store_explicit(&p->remote_v6, primary->sa.ss_family == AF_INET6,
+                          memory_order_relaxed);
 
     atomic_store_explicit(&p->he_sent, 0, memory_order_relaxed);
     p->he_pkt_len = 0;
@@ -1030,13 +1114,19 @@ static inline void he_stash(proxy_t *p, const void *data, int len, int replace) 
 /* Settle on one family and drop the loser. Runs in the s2c thread before it
  * starts reading, so remote_fd is swapped while nothing is mid-recv on it. */
 static void he_finish(proxy_t *p, int use_alt, int learn) {
+    pthread_mutex_lock(&p->remote_mu);
     int fd2 = atomic_load_explicit(&p->remote_fd2, memory_order_acquire);
-    if (fd2 < 0) return;
+    if (fd2 < 0) {
+        pthread_mutex_unlock(&p->remote_mu);
+        return;
+    }
     atomic_store_explicit(&p->remote_fd2, -1, memory_order_release);
 
     if (use_alt) {
         int old = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
         p->remote = p->remote_alt;
+        atomic_store_explicit(&p->remote_v6, p->remote.sa.ss_family == AF_INET6,
+                              memory_order_relaxed);
         atomic_store_explicit(&p->remote_fd, fd2, memory_order_release);
         if (old >= 0) close(old);
         log_info(p->remote.sa.ss_family == AF_INET6
@@ -1046,6 +1136,7 @@ static void he_finish(proxy_t *p, int use_alt, int learn) {
         close(fd2);
     }
     p->remote_alt.len = 0;
+    pthread_mutex_unlock(&p->remote_mu);
 
     if (p->remote.sa.ss_family == AF_INET6)
         log_ipv6_mtu_hint(p, "remote is IPv6");
@@ -1428,6 +1519,42 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
         log_infon(parts, 3);
     }
 
+    pthread_mutex_init(&p->remote_mu, NULL);
+    atomic_store_explicit(&p->rot_old_fd, -1, memory_order_relaxed);
+    p->main_epfd = -1;
+    if (cfg->rot_t_lo || cfg->rot_mb_lo) {
+        if (cfg->mode != AWG_MODE_NORMAL) {
+            log_info("port rotation ignored: only the client side dials a server port");
+        } else if (p->remote_ports.total < 2) {
+            log_info("port rotation ignored: AWG_REMOTE names a single port");
+        } else {
+            p->rot_on = 1;
+            p->rot_soft_on = cfg->rot_soft > 0;
+            p->rot = rot_cfg_make(cfg->rot_t_lo, cfg->rot_t_hi, cfg->rot_mb_lo, cfg->rot_mb_hi);
+            char b[5][12];
+            const char *parts[] = { "port rotation: timer ",
+                cfg->rot_t_lo ? u32_to_str(b[0], cfg->rot_t_lo) : "off",
+                cfg->rot_t_lo ? "-" : "", cfg->rot_t_lo ? u32_to_str(b[1], cfg->rot_t_hi) : "",
+                cfg->rot_t_lo ? " s" : "", ", volume ",
+                cfg->rot_mb_lo ? u32_to_str(b[2], cfg->rot_mb_lo) : "off",
+                cfg->rot_mb_lo ? "-" : "", cfg->rot_mb_lo ? u32_to_str(b[3], cfg->rot_mb_hi) : "",
+                cfg->rot_mb_lo ? " MB" : "", ", moves once quiet for ",
+                u32_to_str(b[4], p->rot.idle * 5), " s",
+                p->rot_soft_on ? ", or under load" : ", never under load" };
+            log_infon(parts, 14);
+            for (int i = 0; i < BATCH_SIZE; i++) {
+                p->rot_drain.in_iov[i].iov_base = p->rot_drain.bufs[i];
+                p->rot_drain.in_iov[i].iov_len = sizeof(p->rot_drain.bufs[i]);
+                p->rot_drain.in[i].msg_hdr.msg_iov = &p->rot_drain.in_iov[i];
+                p->rot_drain.in[i].msg_hdr.msg_iovlen = 1;
+                p->rot_drain.out[i].msg_hdr.msg_iov = &p->rot_drain.out_iov[i];
+                p->rot_drain.out[i].msg_hdr.msg_iovlen = 1;
+                p->rot_drain.out[i].msg_hdr.msg_name = &p->rot_drain.addrs[i];
+                p->rot_drain.out[i].msg_hdr.msg_namelen = p->cli_len;
+            }
+        }
+    }
+
     if (src_port > 0) {
         p->local_port = src_port;
     } else if (src_port == 0) {
@@ -1689,11 +1816,26 @@ static int send_err_is_fatal(int err) {
     }
 }
 
+/* An ICMP "port unreachable" while a port move is pending is the new port
+ * saying no, not the server going away: the old port is still there, so the
+ * move goes back (rot_main_poll) instead of the whole socket being redialled
+ * onto some other random port. */
+static int rot_refused_now(proxy_t *p, int err) {
+    if (err != ECONNREFUSED) return 0;
+    if (atomic_load_explicit(&p->rot_state, memory_order_acquire) == ROT_PENDING) {
+        atomic_store_explicit(&p->rot_refused, 1, memory_order_relaxed);
+        return 1;
+    }
+    /* Gone back already, but an ICMP for a packet sent there before that can
+     * still be pending on the socket: the move's tail, not the server's end. */
+    return atomic_load_explicit(&p->rot_old_fd, memory_order_acquire) >= 0;
+}
+
 /* Ask for a reconnect once per broken socket. shutdown() is what makes it
  * prompt: the s2c thread is parked in a blocking recv on that fd and would not
  * look at reconnect_needed until something woke it. */
 static void note_remote_send_err(proxy_t *p, int err) {
-    if (!send_err_is_fatal(err)) return;
+    if (!send_err_is_fatal(err) || rot_refused_now(p, err)) return;
     if (atomic_exchange_explicit(&p->reconnect_needed, 1, memory_order_relaxed))
         return;
     log_info3("remote: send failed (", strerror(err), "), reconnecting");
@@ -1720,6 +1862,7 @@ static void note_remote_read_err(proxy_t *p, int n, int err) {
         return;
     }
     if (atomic_load_explicit(&p->stopped, memory_order_relaxed)) return;
+    if (rot_refused_now(p, err)) return;
     if (atomic_exchange_explicit(&p->reconnect_needed, 1, memory_order_relaxed))
         return;
     log_info3("remote: receive failed (", strerror(err), "), reconnecting");
@@ -1883,7 +2026,7 @@ static int send_batch_gso(proxy_t *p, int fd, struct mmsghdr *msgs,
 static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
                                      struct iovec *iovecs, int nsend) {
     he_stash(p, iovecs[0].iov_base, (int)iovecs[0].iov_len, 0);
-    int v6 = (p->remote.sa.ss_family == AF_INET6);
+    int v6 = atomic_load_explicit(&p->remote_v6, memory_order_relaxed);
     int outer = (int)iovecs[0].iov_len + (v6 ? 48 : 28);
     if (outer > atomic_load_explicit(&p->frag_lim, memory_order_relaxed))
         log_frag_warn(p, v6, outer);
@@ -1892,6 +2035,260 @@ static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
                              &p->st_c2s_gso_msgs, &p->st_c2s_gso_segs);
     stats_add_tx(&p->st_c2s_tx, &p->st_c2s_drop, nsend, sent);
     if (err) note_remote_send_err(p, err);
+    /* A port move: the same batch on the old port too, until the new one
+     * answers. Errors there are the old port's business, not ours. */
+    if (atomic_load_explicit(&p->rot_dual, memory_order_relaxed)) {
+        int old = atomic_load_explicit(&p->rot_old_fd, memory_order_acquire);
+        _Atomic uint32_t gm = 0, gs = 0;
+        if (old >= 0) {
+            send_batch_gso(p, old, msgs, iovecs, nsend, NULL, NULL, &gm, &gs);
+            atomic_fetch_add_explicit(&p->rot_twice, (uint32_t)nsend, memory_order_relaxed);
+        }
+    }
+}
+
+/* ---- Port rotation ----
+ *
+ * The move runs in the c2s thread, at the head of the batch that triggers it;
+ * the s2c thread confirms it, and the main loop forwards what the old port
+ * still receives, then closes it — or goes back when the new port never
+ * answered. The socket stays the same: connect() just points it at another
+ * port, and a server that redirects the band to one socket sees a new flow
+ * from the same client (its conntrack quietly remaps the clash). */
+
+/* What one direction has seen, for rot_window(). */
+typedef struct {
+    uint32_t busy;       /* last tick that carried more than ROT_QUIET_BYTES */
+    uint32_t client;     /* c2s: last tick the client sent any transport */
+    uint32_t cnt_tick;   /* tick bytes belongs to */
+    uint32_t bytes;      /* carried so far in that tick */
+} rot_seen_t;
+
+/* Count a batch against the current tick. Returns 1 when the tick has just
+ * turned busy; after that the rest of the tick is a compare. */
+static inline int rot_seen_note(rot_seen_t *v, uint32_t t, uint32_t bytes) {
+    if (t != v->cnt_tick) {
+        v->cnt_tick = t;
+        v->bytes = 0;
+    }
+    if (v->busy == t) return 0;
+    v->bytes += bytes;
+    if (v->bytes > ROT_QUIET_BYTES) {
+        v->busy = t;
+        return 1;
+    }
+    return 0;
+}
+
+static uint16_t rot_pick(proxy_t *p, uint16_t cur) {
+    for (int t = 0; t < 4; t++) {
+        uint16_t c = portset_pick(&p->remote_ports, &p->rng_c2s, cur);
+        int bad = (c == cur);
+        for (int i = 0; i < ROT_BAD_N && !bad; i++)
+            bad = (p->rot_bad[i] == c);
+        if (!bad) return c;
+    }
+    return cur;
+}
+
+/* Point the connected socket at port. Only under remote_mu. */
+static int rot_connect(proxy_t *p, int fd, uint16_t port) {
+    awg_addr_t a = p->remote;
+    sa_set_port(&a.sa, port);
+    if (connect(fd, (struct sockaddr *)&a.sa, a.len) < 0)
+        return -1;
+    p->remote = a;
+    p->remote_port = port;
+    return 0;
+}
+
+/* A second socket on the same local address and port, connected to the port
+ * being left. The kernel hands each datagram to the socket whose peer matches
+ * exactly, so this one gets only what still comes from there. -1 when it
+ * cannot be had; the move goes ahead without it. Only under remote_mu. */
+static int rot_keep_old(proxy_t *p, int fd) {
+    struct sockaddr_storage local;
+    socklen_t ll = sizeof(local);
+    if (getsockname(fd, (struct sockaddr *)&local, &ll) < 0) return -1;
+    int h = create_udp_socket(local.ss_family, 0);
+    if (h < 0) return -1;
+    int one = 1;
+    setsockopt(h, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    if (local.ss_family == AF_INET6)
+        setsockopt(h, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
+    if (bind(h, (struct sockaddr *)&local, ll) < 0 ||
+        connect(h, (struct sockaddr *)&p->remote.sa, p->remote.len) < 0) {
+        close(h);
+        return -1;
+    }
+    /* Under load a round trip of the download lands here: give it the receive
+     * buffer the main socket has earned, not the kernel's 200 KB default. */
+    set_socket_buffers(h, atomic_load_explicit(&p->rb_remote, memory_order_relaxed),
+                       p->cfg->socket_buf);
+    struct epoll_event ev = { .events = EPOLLIN, .data.fd = h };
+    if (epoll_ctl(p->main_epfd, EPOLL_CTL_ADD, h, &ev) < 0) {
+        close(h);
+        return -1;
+    }
+    return h;
+}
+
+/* Re-point the socket at another port of the set. Returns 1 when it did.
+ * Whenever the old port's socket can be had, every packet goes out on both
+ * ports until the new one answers: the server keeps the copy that arrives
+ * first, so a dead port costs nothing and a live one is taken at once. A soft
+ * move (under load) cannot go without that socket, a quiet one can. */
+static int rot_move(proxy_t *p, int fd, int soft) {
+    /* A reconnect in progress owns the endpoint; the next batch will do. */
+    if (pthread_mutex_trylock(&p->remote_mu) != 0) return 0;
+    if (atomic_load_explicit(&p->remote_fd, memory_order_relaxed) != fd ||
+        atomic_load_explicit(&p->remote_fd2, memory_order_relaxed) >= 0) {
+        pthread_mutex_unlock(&p->remote_mu);
+        return 0;
+    }
+    uint16_t from = p->remote_port, to = rot_pick(p, from);
+    if (to == from) {
+        pthread_mutex_unlock(&p->remote_mu);
+        return 0;
+    }
+    int old = rot_keep_old(p, fd);
+    if (soft && old < 0) {
+        pthread_mutex_unlock(&p->remote_mu);
+        return 0;
+    }
+    if (rot_connect(p, fd, to) < 0) {
+        /* connect() fails before it rebinds, but say it plainly anyway. */
+        if (old >= 0) close(old);
+        rot_connect(p, fd, from);
+        pthread_mutex_unlock(&p->remote_mu);
+        return 0;
+    }
+    p->rot_from = from;
+    p->rot_to = to;
+    p->rot_t0_ms = mono_ms();
+    /* A new path, as after a reconnect: amneziawg resets its trailer window
+     * when the peer's endpoint changes, and so does this side. */
+    atomic_store_explicit(&p->cfg->udp_window, AWG_DEFAULT_UDP_WINDOW,
+                          memory_order_relaxed);
+    atomic_store_explicit(&p->rot_twice, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->rot_refused, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->rot_old_fd, old, memory_order_release);
+    atomic_store_explicit(&p->rot_dual, old >= 0, memory_order_relaxed);
+    atomic_store_explicit(&p->rot_state, ROT_PENDING, memory_order_release);
+    pthread_mutex_unlock(&p->remote_mu);
+
+    char tb[12];
+    const char *parts[] = { soft ? "rotate: tunnel busy, moving to port "
+                                 : "rotate: tunnel quiet, moving to port ",
+                            u32_to_str(tb, to),
+                            old >= 0 ? ", both ports carry until it answers"
+                                     : " (old port not kept)" };
+    log_infon(parts, 3);
+    return 1;
+}
+
+/* c2s, at the head of a batch while the port is due and no move is under
+ * way. Moves when the tunnel is quiet and the batch carries something the
+ * server answers: that answer is what confirms the new port. Returns 1 when
+ * the socket moved. */
+static int rot_try(proxy_t *p, int fd, const rot_seen_t *v, int nrecv, int prefix) {
+    uint32_t now = atomic_load_explicit(&p->tick, memory_order_relaxed);
+    uint32_t busy = v->busy;
+    uint32_t sb = atomic_load_explicit(&p->s2c_busy_tick, memory_order_relaxed);
+    if ((int32_t)(sb - busy) > 0) busy = sb;
+    /* Not quiet: only a tunnel that has waited long enough, on hardware that
+     * allows it, moves anyway — softly, on both ports at once. */
+    int soft = 0;
+    if (now - busy <= p->rot.idle) {
+        if (!p->rot_soft_on || !atomic_load_explicit(&p->rot_force, memory_order_relaxed))
+            return 0;
+        soft = 1;
+        busy = now - p->rot.idle - 1;
+    }
+    int what = 0;
+    for (int i = 0; i < nrecv && what != (ROT_PKT_USER | ROT_PKT_INIT); i++) {
+        int n = (int)p->recv_c2s.msgs[i].msg_len;
+        uint32_t h;
+        if (n < 4) continue;
+        memcpy(&h, p->recv_c2s.bufs[i] + prefix, 4);
+        if (h == WG_TRANSPORT_DATA && n > WG_TRANSPORT_MIN) what |= ROT_PKT_USER;
+        else if (h == WG_HANDSHAKE_INIT) what |= ROT_PKT_INIT;
+    }
+    if (!rot_window(&p->rot, now, busy, v->client, what) || !rot_move(p, fd, soft))
+        return 0;
+    /* The new flow opens the way a fresh connection does; an init brings its
+     * own junk and I-packets. */
+    if (!(what & ROT_PKT_INIT))
+        send_junk_and_cps(p, fd);
+    return 1;
+}
+
+/* s2c: something came in while a move is pending. The socket hears only the
+ * new port now — the old one has its own socket — so that port works both
+ * ways. */
+static void rot_answered(proxy_t *p) {
+    int expect = ROT_PENDING;
+    if (!atomic_compare_exchange_strong_explicit(&p->rot_state, &expect, ROT_IDLE,
+                                                 memory_order_acq_rel,
+                                                 memory_order_relaxed))
+        return;
+    atomic_store_explicit(&p->rot_dual, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->rot_due, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->rot_changed, 1, memory_order_relaxed);
+    char tb[12], mb[12], nb[12];
+    const char *parts[] = { "rotate: port ", u32_to_str(tb, p->rot_to), " answered, staying (",
+        u32_to_str(mb, (uint32_t)(mono_ms() - p->rot_t0_ms)), " ms, ",
+        u32_to_str(nb, atomic_load_explicit(&p->rot_twice, memory_order_relaxed)),
+        " sent twice)" };
+    log_infon(parts, 7);
+}
+
+/* Main loop, once a tick: fold in the traffic, take the threads' news, and
+ * raise the flag when the port falls due. */
+typedef struct {
+    rot_sched_t s;
+    uint32_t pv_c2s, pv_s2c;
+    int due;
+    uint32_t due_at;         /* tick the flag went up */
+} rot_main_t;
+
+static void rot_main_tick(proxy_t *p, rot_main_t *m, uint32_t now) {
+    uint32_t bc = atomic_load_explicit(&p->rot_bytes_c2s, memory_order_relaxed);
+    uint32_t bs = atomic_load_explicit(&p->rot_bytes_s2c, memory_order_relaxed);
+    m->s.bytes += (uint64_t)(uint32_t)(bc - m->pv_c2s) + (uint32_t)(bs - m->pv_s2c);
+    m->pv_c2s = bc;
+    m->pv_s2c = bs;
+    if (atomic_exchange_explicit(&p->rot_changed, 0, memory_order_relaxed)) {
+        rot_sched_reset(&m->s, &p->rot, now, &p->rng);
+        m->due = 0;
+        atomic_store_explicit(&p->rot_force, 0, memory_order_relaxed);
+    }
+    if (atomic_exchange_explicit(&p->rot_failed, 0, memory_order_relaxed)) {
+        m->due = 0;
+        m->s.retry = now + p->rot.retry;
+        atomic_store_explicit(&p->rot_force, 0, memory_order_relaxed);
+    }
+    if (m->due) {
+        if (p->rot_soft_on && now - m->due_at >= p->rot.force &&
+            !atomic_load_explicit(&p->rot_force, memory_order_relaxed)) {
+            atomic_store_explicit(&p->rot_force, 1, memory_order_relaxed);
+            char mb[12];
+            const char *parts[] = { "rotate: no quiet spell for ",
+                u32_to_str(mb, p->rot.force * 5), " s, moving under load" };
+            log_infon(parts, 3);
+        }
+        return;
+    }
+    if (!rot_is_due(&p->rot, &m->s, now)) return;
+    m->due = 1;
+    m->due_at = now;
+    atomic_store_explicit(&p->rot_due, 1, memory_order_relaxed);
+    int by_vol = m->s.vol && m->s.bytes >= m->s.vol;
+    char mb[12];
+    const char *parts[] = { "rotate: port due (",
+        by_vol ? u32_to_str(mb, (uint32_t)(m->s.bytes >> 20)) : "timer",
+        by_vol ? " MB carried" : "", "), moving when the tunnel is quiet" };
+    log_infon(parts, 4);
 }
 
 /* ---- c2s thread ---- */
@@ -1950,6 +2347,9 @@ static void *c2s_thread_normal(void *arg) {
     int gro_said = 0;
     int gro_pend_off = 0, gro_pend_total = 0, gro_pend_seg = 0;
     int gro_rearm_in = 0, gro_rearm_gap = GRO_REARM_MIN;
+    /* Port rotation: what this direction has seen. Off, it is never touched. */
+    const int rot_on = p->rot_on;
+    rot_seen_t rot_seen = { 0, 0, 0, 0 };
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
         int nrecv;
@@ -2065,11 +2465,20 @@ static void *c2s_thread_normal(void *arg) {
         int remote_fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
         if (remote_fd < 0) continue;
 
+        /* A due port moves before this batch goes out, so the batch is what
+         * carries the server over. Three relaxed loads while not due. */
+        if (rot_on && atomic_load_explicit(&p->rot_due, memory_order_relaxed) &&
+            atomic_load_explicit(&p->rot_state, memory_order_relaxed) == ROT_IDLE &&
+            atomic_load_explicit(&p->rot_old_fd, memory_order_relaxed) < 0)
+            rot_try(p, remote_fd, &rot_seen, nrecv, prefix);
+
         /* Build sendmmsg batch. Both flags are hoisted out of the loop, so a
          * v2 config pays one predicted branch per packet and no ChaCha20. */
         int nsend = 0;
         const int s4 = cfg->s4;
         const int hp = cfg->hp_on;
+        int xport = 0;
+        uint32_t bytes = 0;
 
         for (int i = 0; i < nrecv; i++) {
             int n = (int)p->recv_c2s.msgs[i].msg_len;
@@ -2099,6 +2508,8 @@ static void *c2s_thread_normal(void *arg) {
                     p->send_c2s.iovecs[nsend].iov_base = base;
                     p->send_c2s.iovecs[nsend].iov_len = total;
                     nsend++;
+                    xport = 1;
+                    bytes += (uint32_t)total;
                     if (!atomic_exchange_explicit(&p->fe_transport_c2s, 1, memory_order_relaxed))
                         log_info("c2s: first transport packet to remote");
                     continue;
@@ -2147,6 +2558,11 @@ static void *c2s_thread_normal(void *arg) {
                 he_stash(p, out, out_len, 1);
                 if (send_packet(remote_fd, out, out_len) < 0)
                     note_remote_send_err(p, errno);
+                if (atomic_load_explicit(&p->rot_dual, memory_order_relaxed)) {
+                    int old = atomic_load_explicit(&p->rot_old_fd, memory_order_acquire);
+                    if (old >= 0 && send_packet(old, out, out_len) >= 0)
+                        atomic_fetch_add_explicit(&p->rot_twice, 1, memory_order_relaxed);
+                }
                 if (!atomic_exchange_explicit(&p->fe_init_sent, 1, memory_order_relaxed)) {
                     char nb[12];
                     const char *parts[] = { "c2s: AWG handshake init forwarded to remote (size=",
@@ -2165,6 +2581,14 @@ static void *c2s_thread_normal(void *arg) {
         if (nsend > 0) {
             send_batch_remote(p, remote_fd, p->send_c2s.msgs,
                               p->send_c2s.iovecs, nsend);
+        }
+        if (rot_on && xport) {
+            uint32_t t = atomic_load_explicit(&p->tick, memory_order_relaxed);
+            rot_seen.client = t;
+            rot_seen_note(&rot_seen, t, bytes);
+            atomic_store_explicit(&p->rot_bytes_c2s,
+                atomic_load_explicit(&p->rot_bytes_c2s, memory_order_relaxed) + bytes,
+                memory_order_relaxed);
         }
     }
 
@@ -2246,12 +2670,16 @@ static void *c2s_thread_reverse(void *arg) {
                         /* Server mode: the transport names its session by
                          * our WireGuard's index. A session still aimed at
                          * another address means the client moved — follow it
-                         * now instead of at its next handshake. */
+                         * now instead of at its next handshake. The counter
+                         * (little-endian on the wire and on every target) is
+                         * what tells a move from a late duplicate. */
                         if (server_mode &&
                             p->recv_c2s.addrs[i].sa.sa_family == p->listen_family) {
                             uint32_t sidx;
+                            uint64_t ctr;
                             memcpy(&sidx, pkt + s4 + 4, 4);
-                            if (session_follow_client(p, sidx, &p->recv_c2s.addrs[i]))
+                            memcpy(&ctr, pkt + s4 + 8, 8);
+                            if (session_follow_client(p, sidx, &p->recv_c2s.addrs[i], ctr))
                                 log_client_moved(&p->recv_c2s.addrs[i], &moved_said);
                         }
 
@@ -2577,7 +3005,7 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
     return 1;
 }
 
-static int do_reconnect(proxy_t *p) {
+static int do_reconnect_locked(proxy_t *p) {
     int old_fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
     if (old_fd >= 0) {
         close(old_fd);
@@ -2587,6 +3015,8 @@ static int do_reconnect(proxy_t *p) {
     int old_fd2 = atomic_exchange_explicit(&p->remote_fd2, -1, memory_order_acq_rel);
     if (old_fd2 >= 0)
         close(old_fd2);
+    /* Whatever move was pending is moot on a new connection. */
+    atomic_store_explicit(&p->rot_state, ROT_IDLE, memory_order_relaxed);
 
     log_info2("reconnecting to ", p->remote_host);
 
@@ -2614,8 +3044,20 @@ static int do_reconnect(proxy_t *p) {
     atomic_store_explicit(&p->fe_transport_s2c, 0, memory_order_relaxed);
 
     atomic_store_explicit(&p->remote_fd, fd, memory_order_release);
+    /* A new connection is a port change of its own: the schedule starts over. */
+    atomic_store_explicit(&p->rot_due, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->rot_changed, 1, memory_order_relaxed);
 
     log_info2("reconnected to ", p->remote_host);
+    return fd;
+}
+
+/* The rotation in the c2s thread re-points this same socket, so the endpoint
+ * must not be swapped under it. */
+static int do_reconnect(proxy_t *p) {
+    pthread_mutex_lock(&p->remote_mu);
+    int fd = do_reconnect_locked(p);
+    pthread_mutex_unlock(&p->remote_mu);
     return fd;
 }
 
@@ -2655,6 +3097,8 @@ static void *s2c_thread(void *arg) {
     int gro_said = 0;
     int gro_rearm_in = 0, gro_rearm_gap = GRO_REARM_MIN;
     int gro_pend_off = 0, gro_pend_total = 0, gro_pend_seg = 0;
+    const int rot_on = p->rot_on;
+    rot_seen_t rot_seen = { 0, 0, 0, 0 };
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
         remote_fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
@@ -2805,6 +3249,22 @@ static void *s2c_thread(void *arg) {
             }
         }
 
+        /* The busy tick is shared only when it moves, at most once a tick. */
+        if (rot_on && nsend > 0) {
+            uint32_t bytes = 0;
+            for (int i = 0; i < nsend; i++)
+                bytes += (uint32_t)p->send_s2c.iovecs[i].iov_len;
+            if (rot_seen_note(&rot_seen, atomic_load_explicit(&p->tick, memory_order_relaxed),
+                              bytes))
+                atomic_store_explicit(&p->s2c_busy_tick, rot_seen.busy, memory_order_relaxed);
+            if (atomic_load_explicit(&p->rot_state, memory_order_acquire) == ROT_PENDING)
+                rot_answered(p);
+            if (p->rot.mb_lo)
+                atomic_store_explicit(&p->rot_bytes_s2c,
+                    atomic_load_explicit(&p->rot_bytes_s2c, memory_order_relaxed) + bytes,
+                    memory_order_relaxed);
+        }
+
         /* === Send === */
         if (nsend > 0) {
             /* The listening socket is never connected, in any mode, so every
@@ -2827,6 +3287,93 @@ static void *s2c_thread(void *arg) {
 }
 
 /* ---- Main ---- */
+
+/* The server has been told nothing yet about a move when it sends; what it
+ * sent to the port just left lands on rot_old_fd and is forwarded from here,
+ * the way the s2c thread would have, a batch at a time. After a quiet move
+ * that is a stray packet or two; after a soft one, a round trip's worth of
+ * the download. Eight batches per wake, then epoll comes back for the rest. */
+static void rot_drain_old(proxy_t *p, int fd) {
+    for (int round = 0; round < 8; round++) {
+        int n = recvmmsg(fd, p->rot_drain.in, BATCH_SIZE, MSG_DONTWAIT, NULL);
+        if (n <= 0) return;
+        if (!atomic_load_explicit(&p->has_client, memory_order_acquire)) continue;
+        int ns = 0;
+        for (int i = 0; i < n; i++)
+            process_s2c_pkt_normal(p, p->rot_drain.bufs[i], (int)p->rot_drain.in[i].msg_len,
+                                   p->rot_drain.out_iov, p->rot_drain.addrs, &ns);
+        if (ns) {
+            _Atomic uint32_t gm = 0, gs = 0;
+            send_batch_gso(p, p->listen_fd, p->rot_drain.out, p->rot_drain.out_iov, ns,
+                           p->rot_drain.addrs, NULL, &gm, &gs);
+        }
+        if (n < BATCH_SIZE) return;
+    }
+}
+
+/* Main loop, every wake: a move that is still unanswered after ROT_VERIFY_MS,
+ * or refused outright, goes back, and the old port is let go after
+ * ROT_GRACE_MS. Only this thread closes rot_old_fd, so draining it never races
+ * a close. */
+static void rot_main_poll(proxy_t *p) {
+    int old = atomic_load_explicit(&p->rot_old_fd, memory_order_acquire);
+    int st = atomic_load_explicit(&p->rot_state, memory_order_acquire);
+    if (old < 0 && st != ROT_PENDING) return;
+    uint64_t age = mono_ms() - p->rot_t0_ms;
+    int dual = atomic_load_explicit(&p->rot_dual, memory_order_relaxed);
+    int refused = st == ROT_PENDING &&
+        atomic_load_explicit(&p->rot_refused, memory_order_relaxed);
+    if (st == ROT_PENDING && !refused &&
+        age < (dual ? ROT_VERIFY_DUAL_MS : ROT_VERIFY_MS)) return;
+    if (st != ROT_PENDING && age < ROT_GRACE_MS) return;
+    if (pthread_mutex_trylock(&p->remote_mu) != 0) return;
+    int expect = ROT_PENDING;
+    int back = st == ROT_PENDING &&
+        atomic_compare_exchange_strong_explicit(&p->rot_state, &expect, ROT_IDLE,
+                                                memory_order_acq_rel, memory_order_relaxed);
+    /* Going back leaves the old port's socket to its grace period: the c2s
+     * thread may be mid-send on it for a soft move, and both sockets on the
+     * same port and peer simply share what comes in. */
+    if (!back) {
+        /* Empty it first: whatever is queued there is the client's, and a
+         * close would throw it away. */
+        old = atomic_exchange_explicit(&p->rot_old_fd, -1, memory_order_acq_rel);
+        if (old >= 0) {
+            rot_drain_old(p, old);
+            close(old);
+        }
+    }
+    atomic_store_explicit(&p->rot_dual, 0, memory_order_relaxed);
+    uint16_t from = p->rot_from, to = p->rot_to;    /* the c2s thread's, read under the lock */
+    if (back) {
+        int fd = atomic_load_explicit(&p->remote_fd, memory_order_relaxed);
+        if (fd >= 0) {
+            rot_connect(p, fd, from);
+            /* Drop a refusal still pending from the port just left. */
+            int e;
+            socklen_t el = sizeof(e);
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el);
+        }
+        /* A refused port, or one that stayed silent on its own, is dead. One
+         * that ran beside the old port may merely have lost every race to its
+         * copies (a new flow's first packets take the slow path through NAT),
+         * so it is not written off: the next try just draws again, and costs
+         * nothing. */
+        if (!dual || refused) p->rot_bad[p->rot_bad_i++ % ROT_BAD_N] = to;
+        atomic_store_explicit(&p->rot_due, 0, memory_order_relaxed);
+        atomic_store_explicit(&p->rot_failed, 1, memory_order_relaxed);
+    }
+    pthread_mutex_unlock(&p->remote_mu);
+    if (back) {
+        char tb[12], fb[12], nb[12];
+        const char *parts[] = { "rotate: port ", u32_to_str(tb, to),
+            refused ? " refused, back to " : " stayed silent, back to ",
+            u32_to_str(fb, from), " (",
+            u32_to_str(nb, atomic_load_explicit(&p->rot_twice, memory_order_relaxed)),
+            " sent twice)" };
+        log_infon(parts, 7);
+    }
+}
 
 /* ---- Self-tuning spin budget -------------------------------------------
  *
@@ -3042,6 +3589,22 @@ int proxy_run(proxy_t *p) {
     };
     timerfd_settime(p->timer_fd, 0, &ts, NULL);
 
+    /* Epoll for signal + timer, and for the port a rotation just left. It
+     * exists before the threads do: the c2s thread adds that port to it. */
+    int epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (epfd < 0) {
+        log_error("epoll_create failed");
+        return -1;
+    }
+    p->main_epfd = epfd;
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = p->signal_fd;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, p->signal_fd, &ev);
+    ev.data.fd = p->timer_fd;
+    epoll_ctl(epfd, EPOLL_CTL_ADD, p->timer_fd, &ev);
+
     /* Launch c2s and s2c threads */
     pthread_t t_c2s, t_s2c;
     pthread_create(&t_c2s, NULL, c2s_thread, p);
@@ -3116,32 +3679,28 @@ int proxy_run(proxy_t *p) {
         pv_sl_l = udp_socket_drops(p->listen_fd);
     }
 
-    /* Epoll for signal + timer only */
-    int epfd = epoll_create1(EPOLL_CLOEXEC);
-    if (epfd < 0) {
-        log_error("epoll_create failed");
-        atomic_store_explicit(&p->stopped, 1, memory_order_relaxed);
-        goto join;
-    }
-
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.fd = p->signal_fd;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, p->signal_fd, &ev);
-    ev.data.fd = p->timer_fd;
-    epoll_ctl(epfd, EPOLL_CTL_ADD, p->timer_fd, &ev);
-
-    struct epoll_event events[2];
+    struct epoll_event events[3];
+    uint32_t tick = 0;
+    rot_main_t rot_m;
+    memset(&rot_m, 0, sizeof(rot_m));
+    if (p->rot_on) rot_sched_reset(&rot_m.s, &p->rot, 0, &p->rng);
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
-        int nev = epoll_wait(epfd, events, 2, 1000);
+        int nev = epoll_wait(epfd, events, 3, 1000);
         if (nev < 0) {
             if (errno == EINTR) continue;
             break;
         }
 
+        if (p->rot_on) rot_main_poll(p);
+
         for (int i = 0; i < nev; i++) {
             int fd = events[i].data.fd;
+
+            if (fd == atomic_load_explicit(&p->rot_old_fd, memory_order_acquire)) {
+                rot_drain_old(p, fd);
+                continue;
+            }
 
             if (fd == p->signal_fd) {
                 struct signalfd_siginfo si;
@@ -3154,6 +3713,10 @@ int proxy_run(proxy_t *p) {
             if (fd == p->timer_fd) {
                 uint64_t expirations;
                 read(p->timer_fd, &expirations, sizeof(expirations));
+                /* The port rotation's clock: the I/O threads stamp it on
+                 * what they carry, and only ever compare stamps. */
+                atomic_store_explicit(&p->tick, ++tick, memory_order_relaxed);
+                if (p->rot_on) rot_main_tick(p, &rot_m, tick);
                 check_path_mtu(p);
                 int had_activity = atomic_exchange_explicit(&p->last_active, 0, memory_order_relaxed);
                 int had_remote_rx = atomic_exchange_explicit(&p->last_remote_rx, 0, memory_order_relaxed);
@@ -3359,8 +3922,16 @@ int proxy_run(proxy_t *p) {
                     int rfd2 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
                     if (rfd2 >= 0 &&
                         !atomic_load_explicit(&p->reconnect_needed, memory_order_relaxed)) {
-                        int r = resolve_addr_check(p->remote_host,
-                                                   (struct sockaddr *)&p->remote.sa);
+                        /* A snapshot under the lock: a port rotation rewrites
+                         * p->remote from the c2s thread. Busy means a reconnect
+                         * is under way, and that resolves afresh anyway. */
+                        struct sockaddr_storage cur;
+                        int r = -1;
+                        if (pthread_mutex_trylock(&p->remote_mu) == 0) {
+                            cur = p->remote.sa;
+                            pthread_mutex_unlock(&p->remote_mu);
+                            r = resolve_addr_check(p->remote_host, (struct sockaddr *)&cur);
+                        }
                         if (r == 1 && ++dns_miss >= 2) {
                             dns_miss = 0;
                             log_info("DNS changed (current IP gone), triggering reconnect");
@@ -3376,9 +3947,6 @@ int proxy_run(proxy_t *p) {
         }
     }
 
-    close(epfd);
-
-join:
     /* Stop threads by shutting down sockets */
     atomic_store_explicit(&p->stopped, 1, memory_order_relaxed);
     if (p->listen_fd >= 0)
@@ -3392,6 +3960,12 @@ join:
 
     pthread_join(t_c2s, NULL);
     pthread_join(t_s2c, NULL);
+
+    /* Only now: a move under way in the c2s thread may still have opened the
+     * old port's socket and added it to the epoll. */
+    rfd = atomic_exchange_explicit(&p->rot_old_fd, -1, memory_order_relaxed);
+    if (rfd >= 0) close(rfd);
+    close(epfd);
 
     /* Cleanup */
     rfd = atomic_load_explicit(&p->remote_fd, memory_order_relaxed);

@@ -165,6 +165,9 @@ typedef struct {
 
     int timeout;        /* seconds, default 180 */
     int dns_refresh;    /* periodic DNS re-resolve interval, seconds, 0 = off */
+    uint32_t rot_t_lo, rot_t_hi;   /* AWG_PORT_ROTATE, seconds; 0 = no timer */
+    uint32_t rot_mb_lo, rot_mb_hi; /* AWG_PORT_ROTATE_MB; 0 = no volume trigger */
+    int rot_soft;       /* AWG_PORT_ROTATE_SOFT: move under load too; -1 = by hardware */
     int he_delay;       /* Happy Eyeballs: ms of IPv4 silence before probing IPv6 */
     const char *state_file; /* learned-preference file, NULL/"" = don't persist */
     int log_level;
