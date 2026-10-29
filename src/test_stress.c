@@ -3883,6 +3883,148 @@ static void test_port_rotate_soft(void) {
     unlink(logpath);
 }
 
+/* Each port is a path of its own: past a balancer, one can be 25 ms slower
+ * than another (measured from Moscow to Los Angeles, 20 ports, steady on every
+ * packet). The server keeps whichever copy of a packet arrives first. A copy
+ * sent second on the old, faster path used to win, so a move onto a slower
+ * port never heard back and fell back — nearly every move to that server.
+ * Here the server holds what each port carries for that port's delay (0, 15,
+ * 30 ms) and takes the copies in that order, as WireGuard would: every move
+ * must be answered, and nothing lost. */
+static void test_port_rotate_slow_path(void) {
+    enum { NP = 3, SECS = 40, MAXSEQ = 1 << 14, HOLD = 512 };
+    static const int64_t delay_ns[NP] = { 0, 15000000, 30000000 };
+    int ports[NP], fds[NP];
+    char spec[96];
+    int off = 0;
+    for (int i = 0; i < NP; i++) {
+        ports[i] = find_free_port();
+        ASSERT(ports[i] > 0);
+        fds[i] = make_udp_socket(ports[i]);
+        ASSERT(fds[i] >= 0);
+        int one = 1;
+        setsockopt(fds[i], SOL_SOCKET, SO_TIMESTAMPNS, &one, sizeof(one));
+        off += snprintf(spec + off, sizeof(spec) - (size_t)off, "%s%d", i ? "," : "", ports[i]);
+    }
+    char remote_env[128];
+    snprintf(remote_env, sizeof(remote_env), "127.0.0.1:%s", spec);
+    char logpath[96];
+    snprintf(logpath, sizeof(logpath), "/tmp/awg-slow-%d", (int)getpid());
+    unlink(logpath);
+
+    int listen_port = find_free_port();
+    ASSERT(listen_port > 0);
+    g_proxy_log = logpath;
+    g_log_level = "info";
+    g_port_rotate = "5";
+    pid_t proxy = start_proxy_remote("normal", listen_port, remote_env, NULL);
+    g_proxy_log = NULL;
+    g_log_level = "error";
+    g_port_rotate = NULL;
+    ASSERT(proxy > 0);
+
+    int cfd = make_client_socket();
+    ASSERT(cfd >= 0);
+    struct sockaddr_in pa = make_addr(listen_port);
+    uint8_t init[WG_INIT_SIZE];
+    make_wg_init(init, 0x9500);
+    struct sockaddr_storage pxy;
+    socklen_t pl = sizeof(pxy);
+    int ep = -1;
+    for (int tries = 0; tries < 20 && ep < 0; tries++) {
+        sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)&pa, sizeof(pa));
+        ep = rot_wait_init(fds, NP, -1, 1000, &pxy, &pl);
+    }
+    ASSERT(ep >= 0);
+    rot_answer(fds[ep], &pxy, pl);
+    uint8_t rb[2048];
+    ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 2000), WG_RESP_SIZE);
+
+    static uint8_t seen[MAXSEQ];
+    static rot_dgram_t hold[HOLD];
+    memset(seen, 0, sizeof(seen));
+    int nh = 0;
+    uint8_t up[120], down[120];
+    memset(up, 0, sizeof(up));
+    uint32_t t4 = WG_TRANSPORT_DATA;
+    memcpy(up, &t4, 4);
+    make_awg_transport(down, 0x9500, 1, sizeof(down));
+    uint32_t seq = 0, uniq = 0, echoed = 0, got = 0;
+    int endpoint_moves = 0;
+    int64_t start = now_us(), next = start;
+    while (now_us() - start < (int64_t)SECS * 1000000) {
+        /* A game's worth: 50 small packets a second, far below the quiet
+         * line, so the port moves in the quiet every few seconds. */
+        while (now_us() >= next && seq < MAXSEQ) {
+            memcpy(up + 16, &seq, 4);
+            sendto(cfd, up, sizeof(up), 0, (struct sockaddr *)&pa, sizeof(pa));
+            seq++;
+            next += 20000;
+        }
+        struct pollfd pfd[NP + 1];
+        for (int i = 0; i < NP; i++) pfd[i] = (struct pollfd){ .fd = fds[i], .events = POLLIN };
+        pfd[NP] = (struct pollfd){ .fd = cfd, .events = POLLIN };
+        poll(pfd, NP + 1, 1);
+        /* Into the hold, each datagram stamped with when its path delivers it. */
+        if (nh < HOLD) {
+            int n = rot_recv_ordered(fds, NP, hold + nh, HOLD - nh);
+            for (int k = nh; k < nh + n; k++) hold[k].ts += delay_ns[hold[k].port];
+            nh += n;
+            qsort(hold, (size_t)nh, sizeof(*hold), rot_dgram_cmp);
+        }
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
+        int done = 0;
+        for (; done < nh && hold[done].ts <= now_ns; done++) {
+            int i = hold[done].port, n = hold[done].n;
+            uint32_t h = 0, s = 0;
+            if (n >= 20) { memcpy(&h, hold[done].b, 4); memcpy(&s, hold[done].b + 16, 4); }
+            if (n != (int)sizeof(up) || h != TEST_H4 || s >= MAXSEQ) continue;   /* junk */
+            if (seen[s]) continue;                                       /* the other copy */
+            seen[s] = 1;
+            uniq++;
+            if (i != ep) { ep = i; endpoint_moves++; }                  /* WireGuard roams */
+            memcpy(down + 16, &s, 4);
+            sendto(fds[ep], down, sizeof(down), 0, (struct sockaddr *)&pxy, pl);
+            echoed++;
+        }
+        if (done) {
+            memmove(hold, hold + done, (size_t)(nh - done) * sizeof(*hold));
+            nh -= done;
+        }
+        if (pfd[NP].revents & POLLIN) {
+            int n;
+            while ((n = (int)recvfrom(cfd, rb, sizeof(rb), MSG_DONTWAIT, NULL, NULL)) > 0)
+                if (n == (int)sizeof(down)) got++;
+        }
+    }
+    int64_t tail = now_us();
+    while (now_us() - tail < 1500000) {
+        int n = recv_one(cfd, rb, sizeof(rb), 100);
+        if (n == (int)sizeof(down)) got++;
+    }
+    stop_proxy(proxy);
+
+    char *log = slurp_file(logpath);
+    ASSERT(log != NULL);
+    int moves = rot_count(log, "moving to port");
+    int ok = rot_count(log, " answered, staying");
+    int back = rot_count(log, "back to");
+    fprintf(stderr, "          (moves=%d answered=%d back=%d | sent=%u taken=%u echoed=%u got=%u "
+            "endpoint_moves=%d)\n", moves, ok, back, seq, uniq, echoed, got, endpoint_moves);
+    free(log);
+    ASSERT(moves >= 3);
+    ASSERT_EQ(back, 0);                 /* no port is dead here: every move must take */
+    ASSERT_EQ(ok, moves);
+    ASSERT(uniq + 2 >= seq);            /* the last two may still be on their way */
+    ASSERT(got + 2 >= echoed);
+
+    close(cfd);
+    for (int i = 0; i < NP; i++) close(fds[i]);
+    unlink(logpath);
+}
+
 /* The volume trigger counts what the port carried both ways: 1 MB of upload
  * has to raise the flag on the next tick, and a run that carried less must
  * not. The move itself is the idle scenario's business. */
@@ -3977,5 +4119,6 @@ int main(void) {
     RUN_TEST(port_rotate_volume);
     RUN_TEST(port_rotate_soak);
     RUN_TEST(port_rotate_soft);
+    RUN_TEST(port_rotate_slow_path);
     TEST_MAIN_END();
 }

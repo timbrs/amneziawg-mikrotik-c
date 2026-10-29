@@ -180,7 +180,13 @@ typedef struct {
  * Until the new port answers every packet goes out on both ports: the server
  * takes whichever copy comes first and drops the other as a replay, so the old
  * path carries everything while the new one proves itself, and a new port that
- * never answers costs nothing but ROT_VERIFY_DUAL_MS of doubled sends. No
+ * never answers costs nothing but ROT_VERIFY_DUAL_MS of doubled sends. The
+ * copy for the old port leaves ROT_LAG_MS after the new one: past a balancer
+ * each port is a path of its own, and on a long route one can be 25 ms slower
+ * than another (measured to Los Angeles), so a copy sent second on the old,
+ * faster path used to win every race — the server stayed put, the new port
+ * never heard back, and nearly every move fell back. A port that is dead
+ * costs that lag on what the old port carries, for at most a second. No
  * answer by then, or an ICMP refusal, and the socket goes back to the old
  * port, whose NAT entries are all still alive; the session keys are untouched
  * either way. Without the second socket there is no doubling and the wait is
@@ -203,6 +209,9 @@ typedef struct {
 #define ROT_VERIFY_DUAL_MS 1000 /* ...under load, where its answer is a round trip away */
 #define ROT_FORCE_S     900   /* due this long without a quiet spell: move under load */
 #define ROT_GRACE_MS    3000  /* how long the old port is still heard */
+#define ROT_LAG_MS      50    /* the old port's copy waits this long behind the new one */
+#define ROT_LAG_N       256   /* copies waiting at once; past that they go at once */
+#define ROT_LAG_PKT     1600  /* a copy larger than this goes at once */
 #define ROT_RETRY_TICKS 60    /* after a silent port, the next try is 5 min away */
 #define ROT_BAD_N       8     /* ports that stayed silent, skipped by the draw */
 #define ROT_IDLE        0
@@ -423,6 +432,15 @@ typedef struct {
     _Atomic int rot_dual;            /* c2s sends on both ports until the new one answers */
     _Atomic uint32_t rot_twice;      /* packets that went out on both ports this move */
     _Atomic int rot_refused;         /* the new port answered with ICMP "unreachable" */
+    _Atomic int rot_won;             /* s2c: the new port answered this move */
+    /* c2s only: copies for the old port waiting out ROT_LAG_MS, oldest first.
+     * Allocated at the first move, so a tunnel that never moves never pays. */
+    struct rot_lag {
+        uint64_t due_us;
+        uint16_t len;
+        uint8_t b[ROT_LAG_PKT];
+    } *rot_lag;
+    uint32_t rot_lag_head, rot_lag_n;
     int rot_soft_on;                 /* moves under load allowed: read-only once running */
     int main_epfd;                   /* the main loop's epoll, for rot_old_fd */
     /* The main loop's batch for what the old port still receives. Under load

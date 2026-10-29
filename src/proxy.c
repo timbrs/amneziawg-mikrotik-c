@@ -2021,10 +2021,77 @@ static int send_batch_gso(proxy_t *p, int fd, struct mmsghdr *msgs,
     return err;
 }
 
+/* ---- A move's copies for the old port, ROT_LAG_MS behind (c2s only) ----
+ *
+ * The server keeps whichever copy of a packet comes first. Sent back to back,
+ * the copy on the old port often won: past a balancer each port takes a path
+ * of its own, and the old one may simply be faster. Held back by more than the
+ * paths differ, the new port's copy arrives first and the server follows it;
+ * the old one still turns up in case the new port is dead. */
+static void rot_lag_send(proxy_t *p, int fd, uint32_t n) {
+    struct mmsghdr m[BATCH_SIZE];
+    struct iovec v[BATCH_SIZE];
+    while (n > 0) {
+        uint32_t k = n < BATCH_SIZE ? n : BATCH_SIZE;
+        for (uint32_t i = 0; i < k; i++) {
+            struct rot_lag *e = &p->rot_lag[(p->rot_lag_head + i) % ROT_LAG_N];
+            v[i] = (struct iovec){ e->b, e->len };
+            m[i] = (struct mmsghdr){ .msg_hdr = { .msg_iov = &v[i], .msg_iovlen = 1 } };
+        }
+        int s = sendmmsg(fd, m, k, MSG_DONTWAIT);
+        if (s > 0)
+            atomic_fetch_add_explicit(&p->rot_twice, (uint32_t)s, memory_order_relaxed);
+        /* A send that fails is the old port's business: drop the copies as
+         * a straight send would have. */
+        p->rot_lag_head = (p->rot_lag_head + k) % ROT_LAG_N;
+        p->rot_lag_n -= k;
+        n -= k;
+    }
+}
+
+static void rot_lag_put(proxy_t *p, int old, const void *b, int len, uint64_t now) {
+    if (!p->rot_lag && len <= ROT_LAG_PKT)
+        p->rot_lag = calloc(ROT_LAG_N, sizeof(*p->rot_lag));
+    if (!p->rot_lag || len > ROT_LAG_PKT || p->rot_lag_n == ROT_LAG_N) {
+        if (send_packet(old, b, len) >= 0)
+            atomic_fetch_add_explicit(&p->rot_twice, 1, memory_order_relaxed);
+        return;
+    }
+    struct rot_lag *e = &p->rot_lag[(p->rot_lag_head + p->rot_lag_n) % ROT_LAG_N];
+    e->due_us = now + ROT_LAG_MS * 1000ULL;
+    e->len = (uint16_t)len;
+    memcpy(e->b, b, (size_t)len);
+    p->rot_lag_n++;
+}
+
+/* What is due goes out; once the move is over, an answered port makes the rest
+ * pointless and a failed one needs it now. Returns the ms until the next copy
+ * is due, or -1 with nothing left. */
+static int rot_lag_service(proxy_t *p, uint64_t now) {
+    if (!p->rot_lag_n) return -1;
+    int old = atomic_load_explicit(&p->rot_old_fd, memory_order_acquire);
+    int dual = atomic_load_explicit(&p->rot_dual, memory_order_acquire);
+    if (old < 0 || (!dual && atomic_load_explicit(&p->rot_won, memory_order_relaxed))) {
+        p->rot_lag_n = 0;
+        return -1;
+    }
+    uint32_t due = p->rot_lag_n;
+    if (dual)
+        for (due = 0; due < p->rot_lag_n; due++)
+            if (p->rot_lag[(p->rot_lag_head + due) % ROT_LAG_N].due_us > now) break;
+    if (due) rot_lag_send(p, old, due);
+    if (!p->rot_lag_n) return -1;
+    uint64_t at = p->rot_lag[p->rot_lag_head].due_us;
+    return at > now ? (int)((at - now + 999) / 1000) : 0;
+}
+
 /* Every c2s → remote flush goes through here, so the Happy Eyeballs probe gets
  * its copy without the per-packet fast path knowing anything about it. */
 static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
                                      struct iovec *iovecs, int nsend) {
+    /* A move that just fell back: the copies still waiting are older than
+     * this batch, so they go first. */
+    if (p->rot_lag_n) rot_lag_service(p, mono_us());
     he_stash(p, iovecs[0].iov_base, (int)iovecs[0].iov_len, 0);
     int v6 = atomic_load_explicit(&p->remote_v6, memory_order_relaxed);
     int outer = (int)iovecs[0].iov_len + (v6 ? 48 : 28);
@@ -2035,14 +2102,14 @@ static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
                              &p->st_c2s_gso_msgs, &p->st_c2s_gso_segs);
     stats_add_tx(&p->st_c2s_tx, &p->st_c2s_drop, nsend, sent);
     if (err) note_remote_send_err(p, err);
-    /* A port move: the same batch on the old port too, until the new one
-     * answers. Errors there are the old port's business, not ours. */
+    /* A port move: the same batch on the old port too, ROT_LAG_MS later,
+     * until the new one answers. */
     if (atomic_load_explicit(&p->rot_dual, memory_order_relaxed)) {
         int old = atomic_load_explicit(&p->rot_old_fd, memory_order_acquire);
-        _Atomic uint32_t gm = 0, gs = 0;
         if (old >= 0) {
-            send_batch_gso(p, old, msgs, iovecs, nsend, NULL, NULL, &gm, &gs);
-            atomic_fetch_add_explicit(&p->rot_twice, (uint32_t)nsend, memory_order_relaxed);
+            uint64_t now = mono_us();
+            for (int i = 0; i < nsend; i++)
+                rot_lag_put(p, old, iovecs[i].iov_base, (int)iovecs[i].iov_len, now);
         }
     }
 }
@@ -2172,6 +2239,8 @@ static int rot_move(proxy_t *p, int fd, int soft) {
                           memory_order_relaxed);
     atomic_store_explicit(&p->rot_twice, 0, memory_order_relaxed);
     atomic_store_explicit(&p->rot_refused, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->rot_won, 0, memory_order_relaxed);
+    p->rot_lag_n = 0;
     atomic_store_explicit(&p->rot_old_fd, old, memory_order_release);
     atomic_store_explicit(&p->rot_dual, old >= 0, memory_order_relaxed);
     atomic_store_explicit(&p->rot_state, ROT_PENDING, memory_order_release);
@@ -2232,7 +2301,10 @@ static void rot_answered(proxy_t *p) {
                                                  memory_order_acq_rel,
                                                  memory_order_relaxed))
         return;
-    atomic_store_explicit(&p->rot_dual, 0, memory_order_relaxed);
+    /* Before rot_dual drops: the c2s thread reads "over and won" as "drop the
+     * copies still waiting", and "over" alone as "send them now". */
+    atomic_store_explicit(&p->rot_won, 1, memory_order_relaxed);
+    atomic_store_explicit(&p->rot_dual, 0, memory_order_release);
     atomic_store_explicit(&p->rot_due, 0, memory_order_relaxed);
     atomic_store_explicit(&p->rot_changed, 1, memory_order_relaxed);
     char tb[12], mb[12], nb[12];
@@ -2353,6 +2425,16 @@ static void *c2s_thread_normal(void *arg) {
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
         int nrecv;
+
+        /* A move's copies for the old port are waiting: sleep only until the
+         * next one is due. One predicted branch otherwise. */
+        if (p->rot_lag_n) {
+            int w = rot_lag_service(p, mono_us());
+            if (w >= 0 && gro_pend_off >= gro_pend_total) {
+                struct pollfd pf = { .fd = p->listen_fd, .events = POLLIN };
+                if (poll(&pf, 1, w) <= 0) continue;
+            }
+        }
 
         if (p->gro_enabled_c2s) {
             ssize_t total;
@@ -2560,8 +2642,7 @@ static void *c2s_thread_normal(void *arg) {
                     note_remote_send_err(p, errno);
                 if (atomic_load_explicit(&p->rot_dual, memory_order_relaxed)) {
                     int old = atomic_load_explicit(&p->rot_old_fd, memory_order_acquire);
-                    if (old >= 0 && send_packet(old, out, out_len) >= 0)
-                        atomic_fetch_add_explicit(&p->rot_twice, 1, memory_order_relaxed);
+                    if (old >= 0) rot_lag_put(p, old, out, out_len, mono_us());
                 }
                 if (!atomic_exchange_explicit(&p->fe_init_sent, 1, memory_order_relaxed)) {
                     char nb[12];
@@ -3978,6 +4059,7 @@ int proxy_run(proxy_t *p) {
     if (p->he_evfd >= 0) close(p->he_evfd);
     free(p->junk_buf);
     free(p->junk_sizes);
+    free(p->rot_lag);
 
     return 0;
 }
