@@ -128,11 +128,31 @@ static const char *sa_str(const struct sockaddr *sa, char *buf, size_t buflen) {
     return r ? r : "?";
 }
 
+/* One record of family fam into slot. A name may list several servers
+ * (Cloudflare WARP behind a hosts file or static DNS, say): the one in use,
+ * cur, stays while it is listed; once it went silent (next) the one after it
+ * takes over, round the list; with neither, the first. */
+static void pick_rec(awg_addr_t *slot, const struct addrinfo *ai, int fam,
+                     const struct sockaddr *cur, int next) {
+    const struct addrinfo *first = NULL, *hit = NULL, *after = NULL;
+    for (; ai; ai = ai->ai_next) {
+        if (ai->ai_family != fam || ai->ai_addrlen > sizeof(slot->sa)) continue;
+        if (!first) first = ai;
+        if (hit && !after) after = ai;
+        if (!hit && cur && sa_addr_eq(ai->ai_addr, cur)) hit = ai;
+    }
+    const struct addrinfo *c = !hit ? first : !next ? hit : after ? after : first;
+    if (!c) return;
+    memcpy(&slot->sa, c->ai_addr, c->ai_addrlen);
+    slot->len = (socklen_t)c->ai_addrlen;
+}
+
 /* Resolve host into one A and one AAAA endpoint. Either may come back empty
  * (len == 0); returns -1 only when neither family produced a record. Both are
- * kept so the caller can run the Happy Eyeballs probe over them. */
-static int resolve_addr(const char *host, uint16_t port,
-                        awg_addr_t *v4, awg_addr_t *v6) {
+ * kept so the caller can run the Happy Eyeballs probe over them. cur and next
+ * pick among several records, see pick_rec(). */
+static int resolve_addr(const char *host, uint16_t port, awg_addr_t *v4, awg_addr_t *v6,
+                        const struct sockaddr *cur, int next) {
     memset(v4, 0, sizeof(*v4));
     memset(v6, 0, sizeof(*v6));
 
@@ -166,15 +186,11 @@ static int resolve_addr(const char *host, uint16_t port,
         return -1;
     }
 
-    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-        awg_addr_t *slot = (ai->ai_family == AF_INET6) ? v6 :
-                           (ai->ai_family == AF_INET)  ? v4 : NULL;
-        if (!slot || slot->len || ai->ai_addrlen > sizeof(slot->sa)) continue;
-        memcpy(&slot->sa, ai->ai_addr, ai->ai_addrlen);
-        slot->len = (socklen_t)ai->ai_addrlen;
-        sa_set_port(&slot->sa, port);
-    }
+    pick_rec(v4, res, AF_INET, cur, next);
+    pick_rec(v6, res, AF_INET6, cur, next);
     freeaddrinfo(res);
+    if (v4->len) sa_set_port(&v4->sa, port);
+    if (v6->len) sa_set_port(&v6->sa, port);
 
     if (!v4->len && !v6->len) {
         log_error2("resolve produced no usable record for ", host);
@@ -311,6 +327,12 @@ uint16_t portset_pick(const portset_t *ps, fastrand_t *rng, uint16_t avoid) {
     if (port == avoid && ps->total > 1)
         port = portset_at(ps, (uint32_t)fastrand_intn(rng, (int)ps->total));
     return port;
+}
+
+static int portset_has(const portset_t *ps, uint16_t port) {
+    for (uint8_t i = 0; i < ps->n; i++)
+        if (port >= ps->r[i].lo && port <= ps->r[i].hi) return 1;
+    return 0;
 }
 
 static const char *span_num(const char *s, int time, uint32_t *out) {
@@ -871,24 +893,46 @@ static int dial_one(proxy_t *p, const awg_addr_t *a, int blocking) {
 
 /* ---- Learned transport preference ---- */
 
-int state_read_prefer6(const char *path) {
+static int state_read_raw(const char *path, char *buf, int max) {
     if (!path || !path[0]) return 0;
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return 0;
-    char c = 0;
-    ssize_t n = read(fd, &c, 1);
+    ssize_t n = read(fd, buf, (size_t)max);
     close(fd);
-    return n == 1 && c == '6';
+    return n > 0 ? (int)n : 0;
 }
 
-int state_write_prefer6(const char *path, int prefer6) {
+int state_read_prefer6(const char *path) {
+    char c = 0;
+    return state_read_raw(path, &c, 1) == 1 && c == '6';
+}
+
+void state_read_ep(const char *path, char *ep, int max) {
+    char b[STATE_EP_MAX + 2];
+    int n = state_read_raw(path, b, (int)sizeof(b)), i = 0;
+    if (n > 2 && b[1] == '\n')
+        for (int j = 2; j < n && b[j] != '\n' && i < max - 1; j++) ep[i++] = b[j];
+    ep[i] = 0;
+}
+
+int state_write(const char *path, int prefer6, const char *ep) {
     if (!path || !path[0]) return -1;
+    char b[STATE_EP_MAX + 2];
+    size_t n = 0;
+    b[n++] = prefer6 ? '6' : '4';
+    if (ep && ep[0]) {
+        size_t l = strlen(ep);
+        if (l > STATE_EP_MAX - 1) l = STATE_EP_MAX - 1;
+        b[n++] = '\n';
+        memcpy(b + n, ep, l);
+        n += l;
+        b[n++] = '\n';
+    }
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) return -1;
-    char c = prefer6 ? '6' : '4';
-    ssize_t n = write(fd, &c, 1);
+    ssize_t w = write(fd, b, n);
     close(fd);
-    return n == 1 ? 0 : -1;
+    return w == (ssize_t)n ? 0 : -1;
 }
 
 /* Record which family actually carried traffic so the next start dials it
@@ -920,9 +964,11 @@ static void he_learn(proxy_t *p, int prefer6) {
     p->prefer6 = prefer6;
     if (p->state_written) return;
     p->state_written = 1;
-    if (state_write_prefer6(p->cfg->state_file, prefer6) == 0)
+    if (state_write(p->cfg->state_file, prefer6, p->ep_disk) == 0) {
+        p->disk6 = prefer6;
         log_info(prefer6 ? "remembered: dial IPv6 first from now on"
                          : "remembered: dial IPv4 first from now on");
+    }
 }
 
 /* Resolve and connect. When the name carries both an A and an AAAA record the
@@ -937,11 +983,18 @@ static int dial_remote(proxy_t *p, int blocking) {
      * by construction, so rng_s2c needs no locking, and every reconnect there
      * is (timeout, socket error, a new IP from DNS, a fallback stage, the
      * rebind of AWG_SRC_PORT=auto) moves off the port that just failed. With a
-     * single-port AWG_REMOTE this is a no-op. */
-    p->remote_port = portset_pick(&p->remote_ports, &p->rng_s2c, p->remote_port);
+     * single-port AWG_REMOTE this is a no-op. Cloudflare WARP is the exception:
+     * a port that answered is kept until it goes silent (warp_keep()). The
+     * address is kept either way, and a silent one hands over to the next
+     * record of the name. */
+    int dead = atomic_exchange_explicit(&p->remote_dead, 0, memory_order_relaxed);
+    if (dead) p->port_keep = 0;
+    if (!p->port_keep)
+        p->remote_port = portset_pick(&p->remote_ports, &p->rng_s2c, p->remote_port);
 
     awg_addr_t v4, v6;
-    if (resolve_addr(p->remote_host, p->remote_port, &v4, &v6) < 0)
+    if (resolve_addr(p->remote_host, p->remote_port, &v4, &v6,
+                     p->remote.len ? (const struct sockaddr *)&p->remote.sa : NULL, dead) < 0)
         return -1;
 
     /* A long outage invalidates whatever an earlier probe concluded: the family
@@ -1011,6 +1064,69 @@ static uint64_t mono_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/* ---- Cloudflare WARP ---- */
+
+/* WARP's server key, the same in every WARP config. */
+static const uint8_t warp_pub[32] = {
+    0x6e, 0x65, 0xce, 0x0b, 0xe1, 0x75, 0x17, 0x11, 0x0c, 0x17, 0xd7, 0x72, 0x88, 0xad, 0x87, 0xe7,
+    0xfd, 0x52, 0x52, 0xdc, 0xc7, 0xd0, 0x9b, 0x95, 0xa3, 0x9d, 0x61, 0xdb, 0x03, 0xdf, 0x83, 0x2a };
+
+/* "port address" of the endpoint in use. */
+static void ep_str(const proxy_t *p, char *ep) {
+    char ab[INET6_ADDRSTRLEN], pb[12];
+    const char *ps = u32_to_str(pb, p->remote_port);
+    const char *as = sa_str((const struct sockaddr *)&p->remote.sa, ab, sizeof(ab));
+    size_t lp = strlen(ps), la = strlen(as);
+    memcpy(ep, ps, lp);
+    ep[lp] = ' ';
+    memcpy(ep + lp + 1, as, la + 1);
+}
+
+/* s2c, at the first packet of a connection. WARP keeps a session on the port
+ * it began on, so the endpoint that answers is the one to stay on: through
+ * every reconnect that is not its own silence, and into the next run. The
+ * file is written only when the endpoint changed, and after the first time
+ * at most once an hour: the router's flash must not pay for a flapping link. */
+static void warp_keep(proxy_t *p) {
+    p->port_keep = 1;
+    char ep[STATE_EP_MAX];
+    ep_str(p, ep);
+    if (strcmp(ep, p->ep_disk) == 0) return;
+    uint64_t now = mono_ms();
+    if (p->ep_saved_ms && now - p->ep_saved_ms < WARP_SAVE_GAP_MS) return;
+    p->ep_saved_ms = now | 1;
+    memcpy(p->ep_disk, ep, sizeof(ep));
+    if (state_write(p->cfg->state_file, p->disk6, ep) == 0)
+        log_info2("WARP: remembered endpoint ", ep);
+}
+
+/* proxy_init: start where the last run was answered, if the config still
+ * allows that port. The address only steers the pick among the records. */
+static void warp_restore(proxy_t *p) {
+    char ep[STATE_EP_MAX];
+    state_read_ep(p->cfg->state_file, ep, sizeof(ep));
+    uint32_t port = 0;
+    const char *s = ep;
+    while (*s >= '0' && *s <= '9' && port <= 65535) port = port * 10 + (uint32_t)(*s++ - '0');
+    if (*s++ != ' ' || !port || port > 65535 || !portset_has(&p->remote_ports, (uint16_t)port))
+        return;
+    struct sockaddr_in *a4 = (struct sockaddr_in *)&p->remote.sa;
+    struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&p->remote.sa;
+    if (inet_pton(AF_INET, s, &a4->sin_addr) == 1) {
+        a4->sin_family = AF_INET;
+        p->remote.len = sizeof(*a4);
+    } else if (inet_pton(AF_INET6, s, &a6->sin6_addr) == 1) {
+        a6->sin6_family = AF_INET6;
+        p->remote.len = sizeof(*a6);
+    } else {
+        return;
+    }
+    p->remote_port = (uint16_t)port;
+    p->port_keep = 1;
+    memcpy(p->ep_disk, ep, sizeof(ep));
+    log_info2("WARP: starting on the endpoint that answered last time: ", ep);
 }
 
 static uint64_t mono_us(void) {
@@ -1478,6 +1594,7 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
 
     /* Which family an earlier run settled on, if any (see he_learn). */
     p->prefer6 = state_read_prefer6(cfg->state_file);
+    p->disk6 = p->prefer6;
     if (p->prefer6)
         log_info("learned preference: dialing IPv6 first");
 
@@ -1512,7 +1629,12 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
         return -1;
     }
     p->remote_port = p->remote_ports.r[0].lo;
-    if (p->remote_ports.total > 1) {
+    p->warp = cfg->mode == AWG_MODE_NORMAL && memcmp(cfg->server_pub, warp_pub, 32) == 0;
+    if (p->warp) {
+        log_info("Cloudflare WARP: the port and address that answer are kept until "
+                 "they go silent, no port rotation");
+        warp_restore(p);
+    } else if (p->remote_ports.total > 1) {
         char nb[12];
         const char *parts[] = { "remote port is picked per connection out of ",
                                 u32_to_str(nb, p->remote_ports.total), " ports" };
@@ -1522,7 +1644,7 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     pthread_mutex_init(&p->remote_mu, NULL);
     atomic_store_explicit(&p->rot_old_fd, -1, memory_order_relaxed);
     p->main_epfd = -1;
-    if (cfg->rot_t_lo || cfg->rot_mb_lo) {
+    if ((cfg->rot_t_lo || cfg->rot_mb_lo) && !p->warp) {
         if (cfg->mode != AWG_MODE_NORMAL) {
             log_info("port rotation ignored: only the client side dials a server port");
         } else if (p->remote_ports.total < 2) {
@@ -2240,6 +2362,7 @@ static int rot_move(proxy_t *p, int fd, int soft) {
     atomic_store_explicit(&p->rot_twice, 0, memory_order_relaxed);
     atomic_store_explicit(&p->rot_refused, 0, memory_order_relaxed);
     atomic_store_explicit(&p->rot_won, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->rot_ans_ms, 0, memory_order_relaxed);
     p->rot_lag_n = 0;
     atomic_store_explicit(&p->rot_old_fd, old, memory_order_release);
     atomic_store_explicit(&p->rot_dual, old >= 0, memory_order_relaxed);
@@ -2296,6 +2419,10 @@ static int rot_try(proxy_t *p, int fd, const rot_seen_t *v, int nrecv, int prefi
  * new port now — the old one has its own socket — so that port works both
  * ways. */
 static void rot_answered(proxy_t *p) {
+    /* Before the state turns: the main loop counts the old port's grace from
+     * here once it sees the move over. */
+    atomic_store_explicit(&p->rot_ans_ms, (uint32_t)(mono_ms() - p->rot_t0_ms) | 1,
+                          memory_order_relaxed);
     int expect = ROT_PENDING;
     if (!atomic_compare_exchange_strong_explicit(&p->rot_state, &expect, ROT_IDLE,
                                                  memory_order_acq_rel,
@@ -3244,6 +3371,7 @@ static void *s2c_thread(void *arg) {
                 const char *parts[] = { "s2c: first packet received from remote (size=",
                                         u32_to_str(nb, n), ")" };
                 log_infon(parts, 3);
+                if (p->warp) warp_keep(p);
             }
 
             if (!atomic_load_explicit(&p->has_client, memory_order_acquire)) continue;
@@ -3311,6 +3439,8 @@ static void *s2c_thread(void *arg) {
                 const char *parts[] = { "s2c: first packet received from remote (size=",
                                         u32_to_str(nb, first_n), ")" };
                 log_infon(parts, 3);
+                /* size=0 is the shutdown() of a hop, not the server. */
+                if (p->warp && first_n > 0) warp_keep(p);
             }
 
             if (!reverse && !atomic_load_explicit(&p->has_client, memory_order_acquire)) continue;
@@ -3393,9 +3523,9 @@ static void rot_drain_old(proxy_t *p, int fd) {
 }
 
 /* Main loop, every wake: a move that is still unanswered after ROT_VERIFY_MS,
- * or refused outright, goes back, and the old port is let go after
- * ROT_GRACE_MS. Only this thread closes rot_old_fd, so draining it never races
- * a close. */
+ * or refused outright, goes back, and the old port is let go ROT_GRACE_MS
+ * after the new one answered. Only this thread closes rot_old_fd, so draining
+ * it never races a close. */
 static void rot_main_poll(proxy_t *p) {
     int old = atomic_load_explicit(&p->rot_old_fd, memory_order_acquire);
     int st = atomic_load_explicit(&p->rot_state, memory_order_acquire);
@@ -3406,7 +3536,9 @@ static void rot_main_poll(proxy_t *p) {
         atomic_load_explicit(&p->rot_refused, memory_order_relaxed);
     if (st == ROT_PENDING && !refused &&
         age < (dual ? ROT_VERIFY_DUAL_MS : ROT_VERIFY_MS)) return;
-    if (st != ROT_PENDING && age < ROT_GRACE_MS) return;
+    if (st != ROT_PENDING &&
+        age < atomic_load_explicit(&p->rot_ans_ms, memory_order_relaxed) + (uint64_t)ROT_GRACE_MS)
+        return;
     if (pthread_mutex_trylock(&p->remote_mu) != 0) return;
     int expect = ROT_PENDING;
     int back = st == ROT_PENDING &&
@@ -3863,6 +3995,7 @@ int proxy_run(proxy_t *p) {
                             hop_rounds = 0;
                             atomic_store_explicit(&p->he_reset, 1, memory_order_relaxed);
                         }
+                        atomic_store_explicit(&p->remote_dead, 1, memory_order_relaxed);
                         int rfd2 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
                         if (rfd2 >= 0) {
                             atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);
@@ -3874,6 +4007,7 @@ int proxy_run(proxy_t *p) {
                         log_info("remote silent while the tunnel is handshaking, "
                                  "triggering reconnect");
                         atomic_store_explicit(&p->he_reset, 1, memory_order_relaxed);
+                        atomic_store_explicit(&p->remote_dead, 1, memory_order_relaxed);
                         int rfd2 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
                         if (rfd2 >= 0) {
                             atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);

@@ -175,7 +175,8 @@ typedef struct {
  * counters carry over, and the server follows on that very packet the way
  * WireGuard follows a roaming peer. Whatever it had already sent to the old
  * port is not lost: a second socket on the same local port, connected to the
- * old one, keeps hearing it for ROT_GRACE_MS and the main loop forwards it.
+ * old one, keeps hearing it until ROT_GRACE_MS after the new port answered,
+ * and the main loop forwards it.
  * The new flow opens the way a fresh connection does, with junk and I1-I5.
  * Until the new port answers every packet goes out on both ports: the server
  * takes whichever copy comes first and drops the other as a replay, so the old
@@ -186,7 +187,9 @@ typedef struct {
  * than another (measured to Los Angeles), so a copy sent second on the old,
  * faster path used to win every race — the server stayed put, the new port
  * never heard back, and nearly every move fell back. A port that is dead
- * costs that lag on what the old port carries, for at most a second. No
+ * costs that lag on what the old port carries, for ROT_VERIFY_DUAL_MS: long
+ * enough for a sparse tunnel to send something the server answers, and for
+ * a far one under load to get that answer back. No
  * answer by then, or an ICMP refusal, and the socket goes back to the old
  * port, whose NAT entries are all still alive; the session keys are untouched
  * either way. Without the second socket there is no doubling and the wait is
@@ -206,9 +209,9 @@ typedef struct {
                                * this many ticks: its session is alive, so the init is
                                * a rekey, not a cold start with packets queued behind */
 #define ROT_VERIFY_MS   2000  /* the new port must answer within this */
-#define ROT_VERIFY_DUAL_MS 1000 /* ...under load, where its answer is a round trip away */
+#define ROT_VERIFY_DUAL_MS 3000 /* ...while the old port still carries everything */
 #define ROT_FORCE_S     900   /* due this long without a quiet spell: move under load */
-#define ROT_GRACE_MS    3000  /* how long the old port is still heard */
+#define ROT_GRACE_MS    3000  /* the old port is still heard this long after the new one answered */
 #define ROT_LAG_MS      50    /* the old port's copy waits this long behind the new one */
 #define ROT_LAG_N       256   /* copies waiting at once; past that they go at once */
 #define ROT_LAG_PKT     1600  /* a copy larger than this goes at once */
@@ -218,6 +221,9 @@ typedef struct {
 #define ROT_PENDING     1     /* moved, waiting for the new port to answer */
 #define ROT_PKT_USER    1     /* rot_window(): the batch carries somebody's packet */
 #define ROT_PKT_INIT    2     /* ...or a handshake init */
+
+#define STATE_EP_MAX     64          /* "port address": INET6_ADDRSTRLEN and a port fit */
+#define WARP_SAVE_GAP_MS 3600000u    /* a changed WARP endpoint goes to flash at most hourly */
 
 typedef struct {
     uint32_t t_lo, t_hi;      /* timer span, ticks; 0 = none */
@@ -326,6 +332,17 @@ typedef struct {
      * a flapping link cannot turn into a write loop on the router's flash. */
     int prefer6;
     int state_written;
+    int disk6;                       /* the preference as the file holds it */
+
+    /* Cloudflare WARP keeps a session on the port it began on: the endpoint
+     * that answered is kept through every reconnect that is not its own
+     * silence, and remembered in the state file for the next run. s2c only,
+     * like prefer6; remote_dead is the main loop's verdict on that silence. */
+    int warp;                        /* read-only once the threads run */
+    int port_keep;                   /* the port answered: the next dial keeps it */
+    _Atomic int remote_dead;         /* main: the endpoint went silent, move on */
+    char ep_disk[STATE_EP_MAX];      /* "port address" as the file holds it */
+    uint64_t ep_saved_ms;            /* last write of it, 0 = none this run */
 
     /* Happy Eyeballs: c2s keeps a copy of the first packet it sends so the
      * probe can replay it on the other family. Published by the release store
@@ -433,6 +450,7 @@ typedef struct {
     _Atomic uint32_t rot_twice;      /* packets that went out on both ports this move */
     _Atomic int rot_refused;         /* the new port answered with ICMP "unreachable" */
     _Atomic int rot_won;             /* s2c: the new port answered this move */
+    _Atomic uint32_t rot_ans_ms;     /* s2c: when it did, ms into the move; 0 = not yet */
     /* c2s only: copies for the old port waiting out ROT_LAG_MS, oldest first.
      * Allocated at the first move, so a tunnel that never moves never pays. */
     struct rot_lag {
@@ -657,11 +675,15 @@ static inline int session_follow_client(proxy_t *p, uint32_t sidx,
  * round-robin DNS; a record matches only when family and address both do. */
 int resolve_addr_check(const char *host, const struct sockaddr *cur);
 
-/* Persisted transport preference — a single byte, '6' or '4'. Anything else
- * (missing file, empty path, unreadable) reads as "no preference" = 0, which
- * keeps the stock IPv4-first Happy Eyeballs order. */
+/* Persisted state. Byte 0 is the transport preference, '6' or '4'. Anything
+ * else (missing file, empty path, unreadable) reads as "no preference" = 0,
+ * which keeps the stock IPv4-first Happy Eyeballs order. For Cloudflare WARP
+ * a second line follows: "port address", the endpoint that answered last. */
 int state_read_prefer6(const char *path);
-int state_write_prefer6(const char *path, int prefer6);
+/* That line into ep, "" when there is none. */
+void state_read_ep(const char *path, char *ep, int max);
+/* Byte 0, then the line when ep is non-empty. */
+int state_write(const char *path, int prefer6, const char *ep);
 
 /* Split "host:port" / "[v6addr]:port". A bare IPv6 literal is rejected: the
  * port is mandatory, so brackets are the only unambiguous form. */

@@ -236,6 +236,8 @@ static const char *g_dns_refresh;
 static const char *g_port_rotate;
 static const char *g_port_rotate_mb;
 static const char *g_port_rotate_soft;
+/* AWG_SERVER_PUB, when a scenario needs a particular server (WARP). */
+static const char *g_server_pub;
 
 /* Leave AWG_SRC_PORT unset so the run takes its own default. Only
  * test_default_src_port_is_ephemeral needs this; every other scenario pins the
@@ -270,7 +272,7 @@ static pid_t start_proxy_listen_remote(const char *mode, const char *listen_str,
         setenv("AWG_H2", utoa_buf(TEST_H2, h2), 1);
         setenv("AWG_H3", utoa_buf(TEST_H3, h3), 1);
         setenv("AWG_H4", utoa_buf(TEST_H4, h4), 1);
-        setenv("AWG_SERVER_PUB", DUMMY_SERVER_PUB, 1);
+        setenv("AWG_SERVER_PUB", g_server_pub ? g_server_pub : DUMMY_SERVER_PUB, 1);
         setenv("AWG_CLIENT_PUB", DUMMY_CLIENT_PUB, 1);
         setenv("AWG_LOG_LEVEL", g_log_level, 1);
         setenv("AWG_TIMEOUT", g_timeout, 1);
@@ -3283,6 +3285,156 @@ done:
 }
 
 
+/* ---- Scenario 24b: Cloudflare WARP keeps the endpoint that answered ----
+ *
+ * WARP keeps a session on the port it began on, so a working port must not be
+ * left: AWG_PORT_ROTATE is ignored, a restart starts on the endpoint the state
+ * file remembers, and only a port that went silent hands over to another one,
+ * which is then remembered in its place. */
+
+#define WARP_PUB "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+
+/* Inits from the client until one of the live server sockets answers; the
+ * others swallow theirs. Returns the index that answered, -1 on timeout. */
+static int warp_handshake(int cfd, struct sockaddr_in *pa, const int *fds,
+                          const int *live, int n, int timeout_s) {
+    uint8_t init[WG_INIT_SIZE];
+    make_wg_init(init, 0x9200);
+    int64_t end = now_us() + (int64_t)timeout_s * 1000000, next = 0;
+    int answered = -1;
+    while (now_us() < end) {
+        if (now_us() >= next) {
+            sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)pa, sizeof(*pa));
+            next = now_us() + 5000000;
+        }
+        struct pollfd pfd[8];
+        for (int i = 0; i < n; i++)
+            pfd[i] = (struct pollfd){ .fd = fds[i], .events = POLLIN };
+        pfd[n] = (struct pollfd){ .fd = cfd, .events = POLLIN };
+        if (poll(pfd, (nfds_t)n + 1, 200) <= 0) continue;
+        for (int i = 0; i < n; i++) {
+            if (!(pfd[i].revents & POLLIN)) continue;
+            uint8_t rb[2048];
+            struct sockaddr_storage from;
+            socklen_t fl = sizeof(from);
+            int m = (int)recvfrom(fds[i], rb, sizeof(rb), MSG_DONTWAIT,
+                                  (struct sockaddr *)&from, &fl);
+            uint32_t h = 0;
+            if (m == TEST_S1 + WG_INIT_SIZE) memcpy(&h, rb + TEST_S1, 4);
+            if (h == TEST_H1 && live[i]) {
+                uint8_t resp[TEST_S2 + WG_RESP_SIZE];
+                make_awg_response(resp, 0x9200);
+                sendto(fds[i], resp, sizeof(resp), 0, (struct sockaddr *)&from, fl);
+                answered = i;
+            }
+        }
+        if (pfd[n].revents & POLLIN) {
+            uint8_t rb[2048];
+            int m = (int)recvfrom(cfd, rb, sizeof(rb), MSG_DONTWAIT, NULL, NULL);
+            uint32_t t = 0;
+            if (m == WG_RESP_SIZE) memcpy(&t, rb, 4);
+            if (t == WG_HANDSHAKE_RESPONSE && answered >= 0) return answered;
+        }
+    }
+    return -1;
+}
+
+static int warp_state_has(const char *want) {
+    char *s = slurp_file(g_state_file);
+    int ok = s && strstr(s, want) != NULL;
+    free(s);
+    return ok;
+}
+
+static void test_warp_keeps_endpoint(void) {
+    enum { NP = 3, RESTARTS = 4 };
+    int ports[NP], fds[NP], live[NP] = { 1, 1, 1 };
+    char spec[96], remote_env[128], logpath[96], want[64];
+    int off = 0;
+    for (int i = 0; i < NP; i++) {
+        ports[i] = find_free_port();
+        ASSERT(ports[i] > 0);
+        fds[i] = make_udp_socket(ports[i]);
+        ASSERT(fds[i] >= 0);
+        off += snprintf(spec + off, sizeof(spec) - (size_t)off, "%s%d", i ? "," : "", ports[i]);
+    }
+    snprintf(remote_env, sizeof(remote_env), "127.0.0.1:%s", spec);
+    snprintf(logpath, sizeof(logpath), "/tmp/awg-warp-%d", (int)getpid());
+    int listen_port = find_free_port();
+    ASSERT(listen_port > 0);
+    int cfd = make_client_socket();
+    ASSERT(cfd >= 0);
+    struct sockaddr_in pa = make_addr(listen_port);
+
+    state_file_pin();
+    g_server_pub = WARP_PUB;
+    g_port_rotate = "1m";           /* asked for, and ignored */
+    g_proxy_log = logpath;
+    g_log_level = "info";
+
+    /* 1. Whichever port it drew answers, and lands in the state file. */
+    pid_t proxy = start_proxy_remote("normal", listen_port, remote_env, NULL);
+    ASSERT(proxy > 0);
+    int first = warp_handshake(cfd, &pa, fds, live, NP, 10);
+    usleep(200000);
+    stop_proxy(proxy);
+    ASSERT(first >= 0);
+    char *log = slurp_file(logpath);
+    ASSERT(log != NULL);
+    ASSERT(strstr(log, "Cloudflare WARP") != NULL);
+    ASSERT(strstr(log, "port rotation:") == NULL);
+    ASSERT(strstr(log, "WARP: remembered endpoint") != NULL);
+    free(log);
+    snprintf(want, sizeof(want), "\n%d 127.0.0.1\n", ports[first]);
+    ASSERT(warp_state_has(want));
+
+    /* 2. Every restart starts on it again, where a plain list would draw. */
+    for (int r = 0; r < RESTARTS; r++) {
+        proxy = start_proxy_remote("normal", listen_port, remote_env, NULL);
+        ASSERT(proxy > 0);
+        int got_idx = warp_handshake(cfd, &pa, fds, live, NP, 10);
+        stop_proxy(proxy);
+        ASSERT_EQ(got_idx, first);
+        log = slurp_file(logpath);
+        ASSERT(log != NULL);
+        int got[4];
+        ASSERT(log_connected_ports(log, got, 4) >= 1);
+        ASSERT_EQ(got[0], ports[first]);
+        ASSERT(strstr(log, "starting on the endpoint that answered last time") != NULL);
+        free(log);
+    }
+
+    /* 3. It goes silent: the hop moves on, and the new one is remembered. */
+    live[first] = 0;
+    proxy = start_proxy_remote("normal", listen_port, remote_env, NULL);
+    ASSERT(proxy > 0);
+    int64_t began = now_us();
+    int next = warp_handshake(cfd, &pa, fds, live, NP, 45);
+    int took = (int)((now_us() - began) / 1000000);
+    usleep(200000);
+    stop_proxy(proxy);
+    fprintf(stderr, "          (kept port %d through %d restarts; silent, moved to %d in %d s)\n",
+            ports[first], RESTARTS, next >= 0 ? ports[next] : -1, took);
+    ASSERT(next >= 0 && next != first);
+    log = slurp_file(logpath);
+    ASSERT(log != NULL);
+    ASSERT(strstr(log, "no answer on this port") != NULL);
+    ASSERT(strstr(log, "rotate:") == NULL);
+    free(log);
+    snprintf(want, sizeof(want), "\n%d 127.0.0.1\n", ports[next]);
+    ASSERT(warp_state_has(want));
+
+    g_server_pub = NULL;
+    g_port_rotate = NULL;
+    g_proxy_log = NULL;
+    g_log_level = "error";
+    state_file_unpin();
+    for (int i = 0; i < NP; i++) close(fds[i]);
+    close(cfd);
+    unlink(logpath);
+}
+
+
 /* ---- Scenario 25: port rotation (AWG_PORT_ROTATE) ----
  *
  * Once the port is due, the first batch that finds the tunnel quiet and
@@ -3490,7 +3642,7 @@ static void test_port_rotate_idle(void) {
     ASSERT(silent >= 0);
     rot_answer(fds[cur], &pxy, pl);
     ASSERT_EQ(recv_one(cfd, rb, sizeof(rb), 1000), WG_RESP_SIZE);
-    usleep(3500000);                /* past the verify window and the grace period */
+    usleep(5000000);                /* past the verify window and the grace period */
     for (int i = 0; i < NP; i++) drain_socket(fds[i]);
     sendto(cfd, init, sizeof(init), 0, (struct sockaddr *)&pa, sizeof(pa));
     ASSERT_EQ(rot_wait_init(fds, NP, -1, 3000, &from, &fl), cur);
@@ -4115,6 +4267,7 @@ int main(void) {
     RUN_TEST(server_listen6);
     RUN_TEST(default_src_port_is_ephemeral);
     RUN_TEST(port_set_hop);
+    RUN_TEST(warp_keeps_endpoint);
     RUN_TEST(port_rotate_idle);
     RUN_TEST(port_rotate_volume);
     RUN_TEST(port_rotate_soak);

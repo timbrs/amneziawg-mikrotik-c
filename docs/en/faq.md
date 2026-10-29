@@ -178,9 +178,22 @@ tunnel is unaffected. `AWG_NO_GRO=1` removes the line.
 The proxy changed the server port on the fly (`AWG_PORT_ROTATE`). It only happens when `AWG_REMOTE` names a list or a range of ports: every 30–120 minutes the port moves to another one of the list, so the tunnel does not sit on the same port for days. The link does not drop: until the new port answers, every packet goes down both. Then the log says one of two things:
 
 - `port N answered, staying (12 ms, 40 sent twice)` — the new port answered, the proxy stays on it;
-- `port N stayed silent, back to M` or `port N refused, back to M` — the new port did not answer within a second; the proxy went back to the old one and will try later. If that happens every time, the server does not take the whole range: check it with [ports.md](ports.md). If the server is a MikroTik hub, it needs awg-proxy 1.4.4 or newer.
+- `port N stayed silent, back to M` or `port N refused, back to M` — the new port did not answer within 3 seconds; the proxy went back to the old one and will try later. If that happens every time, the server does not take the whole range: check it with [ports.md](ports.md). If the server is a MikroTik hub, it needs awg-proxy 1.4.4 or newer.
 
-To switch it off: `AWG_PORT_ROTATE=0`. For Cloudflare WARP the configurator switches it off by itself: Cloudflare keeps a session on the port it started on.
+To switch it off: `AWG_PORT_ROTATE=0`. Cloudflare WARP never moves: Cloudflare keeps a session on the port it started on, and the proxy recognises WARP by its server key on its own (since 1.4.5; before that only the configurator switched it off).
+
+### Can the proxy take several WARP addresses?
+
+Yes, since 1.4.5. A scanner (for example, [warpscout](https://github.com/niklzz/warpscout-tg)) finds Cloudflare addresses and ports that work. List the ports in `AWG_REMOTE`, comma-separated, and tie the addresses to the name in `AWG_REMOTE` in one of two ways:
+
+- **the container's `hosts` field** (WinBox: Container → the container → Hosts) -- a line per address: `engage.cloudflareclient.com` = `162.159.192.50`, and so on. It affects this container only;
+- **static DNS records on the router**, when the container takes its DNS from the router (the container's DNS field = the router's address on its veth, port 53 open to the container):
+  ```
+  /ip dns static add name=engage.cloudflareclient.com type=A address=162.159.192.50
+  /ip dns static add name=engage.cloudflareclient.com type=A address=188.114.96.203
+  ```
+
+If that name is needed elsewhere, make up your own (`my.warp.lan`) and put it into `AWG_REMOTE`. The proxy starts on the first address and a random port, holds on to the one that answered and remembers it in the state file. Should it go silent, 15 seconds later the proxy tries the next address and another port. With WARP the port never moves mid-session: Cloudflare keeps a session on the port it began on.
 
 ### How do I see which version is installed?
 

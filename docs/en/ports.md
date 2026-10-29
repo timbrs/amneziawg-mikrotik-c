@@ -131,7 +131,7 @@ iptables -t nat -I PREROUTING 1 -m addrtype --dst-type LOCAL -j AWG_PORTS
 
 ## Good to know
 
-- **Cloudflare WARP** already takes WireGuard on ports 2408, 500, 1701 and 4500, and the configurator fills them in by itself. Moving between them mid-session does not work: Cloudflare keeps a session on the port it began on, so for WARP the configurator switches `AWG_PORT_ROTATE` off. A random port for every connection stays.
+- **Cloudflare WARP** already takes WireGuard on ports 2408, 500, 1701 and 4500, and the configurator fills them in by itself. Moving between them mid-session does not work: Cloudflare keeps a session on the port it began on, so the proxy recognises WARP by its server key and holds on to the port that answered, trying another only once it goes silent. Several WARP addresses -- in the [FAQ](faq.md#can-the-proxy-take-several-warp-addresses).
 - **Ports below 10000 and the kernel's ephemeral range** (usually from 32768) are left alone: services need the former, and the kernel hands the latter to the server's own outgoing connections.
 - **IPv6.** When the server has a public IPv6 address and the AmneziaWG server runs on the host itself, the script puts the same rules into `ip6tables` too. For a server in Docker — IPv4 only.
 - **Removal**: `sudo awg-ports --remove` — the rules, the service and the settings go, and the server listens on its own port only again. Then drop the range from `AWG_REMOTE` on the router, or the proxy will keep landing on silent ports.
