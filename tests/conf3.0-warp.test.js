@@ -268,10 +268,23 @@ w.clearAll();
 w.document.getElementById('conf-input').value = warp();
 w.document.getElementById('warp-ports-enable').checked = false;
 w.generate();
-eq('unticked, the endpoint stays as written',
-   remoteEnv(w.document.getElementById('output').dataset.plain || ''), '162.159.192.1:2408');
+const unticked = w.document.getElementById('output').dataset.plain || '';
+eq('unticked, the endpoint stays as written', remoteEnv(unticked), '162.159.192.1:2408');
 const otherText = plainText.replace(CF_PUB, 'B'.repeat(43) + '=').replace('162.159.192.1:2408', '198.51.100.7:51820');
 eq('another server gets no WARP ports', remoteEnv(generate(otherText).out), '198.51.100.7:51820');
+
+/* Cloudflare keeps a WARP session on its port: a move to another port of the
+ * list mid-session only ever falls back. A WARP port list therefore comes with
+ * the proxy's port rotation off; nothing else touches the setting. */
+function rotateEnv(script) {
+    const m = /key=AWG_PORT_ROTATE value="([^"]*)"/.exec(script);
+    return m ? m[1] : null;
+}
+eq('a WARP port list switches port rotation off', rotateEnv(gp.out), '0');
+eq('a single WARP port leaves rotation alone', rotateEnv(unticked), null);
+eq('an AllowedPorts band keeps rotation',
+   rotateEnv(generate(warp().replace('AllowedIPs', '# AllowedPorts = 500-510' + NL + 'AllowedIPs')).out), null);
+eq('another server keeps rotation', rotateEnv(generate(otherText).out), null);
 
 /* ---- the short form for WARP ----------------------------------------------
  * Pasting a WARP config hides the rows it does not need, keeps the DNS field

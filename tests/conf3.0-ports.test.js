@@ -156,5 +156,70 @@ ok('standalone exports the band too',
    standalone.indexOf('export AWG_REMOTE=\\"198.51.100.1:' + BAND + '\\"') >= 0,
    standalone.split(NL).filter(l => l.indexOf('AWG_REMOTE') >= 0).join(' | '));
 
+/* ---- the "server takes several ports" box ---------------------------------
+ * The band can come from the .conf comment or be typed in. A comment ticks the
+ * box and fills it in by itself; what the person typed is never overwritten by
+ * a later paste; unticking means no band, whatever the .conf says. */
+const doc = w.document;
+const box = doc.getElementById('ports-enable');
+const field = doc.getElementById('ports-spec');
+const panel = doc.getElementById('ports-panel');
+function generateNow() {
+    doc.getElementById('errors-container').innerHTML = '';
+    doc.getElementById('output').dataset.plain = '';
+    w.generate();
+    return { out: doc.getElementById('output').dataset.plain || '',
+             err: doc.getElementById('errors-container').textContent.trim() };
+}
+
+w.clearAll();
+ok('starts unticked and folded', !box.checked && panel.style.display === 'none');
+paste(conf('198.51.100.1:443', BAND));
+ok('a .conf band ticks the box', box.checked && panel.style.display === 'block');
+eq('and fills it in', field.value, BAND);
+paste(conf('198.51.100.1:443', null));
+ok('a .conf without one takes it back', !box.checked && field.value === '');
+
+w.clearAll();
+paste(conf('198.51.100.1:443', null));
+box.checked = true; w.onPortsToggle();
+field.value = '30000-30999'; w.portsTyped();
+eq('a typed band reaches AWG_REMOTE', remoteEnv(generateNow().out), '198.51.100.1:30000-30999');
+paste(conf('198.51.100.1:443', BAND));
+eq('a later paste leaves the typed band alone', field.value, '30000-30999');
+eq('and it still wins', remoteEnv(generateNow().out), '198.51.100.1:30000-30999');
+
+box.checked = false; w.onPortsToggle();
+eq('unticked: no band, even with one in the .conf', remoteEnv(generateNow().out), '198.51.100.1:443');
+
+box.checked = true; w.onPortsToggle();
+field.value = '30000 - 30999'; w.portsTyped();
+const bad = generateNow();
+ok('a band the proxy cannot read is refused', bad.err.length > 0 && bad.out === '', bad.err);
+ok('and the field is flagged', field.classList.contains('field-invalid') &&
+   doc.getElementById('ports-spec-error').style.display !== 'none');
+field.value = ''; w.portsTyped();
+ok('ticked and empty is refused too', generateNow().err.length > 0);
+
+// With an AmneziaWG config pasted, the WARP mode would switch itself back.
+doc.getElementById('conf-input').value = '';
+function shownIn(mode) {
+    doc.querySelector('input[name="deploy-mode"][value="' + mode + '"]').checked = true;
+    w.onModeChange();
+    return doc.getElementById('ports-row').style.display !== 'none';
+}
+ok('offered for a container install', shownIn('container'));
+ok('and for a proxy on a device of its own', shownIn('standalone'));
+ok('not in WARP mode: Cloudflare has its own list', !shownIn('warp'));
+ok('not for site-to-site', !shownIn('site-to-site'));
+ok('not for the hub', !shownIn('server'));
+shownIn('container');
+
+const cmd = panel.querySelector('pre').textContent;
+const m = /raw\.githubusercontent\.com\/timbrs\/amneziawg-mikrotik-c\/main\/(\S+) \| sudo bash$/.exec(cmd);
+ok('the server command fetches a script that exists here', !!m && fs.existsSync(path.join(__dirname, '..', m[1])), cmd);
+ok('every line is translated', ['portsLabel', 'portsHint', 'portsHowTo', 'portsMore', 'errPortsInvalid']
+   .every(function (k) { return w.I18N.en[k] && w.I18N.ru[k] && w.I18N.en[k] !== w.I18N.ru[k]; }));
+
 console.log(NL + passes + '/' + (passes + fails) + ' checks passed' + (fails ? ', ' + fails + ' FAILED' : ''));
 process.exit(fails ? 1 : 0);

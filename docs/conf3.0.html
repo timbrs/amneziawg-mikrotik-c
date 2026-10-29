@@ -22,6 +22,10 @@
             --text-muted: #6b7280;
             --accent: #4f46e5;
             --accent-hover: #4338ca;
+            --prep-bg: #fef3c7;
+            --prep-bg-hover: #fde68a;
+            --prep-border: #f59e0b;
+            --prep-text: #78350f;
             --success: #059669;
             --success-bg: #ecfdf5;
             --error: #dc2626;
@@ -604,6 +608,10 @@
                 --text-muted: #888888;
                 --accent: #f97316;
                 --accent-hover: #ea580c;
+                --prep-bg: #3b2f05;
+                --prep-bg-hover: #4d3d06;
+                --prep-border: #facc15;
+                --prep-text: #fde68a;
                 --success: #22c55e;
                 --success-bg: #14532d;
                 --error: #f87171;
@@ -725,6 +733,69 @@
             border-radius: 4px;
             padding: 1px 5px;
         }
+        /* "First, prepare the router": folded by default, but loud enough that
+           nobody mistakes it for a heading. */
+        details.prep-card {
+            padding: 0;
+            border: 2px solid var(--prep-border);
+            background: var(--prep-bg);
+            overflow: hidden;
+        }
+        details.prep-card > summary {
+            list-style: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px 20px;
+            color: var(--prep-text);
+            user-select: none;
+        }
+        details.prep-card > summary::-webkit-details-marker { display: none; }
+        details.prep-card > summary:hover { background: var(--prep-bg-hover); }
+        details.prep-card > summary:focus-visible { outline: 2px solid var(--prep-border); outline-offset: -4px; }
+        .prep-chev {
+            flex: none;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--prep-border);
+            color: #1f1300;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            transition: transform 0.15s;
+        }
+        details.prep-card[open] .prep-chev { transform: rotate(90deg); }
+        .prep-head { display: block; font-size: 1.02rem; font-weight: 700; }
+        .prep-tap { display: block; font-size: 0.82rem; margin-top: 2px; opacity: 0.85; }
+        details.prep-card[open] .prep-tap { display: none; }
+        .prep-body { padding: 4px 20px 18px; border-top: 1px solid var(--prep-border); background: var(--surface); }
+        .prep-ways { margin: 6px 0 0 18px; padding: 0; }
+        .prep-ways li { margin-bottom: 6px; }
+        .prep-steps { margin: 12px 0 10px 20px; padding: 0; font-size: 0.86rem; line-height: 1.55; }
+        .prep-steps li { margin-bottom: 8px; }
+        .prep-steps code, #prep-card .hint code {
+            font-family: var(--mono);
+            font-size: 0.78rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 1px 5px;
+        }
+        pre.prep-cmd {
+            font-family: var(--mono);
+            font-size: 0.78rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            margin: 6px 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            user-select: all;
+        }
     </style>
 </head>
 <body>
@@ -744,6 +815,41 @@
             <button id="lang-toggle" onclick="setLang(currentLang==='ru'?'en':'ru')">EN</button>
         </div>
     </header>
+
+    <details class="card prep-card" id="prep-card">
+        <summary><span class="prep-chev" aria-hidden="true">&#9654;</span>
+            <span><span class="prep-head" data-i18n="prepTitle">First, prepare the router</span>
+            <span class="prep-tap" data-i18n="prepTap">Click to open: the container package, device-mode and how to check them</span></span></summary>
+        <div class="prep-body">
+        <p style="font-size:0.86rem;margin:12px 0 0;line-height:1.5" data-i18n="prepLead">Without these three steps the commands below will not run. Each one is done once.</p>
+        <ol class="prep-steps">
+            <li><b data-i18n="prepArchT">The router fits.</b>
+                <span data-i18n="prepArch">An ARM, ARM64 or x86 CPU and RouterOS 7.4 or newer. In the terminal:</span>
+                <code>/system/resource/print</code>
+                <span data-i18n="prepArch2">&mdash; architecture-name must say arm64, arm or x86_64. MIPS (hEX, hEX S, hAP ac lite, hAP lite) will not do: MikroTik makes no container package for it.</span></li>
+            <li><b data-i18n="prepPkgT">The container package is installed.</b>
+                <span data-i18n="prepPkg">Check:</span> <code>/system/package/print</code>
+                <span data-i18n="prepPkg2">must list container. If it does not, install it one of these ways:</span>
+                <ul class="prep-ways">
+                    <li><b data-i18n="prepPkgWinboxT">WinBox, RouterOS 7.18 or newer.</b>
+                        <span data-i18n="prepPkgWinbox">System &rarr; Packages &rarr; Check For Updates. container shows up in the list: select it, press Enable, then Apply Changes. The router downloads the package and reboots.</span></li>
+                    <li><b data-i18n="prepPkgCliT">The same in the terminal:</b>
+                        <pre class="prep-cmd">/system/package/update/check-for-updates
+/system/package/enable container
+/system/package/apply-changes</pre></li>
+                    <li><b data-i18n="prepPkgOldT">RouterOS older than 7.18.</b>
+                        <span data-i18n="prepPkgOld">Download the Extra packages for your architecture and exactly your RouterOS version from</span>
+                        <a href="https://mikrotik.com/download" target="_blank" rel="noopener">mikrotik.com/download</a><span data-i18n="prepPkg3">, drag container-….npk from the archive into the Files window of WinBox and reboot the router.</span></li>
+                </ul></li>
+            <li><b data-i18n="prepModeT">Containers are allowed in device mode.</b>
+                <span data-i18n="prepMode">Run:</span>
+                <pre class="prep-cmd">/system/device-mode/update container=yes fetch=yes bandwidth-test=yes scheduler=yes</pre>
+                <span data-i18n="prepMode2">Then, within 5 minutes, press a button on the router (Reset or Mode) or power it off and on: that is how RouterOS makes sure you are next to it. Check:</span>
+                <code>/system/device-mode/print</code> <span data-i18n="prepMode3">shows yes everywhere.</span></li>
+        </ol>
+        <div class="hint" data-i18n="prepDone">All three done? Paste the .conf below. After Generate, the "Router check" block prints a script that looks at the router and says what is still missing.</div>
+        </div>
+    </details>
 
     <div class="card">
         <div class="card-title" data-i18n="confTitle">AmneziaWG Configuration File</div>
@@ -786,6 +892,20 @@
             <div class="hint"><span data-i18n="warpPortsNote">Cloudflare takes WARP on several ports, so the proxy gets them all: a port is picked at random for each connection, and one that does not answer is left after about 15 s. Ports:</span>
                 <span id="warp-ports-list"></span></div>
             <button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px" id="warp-adv-toggle" onclick="toggleWarpAdvanced()" data-i18n="warpShowAll">Show all settings</button>
+        </div>
+        <div id="ports-row" style="margin-top:10px">
+            <label><input type="checkbox" id="ports-enable" onchange="onPortsToggle()">
+            <span data-i18n="portsLabel">The server takes AmneziaWG on several ports</span></label>
+            <div id="ports-panel" style="display:none;margin-top:6px">
+                <input type="text" id="ports-spec" placeholder="20113-30112" oninput="portsTyped()">
+                <div id="ports-spec-error" class="field-error" role="alert" style="display:none"></div>
+                <div class="hint" data-i18n="portsHint">The ports and ranges the server takes, separated by commas, up to 32 pieces. The proxy draws one at random for every connection and leaves one that does not answer in about 15 s.</div>
+                <div class="hint" style="margin-top:6px"><span data-i18n="portsHowTo">Not set up on the server yet? Run this on the server: it finds AmneziaWG, picks free ports, keeps them over a reboot and prints the range to paste here.</span>
+                    <pre class="prep-cmd">curl -fsSL https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/scripts/awg-ports.sh | sudo bash</pre>
+                    <span data-i18n="portsMore">How it works and how to do it by hand:</span>
+                    <a href="https://github.com/timbrs/amneziawg-mikrotik-c/blob/main/docs/ports.md" target="_blank" rel="noopener">docs/ports.md</a> &middot;
+                    <a href="https://github.com/timbrs/amneziawg-mikrotik-c/blob/main/docs/en/ports.md" target="_blank" rel="noopener">English</a></div>
+            </div>
         </div>
         <details class="promo">
             <summary class="promo-title" data-i18n="promoTitle">VPS без ограничений по трафику</summary>
@@ -1018,6 +1138,12 @@
                 <div>
                     <label for="srv-awg-port" data-i18n="srvAwgPort">Server AWG port (public)</label>
                     <input type="text" id="srv-awg-port">
+                </div>
+                <div>
+                    <label for="srv-awg-band" data-i18n="srvAwgBand">More server ports (optional)</label>
+                    <input type="text" id="srv-awg-band" placeholder="30000-30999" oninput="clearFieldFlag('srv-awg-band', 'srv-awg-band-error')">
+                    <div id="srv-awg-band-error" class="field-error" role="alert" style="display:none"></div>
+                    <div class="hint" data-i18n="srvAwgBandHint">Ports and ranges separated by commas, e.g. 30000-30999. The hub forwards them all to the main port; client routers draw one at random for every connection and move to another every 30-120 minutes. Empty: the main port only.</div>
                 </div>
                 <div>
                     <label for="srv-tunnel-subnet" data-i18n="srvTunnelSubnet">Tunnel subnet (/24)</label>
@@ -1264,10 +1390,15 @@
             warpQuicHint: 'This is a Cloudflare WARP config. The packet sent before each handshake can be made to look like an ordinary Chrome QUIC connection to Cloudflare, so the traffic stands out less. The button puts that packet into the config as I1 and sets Jc = 0, so nothing else goes in front of it. Cloudflare ignores it, like any junk packet.',
             warpQuicOn: 'The packet before each handshake looks like an ordinary Chrome QUIC connection to Cloudflare (I1).',
             warpQuicPort: 'Ordinary QUIC goes to UDP port 443, while Cloudflare takes WireGuard on 2408, 500, 1701 and 4500: the packet looks like QUIC by its header, not by its port.',
-            warpPortsNote: 'Cloudflare takes WARP on several ports, so the proxy gets them all: a port is picked at random for each connection, and one that does not answer is left after about 15 s. Ports:',
+            warpPortsNote: 'Cloudflare takes WARP on several ports, so the proxy gets them all: a port is picked at random for each connection, and one that does not answer is left after about 15 s. Changing the port in the middle of a session is switched off for WARP: Cloudflare keeps the session on its port. Ports:',
             btnWarpQuic: 'Make the packet before the handshake look like Chrome QUIC (I1, Jc = 0)',
             warpSimpleNote: 'Only what WARP needs is asked here; everything else keeps its defaults.',
             warpPortsLabel: 'Random WARP port',
+            portsLabel: 'The server takes AmneziaWG on several ports',
+            portsHint: 'The ports and ranges the server takes, separated by commas, up to 32 pieces. The proxy draws one at random for every connection and leaves one that does not answer in about 15 s.',
+            portsHowTo: 'Not set up on the server yet? Run this on the server: it finds AmneziaWG, picks free ports, keeps them over a reboot and prints the range to paste here.',
+            portsMore: 'How it works and how to do it by hand:',
+            errPortsInvalid: 'Server ports: give ports and ranges separated by commas, no spaces, up to 32 pieces, e.g. 20113-30112 or 443,8443,20000-29999.',
             warpShowAll: 'Show all settings',
             warpHideAll: 'Hide extra settings',
             modeWarp: 'No AmneziaVPN — Cloudflare WARP',
@@ -1297,6 +1428,26 @@
             title: 'AWG Proxy 3.0 \u2014 MikroTik Offline Command Generator',
             subtitle: 'Paste an AmneziaWG .conf (1.0 through 3.0) to generate ready-to-use MikroTik RouterOS commands',
             privacy: 'All configuration and data is processed locally in your browser. Nothing is transmitted anywhere. Your private keys are safe.',
+            prepTitle: 'First, prepare the router',
+            prepTap: 'Click to open: the container package, device-mode and how to check them',
+            prepLead: 'Without these three steps the commands below will not run. Each one is done once.',
+            prepArchT: 'The router fits.',
+            prepArch: 'An ARM, ARM64 or x86 CPU and RouterOS 7.4 or newer. In the terminal:',
+            prepArch2: '\u2014 architecture-name must say arm64, arm or x86_64. MIPS (hEX, hEX S, hAP ac lite, hAP lite) will not do: MikroTik makes no container package for it.',
+            prepPkgT: 'The container package is installed.',
+            prepPkg: 'Check:',
+            prepPkg2: 'must list container. If it does not, install it one of these ways:',
+            prepPkgWinboxT: 'WinBox, RouterOS 7.18 or newer.',
+            prepPkgWinbox: 'System \u2192 Packages \u2192 Check For Updates. container shows up in the list: select it, press Enable, then Apply Changes. The router downloads the package and reboots.',
+            prepPkgCliT: 'The same in the terminal:',
+            prepPkgOldT: 'RouterOS older than 7.18.',
+            prepPkgOld: 'Download the Extra packages for your architecture and exactly your RouterOS version from',
+            prepPkg3: ', drag container-\u2026.npk from the archive into the Files window of WinBox and reboot the router.',
+            prepModeT: 'Containers are allowed in device mode.',
+            prepMode: 'Run:',
+            prepMode2: 'Then, within 5 minutes, press a button on the router (Reset or Mode) or power it off and on: that is how RouterOS makes sure you are next to it. Check:',
+            prepMode3: 'shows yes everywhere.',
+            prepDone: 'All three done? Paste the .conf below. After Generate, the \u201cRouter check\u201d block prints a script that looks at the router and says what is still missing.',
             confTitle: 'AmneziaWG Configuration File',
             confLabel: '.conf file contents',
             modeLabel: 'Deployment mode',
@@ -1412,6 +1563,9 @@
             modeServerHint: 'Star topology: one MikroTik as central hub, multiple client MikroTiks connect to it via AmneziaWG. Use cases: connecting offices, homes, or remote sites into a single network. WG keys and AWG params are generated automatically. New server installs now set AWG_CLIENT_PUBS to the real direct client keys, while AWG_CLIENT_PUB stays as a legacy fallback for proxy-only clients. You will receive a shareable link to easily generate configs for new clients in the future.',
             srvEndpoint: 'Server public IP or domain',
             srvAwgPort: 'Server AWG port (public)',
+            srvAwgBand: 'More server ports (optional)',
+            srvAwgBandHint: 'Ports and ranges separated by commas, e.g. 30000-30999. The hub forwards them all to the main port; client routers draw one at random for every connection and move to another every 30\u2013120 minutes. Empty: the main port only.',
+            errSrvBand: 'More server ports: ports and ranges separated by commas, no spaces, up to 8 pieces, e.g. 30000-30999 or 443,8443,30000-30999.',
             srvTunnelSubnet: 'Tunnel subnet (/24)',
             srvDns: 'DNS server (required if endpoint is a domain, not IP)',
             srvStorageServer: 'Server storage',
@@ -1515,10 +1669,15 @@
             warpQuicHint: 'Это конфиг Cloudflare WARP. Пакет перед каждым рукопожатием можно сделать похожим на обычное QUIC-соединение Chrome с Cloudflare, чтобы трафик меньше выделялся. Кнопка запишет такой пакет в конфиг как I1 и поставит Jc = 0, чтобы перед ним больше ничего не шло. Cloudflare его игнорирует, как любой junk-пакет.',
             warpQuicOn: 'Пакет перед каждым рукопожатием похож на обычное QUIC-соединение Chrome с Cloudflare (I1).',
             warpQuicPort: 'Обычный QUIC идёт на UDP-порт 443, а WireGuard Cloudflare принимает на 2408, 500, 1701 и 4500: по заголовку пакет похож на QUIC, по порту — нет.',
-            warpPortsNote: 'Cloudflare принимает WARP на нескольких портах, поэтому прокси получает их все: порт выбирается случайно при каждом подключении, а неотвечающий бросается примерно через 15 с. Порты:',
+            warpPortsNote: 'Cloudflare принимает WARP на нескольких портах, поэтому прокси получает их все: порт выбирается случайно при каждом подключении, а неотвечающий бросается примерно через 15 с. Смена порта посреди сессии для WARP выключена: Cloudflare держит сессию на её порту. Порты:',
             btnWarpQuic: 'Сделать пакет перед рукопожатием похожим на QUIC Chrome (I1, Jc = 0)',
             warpSimpleNote: 'Здесь спрашивается только то, что нужно WARP, остальное остаётся по умолчанию.',
             warpPortsLabel: 'Случайный порт WARP',
+            portsLabel: 'Сервер принимает AmneziaWG на нескольких портах',
+            portsHint: 'Порты и диапазоны, которые принимает сервер, через запятую, до 32 кусков. Прокси берёт случайный при каждом подключении и уходит с неотвечающего примерно через 15 с.',
+            portsHowTo: 'На сервере ещё не настроено? Выполните на сервере: скрипт найдёт AmneziaWG, подберёт свободные порты, сохранит их на перезагрузку и напечатает диапазон, который нужно вставить сюда.',
+            portsMore: 'Как это устроено и как сделать вручную:',
+            errPortsInvalid: 'Порты сервера: перечислите порты и диапазоны через запятую, без пробелов, до 32 кусков, например 20113-30112 или 443,8443,20000-29999.',
             warpShowAll: 'Показать все настройки',
             warpHideAll: 'Скрыть лишние настройки',
             modeWarp: 'Нет AmneziaVPN — Cloudflare WARP',
@@ -1548,6 +1707,26 @@
             title: 'AWG Proxy 3.0 \u2014 \u041e\u0444\u043b\u0430\u0439\u043d-\u0433\u0435\u043d\u0435\u0440\u0430\u0442\u043e\u0440 \u043a\u043e\u043c\u0430\u043d\u0434 MikroTik',
             subtitle: 'Вставьте .conf AmneziaWG (от 1.0 до 3.0) для генерации команд MikroTik RouterOS',
             privacy: '\u0412\u0441\u044f \u043a\u043e\u043d\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044f \u0438 \u0434\u0430\u043d\u043d\u044b\u0435 \u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u044e\u0442\u0441\u044f \u043b\u043e\u043a\u0430\u043b\u044c\u043d\u043e \u0432 \u0432\u0430\u0448\u0435\u043c \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435. \u041d\u0438\u0447\u0435\u0433\u043e \u043d\u0438\u043a\u0443\u0434\u0430 \u043d\u0435 \u043f\u0435\u0440\u0435\u0434\u0430\u0451\u0442\u0441\u044f. \u0412\u0430\u0448\u0438 \u043f\u0440\u0438\u0432\u0430\u0442\u043d\u044b\u0435 \u043a\u043b\u044e\u0447\u0438 \u0432 \u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e\u0441\u0442\u0438.',
+            prepTitle: 'Сначала подготовьте роутер',
+            prepTap: 'Нажмите, чтобы раскрыть: пакет container, device-mode и как их проверить',
+            prepLead: 'Без этих трёх шагов команды ниже не заработают. Каждый делается один раз.',
+            prepArchT: 'Роутер подходит.',
+            prepArch: 'Процессор ARM, ARM64 или x86 и RouterOS 7.4 или новее. В терминале:',
+            prepArch2: '\u2014 в architecture-name должно быть arm64, arm или x86_64. MIPS (hEX, hEX S, hAP ac lite, hAP lite) не подойдёт: MikroTik не делает для него пакет контейнеров.',
+            prepPkgT: 'Стоит пакет container.',
+            prepPkg: 'Проверить:',
+            prepPkg2: '\u2014 в списке должен быть container. Если его нет, поставьте одним из способов:',
+            prepPkgWinboxT: 'WinBox, RouterOS 7.18 и новее.',
+            prepPkgWinbox: 'System \u2192 Packages \u2192 Check For Updates. В списке появится container: выделите его, нажмите Enable, затем Apply Changes. Роутер скачает пакет и перезагрузится.',
+            prepPkgCliT: 'То же в терминале:',
+            prepPkgOldT: 'RouterOS старше 7.18.',
+            prepPkgOld: 'Скачайте Extra packages для своей архитектуры и точно своей версии RouterOS с',
+            prepPkg3: ', перетащите container-\u2026.npk из архива в окно Files в WinBox и перезагрузите роутер.',
+            prepModeT: 'Контейнеры разрешены в режиме устройства.',
+            prepMode: 'Выполните:',
+            prepMode2: 'Затем в течение 5 минут нажмите кнопку на роутере (Reset или Mode) или выключите и включите питание: так RouterOS убеждается, что вы рядом. Проверить:',
+            prepMode3: '\u2014 везде должно быть yes.',
+            prepDone: 'Все три шага сделаны? Вставьте .conf ниже. После \u00ab\u0421\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c\u00bb блок \u00ab\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0430\u00bb выдаст скрипт, который посмотрит роутер и скажет, чего ещё не хватает.',
             confTitle: '\u041a\u043e\u043d\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u043e\u043d\u043d\u044b\u0439 \u0444\u0430\u0439\u043b AmneziaWG',
             confLabel: '\u0421\u043e\u0434\u0435\u0440\u0436\u0438\u043c\u043e\u0435 .conf \u0444\u0430\u0439\u043b\u0430',
             modeLabel: '\u0420\u0435\u0436\u0438\u043c \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438',
@@ -1660,6 +1839,9 @@
             modeServerHint: '\u0422\u043e\u043f\u043e\u043b\u043e\u0433\u0438\u044f \u0437\u0432\u0435\u0437\u0434\u0430: \u043e\u0434\u0438\u043d MikroTik \u043a\u0430\u043a \u0446\u0435\u043d\u0442\u0440\u0430\u043b\u044c\u043d\u044b\u0439 \u0443\u0437\u0435\u043b, \u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043a\u043b\u0438\u0435\u043d\u0442\u0441\u043a\u0438\u0445 MikroTik \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0430\u044e\u0442\u0441\u044f \u043a \u043d\u0435\u043c\u0443 \u0447\u0435\u0440\u0435\u0437 AmneziaWG. \u041f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u0438\u0435: \u043e\u0431\u044a\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u0435 \u043e\u0444\u0438\u0441\u043e\u0432, \u043a\u0432\u0430\u0440\u0442\u0438\u0440, \u0443\u0434\u0430\u043b\u0451\u043d\u043d\u044b\u0445 \u0442\u043e\u0447\u0435\u043a \u0432 \u0435\u0434\u0438\u043d\u0443\u044e \u0441\u0435\u0442\u044c. WG-\u043a\u043b\u044e\u0447\u0438 \u0438 AWG-\u043f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b \u0433\u0435\u043d\u0435\u0440\u0438\u0440\u0443\u044e\u0442\u0441\u044f \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438. \u041d\u043e\u0432\u044b\u0435 \u0441\u0435\u0440\u0432\u0435\u0440\u043d\u044b\u0435 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438 \u0442\u0435\u043f\u0435\u0440\u044c \u0437\u0430\u0434\u0430\u044e\u0442 AWG_CLIENT_PUBS \u0441 \u0440\u0435\u0430\u043b\u044c\u043d\u044b\u043c\u0438 \u043a\u043b\u044e\u0447\u0430\u043c\u0438 \u043f\u0440\u044f\u043c\u044b\u0445 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432 AmneziaWG, \u0430 AWG_CLIENT_PUB \u043e\u0441\u0442\u0430\u0451\u0442\u0441\u044f \u043b\u0435\u0433\u0430\u0441\u0438-fallback \u0434\u043b\u044f proxy-only \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432. \u0412\u044b \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0435 \u0441\u0441\u044b\u043b\u043a\u0443 \u0434\u043b\u044f \u0431\u044b\u0441\u0442\u0440\u043e\u0433\u043e \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0438\u044f \u043d\u043e\u0432\u044b\u0445 \u043a\u043b\u0438\u0435\u043d\u0442\u043e\u0432 \u0432 \u0431\u0443\u0434\u0443\u0449\u0435\u043c.',
             srvEndpoint: '\u041f\u0443\u0431\u043b\u0438\u0447\u043d\u044b\u0439 IP \u0438\u043b\u0438 \u0434\u043e\u043c\u0435\u043d \u0441\u0435\u0440\u0432\u0435\u0440\u0430',
             srvAwgPort: 'AWG-\u043f\u043e\u0440\u0442 \u0441\u0435\u0440\u0432\u0435\u0440\u0430 (\u043f\u0443\u0431\u043b\u0438\u0447\u043d\u044b\u0439)',
+            srvAwgBand: 'Ещё порты сервера (необязательно)',
+            srvAwgBandHint: 'Порты и диапазоны через запятую, например 30000-30999. Хаб перенаправит их все на основной порт, а клиентские роутеры будут брать случайный при каждом подключении и менять его раз в 30\u2013120 минут. Пусто \u2014 только основной порт.',
+            errSrvBand: 'Ещё порты сервера: перечислите порты и диапазоны через запятую, без пробелов, до 8 кусков, например 30000-30999 или 443,8443,30000-30999.',
             srvTunnelSubnet: '\u041f\u043e\u0434\u0441\u0435\u0442\u044c \u0442\u0443\u043d\u043d\u0435\u043b\u044f (/24)',
             srvDns: 'DNS-\u0441\u0435\u0440\u0432\u0435\u0440 (\u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u0435\u043d, \u0435\u0441\u043b\u0438 \u0432 endpoint \u0443\u043a\u0430\u0437\u0430\u043d \u0434\u043e\u043c\u0435\u043d, \u0430 \u043d\u0435 IP)',
             srvStorageServer: '\u0425\u0440\u0430\u043d\u0438\u043b\u0438\u0449\u0435 \u0441\u0435\u0440\u0432\u0435\u0440\u0430',
@@ -2128,7 +2310,7 @@
     // excludes the server from the tunnel, the AAAA probe — keeps reading
     // Endpoint, which stays an ordinary host:port.
     function remoteEndpoint(parsed) {
-        var spec = parsed.allowedPorts || warpPortSpec(parsed);
+        var spec = bandSpec(parsed) || warpPortSpec(parsed);
         return (spec && isValidPortSpec(spec))
             ? endpointWithPorts(parsed.peer.Endpoint, spec)
             : parsed.peer.Endpoint;
@@ -2257,6 +2439,59 @@
         return warpPorts(parsed).join(',');
     }
 
+    // Cloudflare keeps a WARP session on the port it was made on: another port
+    // of the list stays silent to it until a fresh handshake there (tried on
+    // live WARP, 27.10.2026). The proxy's port rotation mid-session would only
+    // ever fall back, so a WARP port list comes with it switched off; the
+    // random port for each connection stays.
+    function warpNoRotate(parsed) {
+        return !bandSpec(parsed) && !!warpPortSpec(parsed);
+    }
+
+    // "The server takes AmneziaWG on several ports". A .conf that carries the
+    // band as "# AllowedPorts = ..." ticks the box and fills it in by itself;
+    // what the person typed is theirs, and a later paste leaves it alone.
+    var portsFromConf = '';
+    function onPortsToggle() {
+        var on = document.getElementById('ports-enable').checked;
+        document.getElementById('ports-panel').style.display = on ? 'block' : 'none';
+        clearFieldFlag('ports-spec', 'ports-spec-error');
+    }
+    function portsTyped() {
+        portsFromConf = '';
+        clearFieldFlag('ports-spec', 'ports-spec-error');
+    }
+    function syncPortsFromConf(text) {
+        var m = /^\s*[#;]\s*AllowedPorts\s*=\s*(.+?)\s*$/im.exec(text);
+        var spec = m ? m[1] : '';
+        var field = document.getElementById('ports-spec');
+        var box = document.getElementById('ports-enable');
+        var typed = field.value.trim();
+        if (typed && typed !== portsFromConf) return;
+        if (spec && isValidPortSpec(spec)) {
+            field.value = spec;
+            box.checked = true;
+            portsFromConf = spec;
+        } else if (portsFromConf) {
+            field.value = '';
+            box.checked = false;
+            portsFromConf = '';
+        }
+        onPortsToggle();
+    }
+    // The band AWG_REMOTE gets. Ticked: what the field says. Unticked with a
+    // band in the field: none, on purpose. Never touched: the .conf's own
+    // comment still counts, and in the WARP mode only that does.
+    function bandBoxOn() {
+        return deployChoice() !== 'warp' && document.getElementById('ports-enable').checked;
+    }
+    function bandSpec(parsed) {
+        if (deployChoice() === 'warp') return parsed.allowedPorts || '';
+        var val = document.getElementById('ports-spec').value.trim();
+        if (bandBoxOn()) return val;
+        return val ? '' : (parsed.allowedPorts || '');
+    }
+
     var warpShowAll = false;
 
     // The WARP mode is the short form: the advanced rows step aside with their
@@ -2276,6 +2511,8 @@
             return;
         }
         var warp = choice === 'warp';
+        document.getElementById('ports-row').style.display =
+            (choice === 'container' || choice === 'standalone') ? 'block' : 'none';
         document.getElementById('warp-panel').style.display = warp ? 'block' : 'none';
         document.getElementById('warp-row').style.display = warp ? 'block' : 'none';
         document.body.classList.toggle('warp-simple', warp && !warpShowAll);
@@ -4151,6 +4388,7 @@
         });
         lines = lines.concat(v3EnvLines(prefix, i));
         if (dfEnabled()) lines.push('/container/envs/add list=' + prefix + '-env key=AWG_NO_DF value="1"');
+        if (warpNoRotate(parsed)) lines.push('/container/envs/add list=' + prefix + '-env key=AWG_PORT_ROTATE value="0"');
         // Without a resolver the container cannot turn a hostname endpoint into
         // an address; generate() makes this mandatory whenever the endpoint is
         // not a literal.
@@ -4384,6 +4622,7 @@
         });
         lines = lines.concat(v3ExportLines(i));
         if (dfEnabled()) lines.push('  :put "export AWG_NO_DF=\\"1\\""');
+        if (warpNoRotate(parsed)) lines.push('  :put "export AWG_PORT_ROTATE=\\"0\\""');
         var saDns = awgDnsValue();
         if (saDns) lines.push('  :put "export AWG_DNS=\\"' + saDns + '\\""');
 
@@ -4675,6 +4914,8 @@
         var hideConf = isS2S || isSrv;
         document.getElementById('storage-row').style.display = mode === 'container' ? 'block' : 'none';
         document.getElementById('proxy-ip-row').style.display = mode === 'standalone' ? 'block' : 'none';
+        // The proxy on a device of its own needs nothing from RouterOS's containers.
+        document.getElementById('prep-card').style.display = mode === 'standalone' ? 'none' : 'block';
         document.getElementById('s2s-panel').style.display = isS2S ? 'block' : 'none';
         document.getElementById('srv-panel').style.display = isSrv ? 'block' : 'none';
         document.getElementById('conf-input').style.display = hideConf ? 'none' : 'block';
@@ -5311,7 +5552,9 @@
     //     2 = prefix (important — tunnel name, has default fallback)
     //     3 = netMode (1 byte: 0=none, 1=l3, 2=l2)
     //     4 = serverLAN (optional, only needed for L3/L2)
-    //     5+ = reserved for future use
+    //     5 = awgBand (optional: more ports the hub forwards to awgPort,
+    //         "30000-30999"; clients put them in AWG_REMOTE)
+    //     6+ = reserved for future use
     var SHARE_VERSION = 4;
     var SHARE_HEADER_LEN = 87;
 
@@ -5328,7 +5571,7 @@
 
     function pairToH(lo, hi) { return lo === hi ? String(lo) : (lo + '-' + hi); }
 
-    function buildShareableURL(awgParams, serverWgPubKey, endpoint, awgPort, wgPort, tunnelSubnet, prefix, nextClient, netMode, serverLAN) {
+    function buildShareableURL(awgParams, serverWgPubKey, endpoint, awgPort, wgPort, tunnelSubnet, prefix, nextClient, netMode, serverLAN, band) {
         var tun = tunnelSubnet.replace(/\/24$/, '').split('.');
         var keyRaw = atob(serverWgPubKey);
         var netModeB = netMode === 'l3' ? 1 : (netMode === 'l2' ? 2 : 0);
@@ -5338,7 +5581,8 @@
             strToBytes(endpoint),
             strToBytes(prefix),
             [netModeB],
-            strToBytes(serverLAN || '')
+            strToBytes(serverLAN || ''),
+            strToBytes(band || '')
         ];
 
         var totalLen = SHARE_HEADER_LEN + 1;
@@ -5440,6 +5684,8 @@
         var netModeVal = netModeRaw.length > 0 ? netModeRaw.charCodeAt(0) : 0;
         var netMode = netModeVal === 1 ? 'l3' : (netModeVal === 2 ? 'l2' : 'none');
         var serverLAN = field(4);
+        var awgBand = field(5);
+        if (awgBand && !isValidHubBand(awgBand)) awgBand = '';
 
         return {
             mode: 'server',
@@ -5455,8 +5701,22 @@
             prefix: prefix,
             nextClient: nextClient || 2,
             netMode: netMode,
-            serverLAN: serverLAN
+            serverLAN: serverLAN,
+            awgBand: awgBand
         };
+    }
+
+    // "More server ports" of a hub. The proxy takes up to 32 pieces in
+    // AWG_REMOTE; a RouterOS firewall rule is happier with a handful, and one
+    // range is what anyone needs.
+    function isValidHubBand(band) {
+        return isValidPortSpec(band) && band.split(',').length <= 8;
+    }
+
+    // What the hub's firewall and the clients' AWG_REMOTE get: the main port
+    // first, then the band.
+    function hubPorts(awgPort, band) {
+        return band ? awgPort + ',' + band : String(awgPort);
     }
 
     function copySrvURL() {
@@ -5576,6 +5836,9 @@
         lines.push('[Peer]');
         lines.push('PublicKey = ' + o.serverPub);
         lines.push('Endpoint = ' + endpointJoin(o.endpoint, o.awgPort));
+        // An AmneziaWG app ignores it; pasted back into this page, it fills
+        // the "several ports" box.
+        if (o.band) lines.push('# AllowedPorts = ' + hubPorts(o.awgPort, o.band));
         lines.push('AllowedIPs = 0.0.0.0/0');
         lines.push('PersistentKeepalive = 25');
         return lines.join('\n');
@@ -5596,6 +5859,8 @@
         var wgPort = awgParams.wgListenPort || randomWgPort();
         var tunServerIP = tun.ip(1);
         var tunClientIP = tun.ip(clientNum + 1);
+        var band = awgParams.band || '';
+        var dports = hubPorts(awgPort, band);
 
         var serverAllowed = tunClientIP + '/32';
         if (clientLAN) serverAllowed += ',' + clientLAN;
@@ -5604,7 +5869,7 @@
         if (serverLAN) clientAllowed += ',' + serverLAN;
 
         // Generate shareable URL before building commands (needed for env)
-        var shareURL = buildShareableURL(awgParams, serverKey.publicKey, endpoint, awgPort, wgPort, tunnelCidr, prefix, clientNum + 1, netMode, serverLAN);
+        var shareURL = buildShareableURL(awgParams, serverKey.publicKey, endpoint, awgPort, wgPort, tunnelCidr, prefix, clientNum + 1, netMode, serverLAN, band);
 
         // === SERVER CONFIG ===
         var ls = [];
@@ -5658,23 +5923,24 @@
         ls.push('');
 
         ls.push('# 4. Firewall: allow AWG port and forward to container');
+        if (band) ls.push('# Ports ' + band + ' go to the same container port ' + awgPort + ': clients draw one at random and move between them.');
         ls.push(firewallTopRule('/ip/firewall/filter',
-            'chain=forward action=accept protocol=udp dst-port=' + awgPort + ' in-interface-list=WAN',
+            'chain=forward action=accept protocol=udp dst-port=' + dports + ' in-interface-list=WAN',
             prefix + '-awg-in'));
         ls.push(firewallTopRule('/ip/firewall/filter',
             'chain=input action=accept protocol=udp src-address=' + vethIP + ' dst-port=' + wgPort,
             prefix + '-wg-in'));
         ls.push(firewallTopRule('/ip/firewall/filter',
             'chain=input action=accept in-interface=wg-' + prefix, prefix + '-wg-mgmt'));
-        ls.push('/ip/firewall/nat/add chain=dstnat action=dst-nat protocol=udp dst-port=' + awgPort + ' in-interface-list=WAN to-addresses=' + vethIP + ' to-ports=' + awgPort + ' comment=' + prefix + '-dstnat');
+        ls.push('/ip/firewall/nat/add chain=dstnat action=dst-nat protocol=udp dst-port=' + dports + ' in-interface-list=WAN to-addresses=' + vethIP + ' to-ports=' + awgPort + ' comment=' + prefix + '-dstnat');
         if (srvNet6) {
             // No dst-address here on purpose: an ISP-assigned IPv6 tends to
             // change, and the rule has to survive that. Port plus WAN is
             // specific enough.
             ls.push(firewallTopRule('/ipv6/firewall/filter',
-                'chain=forward action=accept protocol=udp dst-port=' + awgPort + ' in-interface-list=WAN',
+                'chain=forward action=accept protocol=udp dst-port=' + dports + ' in-interface-list=WAN',
                 prefix + '-awg-in6'));
-            ls.push('/ipv6/firewall/nat/add chain=dstnat action=dst-nat protocol=udp dst-port=' + awgPort + ' in-interface-list=WAN to-address=' + srvNet6.vethAddrBare + ' to-ports=' + awgPort + ' comment=' + prefix + '-dstnat6');
+            ls.push('/ipv6/firewall/nat/add chain=dstnat action=dst-nat protocol=udp dst-port=' + dports + ' in-interface-list=WAN to-address=' + srvNet6.vethAddrBare + ' to-ports=' + awgPort + ' comment=' + prefix + '-dstnat6');
         }
         ls.push('# Full-tunnel egress for direct AmneziaWG clients (no-op for site-to-site peers that don\'t route 0.0.0.0/0)');
         ls.push('/ip/firewall/nat/add chain=srcnat action=masquerade src-address=' + tunnelCidr + ' out-interface-list=WAN comment=' + prefix + '-ft-nat');
@@ -5762,7 +6028,7 @@
 
         lc.push('# 4. Container environment variables');
         lc.push('/container/envs/add list=' + prefix + '-env key=AWG_LISTEN value=":51820"');
-        lc.push('/container/envs/add list=' + prefix + '-env key=AWG_REMOTE value="' + endpointJoin(endpoint, awgPort) + '"');
+        lc.push('/container/envs/add list=' + prefix + '-env key=AWG_REMOTE value="' + endpointJoin(endpoint, dports) + '"');
         lc = lc.concat(s2sObfEnvLines(prefix, awgParams));
         lc.push('/container/envs/add list=' + prefix + '-env key=AWG_SERVER_PUB value="' + serverKey.publicKey + '"');
         lc.push('/container/envs/add list=' + prefix + '-env key=AWG_CLIENT_PUB value="' + clientKey.publicKey + '"');
@@ -5797,6 +6063,7 @@
                 awgParams: awgParams,
                 endpoint: endpoint,
                 awgPort: awgPort,
+                band: band,
                 tunClientIP: tunClientIP,
                 dnsServer: dnsServer
             })
@@ -5812,6 +6079,7 @@
         var tunClientIP = tun.ip(clientNum + 1);
         var endpoint = urlParams.endpoint;
         var awgPort = urlParams.awgPort;
+        var band = urlParams.awgBand || '';
         var wgPort = urlParams.wgPort;
         var serverWgPubKey = urlParams.serverWgPubKey;
         var awgParams = {jc:urlParams.jc,jmin:urlParams.jmin,jmax:urlParams.jmax,s1:urlParams.s1,s2:urlParams.s2,s3:urlParams.s3,s4:urlParams.s4,h1:urlParams.h1,h2:urlParams.h2,h3:urlParams.h3,h4:urlParams.h4,level:urlParams.level,hpKey:urlParams.hpKey,cps:null,chain:[]};
@@ -5921,13 +6189,13 @@
 
         lc.push('# 4. Container environment variables');
         lc.push('/container/envs/add list=' + prefix + '-env key=AWG_LISTEN value=":51820"');
-        lc.push('/container/envs/add list=' + prefix + '-env key=AWG_REMOTE value="' + endpointJoin(endpoint, awgPort) + '"');
+        lc.push('/container/envs/add list=' + prefix + '-env key=AWG_REMOTE value="' + endpointJoin(endpoint, hubPorts(awgPort, band)) + '"');
         lc = lc.concat(s2sObfEnvLines(prefix, awgParams));
         lc.push('/container/envs/add list=' + prefix + '-env key=AWG_SERVER_PUB value="' + serverWgPubKey + '"');
         lc.push('/container/envs/add list=' + prefix + '-env key=AWG_CLIENT_PUB value="' + clientKey.publicKey + '"');
         if (dnsServer) lc.push('/container/envs/add list=' + prefix + '-env key=AWG_DNS value="' + dnsServer + '"');
         if (dfEnabled()) lc.push('/container/envs/add list=' + prefix + '-env key=AWG_NO_DF value="1"');
-        var nextURL = buildShareableURL(awgParams, serverWgPubKey, endpoint, awgPort, wgPort, tunnelCidr, prefix, clientNum + 1, netMode, urlParams.serverLAN);
+        var nextURL = buildShareableURL(awgParams, serverWgPubKey, endpoint, awgPort, wgPort, tunnelCidr, prefix, clientNum + 1, netMode, urlParams.serverLAN, band);
         lc.push('/container/envs/add list=' + prefix + '-env key=AWG_CONFIG_URL value="' + nextURL + '"');
         lc.push('');
 
@@ -5955,6 +6223,7 @@
                 awgParams: awgParams,
                 endpoint: endpoint,
                 awgPort: awgPort,
+                band: band,
                 tunClientIP: tunClientIP,
                 dnsServer: dnsServer
             })
@@ -6004,6 +6273,7 @@
         var isAddClient = !!serverFromURL;
         var endpoint = document.getElementById('srv-endpoint').value.trim();
         var awgPortStr = document.getElementById('srv-awg-port').value.trim();
+        var awgBand = document.getElementById('srv-awg-band').value.trim();
         var tunnelSubnet = document.getElementById('srv-tunnel-subnet').value.trim();
         var storageServer = document.getElementById('srv-storage-server').value;
         var storageClient = document.getElementById('srv-storage-client').value;
@@ -6022,6 +6292,13 @@
         if (!tun) { errs.push(t('errSrvTunnelSubnet')); }
         var awgPort = Number(awgPortStr);
         if (awgPort < 1024 || awgPort > 65535) { errs.push(t('errAwgPort')); }
+        // The hub's own band is in the link; a client added from it cannot
+        // change what the hub forwards.
+        if (isAddClient) awgBand = serverFromURL.awgBand || '';
+        if (awgBand && !isValidHubBand(awgBand)) {
+            errs.push(t('errSrvBand'));
+            flagField('srv-awg-band', 'srv-awg-band-error', t('errSrvBand'));
+        }
         if (netMode === 'l3' && (!serverLAN || !clientLAN)) { errs.push(t('errSrvLanRequired')); }
         if (serverLAN && !/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(serverLAN)) { errs.push(t('errLanSubnet')); }
         if (clientLAN && !/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(clientLAN)) { errs.push(t('errLanSubnet')); }
@@ -6050,6 +6327,7 @@
         } else {
             ensureServerParams();
             serverParams.port = awgPort;
+            serverParams.band = awgBand;
             showSrvParams();
             var result = buildServerCommands(endpoint, serverParams, tunnelSubnet, storageServer, storageClient, prefix, serverLAN, clientLAN, netMode, clientNum, dnsServer);
             document.getElementById('srv-out-server').style.display = '';
@@ -6686,6 +6964,7 @@
         applyWarpUi();
         document.getElementById('errors-container').innerHTML = '';
         clearFieldFlag('awg-dns', 'awg-dns-error');
+        clearFieldFlag('ports-spec', 'ports-spec-error');
         document.getElementById('parsed-section').style.display = 'none';
         document.getElementById('output-section').style.display = 'none';
         document.getElementById('routing-section').style.display = 'none';
@@ -6757,6 +7036,12 @@
                 flagField('awg-dns', 'awg-dns-error', t('errDnsRequired'));
                 return;
             }
+        }
+        // A band typed in by hand has to be one the proxy can read.
+        if (bandBoxOn() && !isValidPortSpec(document.getElementById('ports-spec').value.trim())) {
+            showError(t('errPortsInvalid'));
+            flagField('ports-spec', 'ports-spec-error', t('errPortsInvalid'));
+            return;
         }
 
         var scenario = getScenario();
@@ -6988,6 +7273,10 @@
         document.getElementById('s2s-lan-b').value = '';
         s2sParams = null;
         document.getElementById('warp-ports-enable').checked = true;
+        document.getElementById('ports-enable').checked = false;
+        document.getElementById('ports-spec').value = '';
+        portsFromConf = '';
+        onPortsToggle();
         warpShowAll = false;
         var radios = document.getElementsByName('deploy-mode');
         radios[0].checked = true;
@@ -7117,6 +7406,7 @@
         // менять его пришлось бы уже после того, как скрипт собран.
         var d = /^\s*DNS\s*=\s*(.+)$/m.exec(this.value);
         if (d) autoSelectDoh(d[1].trim());
+        syncPortsFromConf(this.value);
         applyWarpUi();
     });
     ['s2s-endpoint-b', 'srv-endpoint'].forEach(function (id) {
@@ -7148,6 +7438,8 @@
         // Fill fields from URL
         document.getElementById('srv-endpoint').value = urlData.endpoint;
         document.getElementById('srv-awg-port').value = urlData.awgPort;
+        document.getElementById('srv-awg-band').value = urlData.awgBand || '';
+        document.getElementById('srv-awg-band').readOnly = true;
         document.getElementById('srv-tunnel-subnet').value = urlData.tunnelSubnet;
         document.getElementById('srv-client-num').value = urlData.nextClient;
         // Set server LAN from URL
