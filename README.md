@@ -5,19 +5,78 @@
 [![C11](https://img.shields.io/badge/C-11-blue)](https://en.cppreference.com/w/c/11)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[English version](README_en.md) | [Конфигуратор](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html) | [Релизы](https://github.com/timbrs/amneziawg-mikrotik-c/releases) | [FAQ](docs/faq.md)
+[English version](README_en.md) | [**Конфигуратор**](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html) | [Релизы](https://github.com/timbrs/amneziawg-mikrotik-c/releases) | [FAQ](docs/faq.md)
 
-## Коротко
+**awg-proxy подключает роутер MikroTik к VPN-серверу AmneziaWG** (его ставит, например, приложение AmneziaVPN). AmneziaWG — это WireGuard с замаскированными пакетами: по их виду протокол не распознать. Сам MikroTik умеет только обычный WireGuard, поэтому awg-proxy ставится на роутер маленьким контейнером, и дальше всё работает как обычный VPN-туннель роутера: для всех устройств в сети, без приложений на телефонах и компьютерах.
 
-- **Что это.** Контейнер для RouterOS (~300 КБ), который подключает обычный WireGuard-интерфейс MikroTik к серверу AmneziaWG. Шифрует сам роутер, а контейнер только меняет вид пакетов: заголовки, паддинг, мусорные пакеты.
-- **Протокол.** AmneziaWG 1.0, 1.5, 2.0, 3.0 и 3.1. Версия определяется сама по параметрам из `.conf`. Подходит и бесплатный конфиг Cloudflare WARP.
-- **RouterOS.** 7.4+ с пакетом `container`. На 7.21+ нужен образ `awg-proxy-{arch}.tar.gz` (OCI), на 7.20 и ниже — `awg-proxy-{arch}-7.20-Docker.tar.gz`. На 7.22+ можно ставить прямо из реестра `ghcr.io/timbrs/awg-proxy:latest` и обновлять одной командой.
-- **Железо.** arm64, arm (ARMv7), armv5 (hEX refresh, hEX S 2025 и hAP ax S, отдельный образ) и x86_64. **MIPS не поддерживается** (hEX, hEX S, hAP ac lite, hAP lite и т. п.): для него у RouterOS нет пакета container. Нужно 16 МБ свободной RAM.
-- **Как поставить.** [Конфигуратор](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html): вставляете `.conf` из AmneziaVPN, получаете готовые команды для терминала MikroTik. Работает в браузере офлайн, ключи никуда не отправляются.
-- **Режимы.** Клиент к серверу AmneziaWG (обычный), два MikroTik между собой (site-to-site), хаб на много клиентов (server).
-- **Это актуальный репозиторий.** Старая Go-версия [timbrs/amneziawg-mikrotik](https://github.com/timbrs/amneziawg-mikrotik) больше не развивается.
+Ставится за 5–10 минут: [конфигуратор](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html) в браузере превращает `.conf` из AmneziaVPN в готовые команды для MikroTik.
 
-Последняя сверка документации: 22 октября 2026, awg-proxy 1.4.3. Проверено на RouterOS 7.24.2 (hAP ax², arm64) и hAP ac² (arm) с серверами AmneziaWG 3.1 (amneziawg-go и модуль ядра).
+## Быстрый старт
+
+### 1. Проверьте, подходит ли роутер
+
+Нужен MikroTik с процессором **ARM, ARM64 или x86** и RouterOS **7.4 или новее**. Откройте терминал (WinBox → **New Terminal**) и выполните:
+
+```routeros
+/system/resource/print
+```
+
+В строке `architecture-name` должно быть `arm64`, `arm` или `x86_64`. Если там `mipsbe`, `mmips` или `smips` (hEX, hEX S, hAP ac lite, hAP lite) — роутер **не подойдёт**: MikroTik не делает для них пакет контейнеров. Модели по архитектурам — в [таблице ниже](#пойдёт-ли-на-моём-роутере).
+
+### 2. Подготовьте роутер (один раз)
+
+Без этого шага команды из конфигуратора не сработают.
+
+1. **Поставьте пакет `container`.** Проверить: `/system/package/print` — в списке должен быть `container`. Если его нет:
+   - **RouterOS 7.18 и новее** — роутер скачает пакет сам. В WinBox: **System → Packages → Check For Updates**, в списке появится `container`: выделите его, нажмите **Enable**, затем **Apply Changes**. Роутер скачает пакет и перезагрузится. То же в терминале:
+
+     ```routeros
+     /system/package/update/check-for-updates
+     /system/package/enable container
+     /system/package/apply-changes
+     ```
+
+   - **RouterOS старше 7.18** — на [mikrotik.com/download](https://mikrotik.com/download) скачайте **Extra packages** для своей архитектуры и **точно своей** версии RouterOS, достаньте из архива файл `container-….npk`, перетащите его в окно **Files** в WinBox и перезагрузите роутер (`/system/reboot`).
+2. **Разрешите контейнеры в режиме устройства:**
+
+   ```routeros
+   /system/device-mode/update container=yes fetch=yes bandwidth-test=yes scheduler=yes
+   ```
+
+   RouterOS попросит подтвердить, что вы рядом с роутером: **в течение 5 минут** нажмите кнопку на корпусе (Reset или Mode) или выключите и включите питание. Проверить: `/system/device-mode/print` — везде должно быть `yes`.
+
+### 3. Возьмите `.conf`
+
+В приложении **AmneziaVPN**: выберите подключение → **Поделиться** → протокол **AmneziaWG**, формат **AmneziaWG Format** → сохраните файл. Своего сервера нет — подойдёт бесплатный конфиг Cloudflare WARP, в конфигураторе для него есть отдельный режим с инструкцией.
+
+### 4. Сгенерируйте команды и вставьте в терминал
+
+Откройте [**конфигуратор**](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html), вставьте содержимое `.conf`, нажмите **«Сгенерировать»** и выполните команды в терминале MikroTik по порядку. Конфигуратор работает офлайн в браузере: ключи никуда не отправляются. Те же команды можно получить и [из командной строки](#генератор-команд-из-командной-строки).
+
+Готово: туннель поднят, весь трафик или только нужные сервисы (как выберете в конфигураторе) идут через сервер AmneziaWG.
+
+> **Совет.** Если сервер свой, включите на нём приём AmneziaWG сразу на тысячах портов — это одна команда на сервере, [docs/ports.md](docs/ports.md). Тогда прокси берёт случайный порт при каждом подключении, а если какой-то порт перестанет отвечать, просто уйдёт на другой.
+
+<video src="https://github.com/user-attachments/assets/f0100789-0a23-42f8-a67f-085e5f8d13a3" controls width="100%"></video>
+
+## Что умеет
+
+- **Маскирует WireGuard.** Роутер шифрует трафик своим обычным WireGuard, а awg-proxy на лету переодевает каждый пакет в формат AmneziaWG: другие заголовки, случайный паддинг, мусорные пакеты перед рукопожатием. Сервер принимает такие пакеты как свои, а DPI провайдера не узнаёт в них WireGuard. Ключей awg-proxy не знает и содержимое не видит.
+- **Все версии AmneziaWG:** 1.0, 1.5, 2.0, 3.0 и 3.1. Какая нужна, прокси понимает сам по параметрам из `.conf`, настраивать ничего не надо.
+- **Бесплатный Cloudflare WARP**, если своего сервера нет.
+- **Через туннель — что нужно:** весь трафик, только выбранные сервисы (YouTube, Telegram, Instagram и другие) или всё, кроме российских сайтов. Это выбирается в конфигураторе.
+- **Несколько портов сервера.** Если сервер принимает AmneziaWG на диапазоне портов, прокси берёт случайный порт при каждом подключении, уходит с неотвечающего примерно за 15 секунд и раз в 30–120 минут меняет порт на ходу — без обрыва, игры и стримы этого не замечают. Как настроить сервер (VPS одной командой или хаб на MikroTik) — [docs/ports.md](docs/ports.md).
+- **Обновляется и лечится сам.** На RouterOS 7.22+ контейнер ставится из реестра, обновляется одной командой или ночью по расписанию и поднимается сам, если упал.
+- **Лёгкий и быстрый.** Образ — около 90 КБ, в памяти — 1–2 МБ. На hAP ax² и ax³ — сотни Мбит/с: упирается в процессор роутера, который шифрует WireGuard, а не в прокси.
+- **Не только клиент.** Два MikroTik друг с другом (site-to-site) и хаб на много клиентов на VPS или MikroTik (серверный режим).
+
+Это актуальный репозиторий. Старая Go-версия [timbrs/amneziawg-mikrotik](https://github.com/timbrs/amneziawg-mikrotik) больше не развивается.
+
+Последняя сверка документации: 29 октября 2026, awg-proxy 1.4.4. Проверено на RouterOS 7.24.4 (hAP ax², arm64) и hAP ac² (arm) с серверами AmneziaWG 3.1 (amneziawg-go и модуль ядра).
+
+![Замеры скорости на MikroTik AX3](https://github.com/user-attachments/assets/9fb34444-681b-4f34-8306-8f202f1b121d)
+
+*Замеры скорости на MikroTik hAP ax³*
 
 ## Пойдёт ли на моём роутере
 
@@ -34,28 +93,30 @@
 
 Для RouterOS 7.20 и ниже — те же имена с суффиксом `-7.20-Docker`, например `awg-proxy-arm-7.20-Docker.tar.gz`.
 
-## Содержание
+**Что ещё нужно:** RouterOS 7.4+ с пакетом `container`, 16 МБ свободной оперативной памяти и около 1 МБ места на диске (на роутерах с 16 МБ flash — USB-накопитель). Сервер AmneziaWG с конфигом `.conf` из AmneziaVPN или конфиг Cloudflare WARP.
 
-- [Как это работает](#как-это-работает)
-- [Быстрый старт (конфигуратор)](#быстрый-старт-конфигуратор)
-- [Установка без доступа к GitHub](#установка-без-доступа-к-github)
-- [Требования](#требования)
-- [Ручная установка](#ручная-установка)
-- [Получение параметров AWG](#получение-параметров-awg)
-- [Серверный режим (1:N) — подробная настройка](#серверный-режим-1n--подробная-настройка)
-- [Дополнительные настройки](#дополнительные-настройки)
-- [Обновление](#обновление)
-- [Удаление](#удаление)
-- [Устранение неполадок](#устранение-неполадок)
-- [Сборка из исходников](#сборка-из-исходников)
-- [Лицензия](#лицензия)
+## Как это работает
 
-Подробная документация — отдельными файлами в [`docs/`](docs/):
+```
+Устройства в сети ──> MikroTik WireGuard ──UDP──> [awg-proxy] ──UDP──> сервер AmneziaWG
+                      (шифрует, как обычно)     (переодевает пакеты)
+```
+
+Роутер сам шифрует трафик штатным WireGuard и отправляет пакеты не на сервер, а в контейнер awg-proxy на этом же роутере. awg-proxy меняет у каждого пакета то, по чему DPI узнаёт WireGuard: тип в заголовке, длину (добавляет паддинг), а перед рукопожатием шлёт мусорные пакеты. Ответы сервера проходят обратную переделку. Содержимое пакетов и ключи остаются как есть: расшифровать трафик прокси не может.
+
+Другие режимы:
+
+- **site-to-site (reverse)** — два MikroTik соединяются друг с другом через AmneziaWG без отдельного сервера:
+  `MikroTik1 WG ↔ [awg-proxy normal] ──AWG──> [awg-proxy reverse] ↔ MikroTik2 WG`. Только точка-точка.
+- **server (хаб 1:N)** — один awg-proxy на VPS или MikroTik принимает много клиентов и отдаёт их обычному WireGuard-серверу: [docs/server-mode.md](docs/server-mode.md).
+
+## Документация
 
 | Файл | О чём |
 |------|-------|
 | [faq.md](docs/faq.md) | Частые вопросы своими словами: пойдёт ли на моём роутере, какая будет скорость, чем отличается от других контейнеров |
 | [install.md](docs/install.md) | Где взять `.conf`, WARP, ручная установка по шагам, установка без доступа к GitHub |
+| [ports.md](docs/ports.md) | Сервер на диапазоне портов: скрипт одной командой, ручная настройка, как указать в конфигураторе |
 | [update.md](docs/update.md) | Обновление из реестра, самолечение, переход со старой установки из файла |
 | [env.md](docs/env.md) | Все переменные окружения контейнера |
 | [protocol.md](docs/protocol.md) | AmneziaWG 3.0 и 3.1 на проводе, цепочка отката, IPv6 |
@@ -65,101 +126,15 @@
 
 Краткая выжимка со ссылками для ИИ-ассистентов — [llms.txt](https://timbrs.github.io/amneziawg-mikrotik-c/llms.txt). Тем, кто правит код, — [AGENTS.md](AGENTS.md).
 
-## Как это работает
-
-### Стандартный режим (normal, по умолчанию)
-
-```
-MikroTik WG-клиент ──UDP──> [awg-proxy] ──UDP──> сервер AmneziaWG
-   (шифрование)          (преобразование)          (обфускация)
-```
-
-Прокси заменяет заголовки пакетов, добавляет паддинг и мусорные пакеты так, чтобы сервер AmneziaWG принял трафик. Ключи и данные не затрагиваются.
-
-### Режим reverse (mikrotik-to-mikrotik)
-
-```
-MikroTik1 WG ↔ [proxy1 normal] ──AWG──> [proxy2 reverse] ↔ MikroTik2 WG
-```
-
-Принимает AWG-трафик от normal-прокси, преобразует обратно в стандартный WireGuard и пересылает локальному WG-серверу. Позволяет соединить два MikroTik через AWG без поднятия отдельного AWG-сервера.
-Это соединение вида точка-точка, не поддерживается мультисоединения.
-
-### Режим awg-server (1:N)
-
-```
-proxy1a (normal) ──AWG──┐
-proxy1b (normal) ──AWG──┤──> [reverse-hub] ──WG──> WG-сервер
-proxy1c (normal) ──AWG──┘
-```
-
-Множественный обратный прокси: принимает AWG-подключения от нескольких normal-прокси и маршрутизирует ответы от WG-сервера к правильному клиенту через встроенную таблицу сессий. Для каждого пира используется ~16 байт в hash-таблице.
-
-Подробная настройка описана в разделе [Серверный режим (1:N) — подробная настройка](#серверный-режим-1n--подробная-настройка).
-
-Версия протокола (AmneziaWG 1.0–3.1) определяется автоматически по переменным окружения.
-
-## Быстрый старт (конфигуратор)
-
-0. Подготовьте роутер:
-   - Установите пакет **container** с [mikrotik.com](https://mikrotik.com/download) (System → Packages), загрузите на роутер и перезагрузите
-   - Включите device-mode:
-     ```routeros
-     /system/device-mode/update container=yes fetch=yes bandwidth-test=yes scheduler=yes
-     ```
-     Роутер попросит подтверждение (кнопка Reset/Mode или перезагрузка)
-1. Экспортируйте `.conf`-файл из AmneziaVPN (см. [Получение параметров AWG](#получение-параметров-awg))
-2. Откройте [конфигуратор](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html)
-3. Вставьте содержимое `.conf`-файла
-4. Скопируйте сгенерированные команды и выполните их в терминале MikroTik
-
-Готово. Конфигуратор работает оффлайн, данные не отправляются на сервер. Те же команды можно получить и без браузера — [из командной строки](#генератор-команд-из-командной-строки).
-
-<video src="https://github.com/user-attachments/assets/f0100789-0a23-42f8-a67f-085e5f8d13a3" controls width="100%"></video>
-
-![Замеры скорости на MikroTik AX3](https://github.com/user-attachments/assets/9fb34444-681b-4f34-8306-8f202f1b121d)
-
-*Замеры скорости на устройстве MikroTik AX3*
-
 ## Установка без доступа к GitHub
 
 Включите в конфигураторе **офлайн-режим**: шаг 0 спросит у роутера архитектуру и версию RouterOS и напечатает, какие файлы скачать и куда положить. Подробно — [docs/install.md](docs/install.md#установка-без-доступа-к-github).
-
-## Требования
-
-- Сервер AmneziaWG с известными параметрами обфускации
-- Файл конфигурации `.conf`, экспортированный из AmneziaVPN, или конфиг Cloudflare WARP
-- MikroTik RouterOS 7.4+ с пакетом **container**
-  - **RouterOS 7.21+**: стандартные образы `awg-proxy-{arch}.tar.gz` (OCI-формат)
-  - **RouterOS 7.20 и ниже**: образы `awg-proxy-{arch}-7.20-Docker.tar.gz` (Docker-формат)
-  - Конфигуратор определяет версию автоматически
-- Архитектура: ARM64, ARM (v7), ARM (v5: hEX refresh / hEX S 2025 / hAP ax S) или x86_64, см. [таблицу моделей](#пойдёт-ли-на-моём-роутере) ([документация MikroTik](https://help.mikrotik.com/docs/spaces/ROS/pages/84901929/Container))
-- Минимум 256 КБ свободного места на диске (или USB-накопитель)
-- Минимум 16 МБ свободной оперативной памяти (RAM)
 
 ## Ручная установка
 
 Без конфигуратора, командами RouterOS: пакет container, образ (файлом или из реестра `ghcr.io/timbrs/awg-proxy`), veth, WireGuard-интерфейс, переменные окружения, контейнер — [docs/install.md](docs/install.md#ручная-установка).
 
-## Получение параметров AWG
-
-1. Откройте приложение **AmneziaVPN**
-2. Выберите нужное подключение
-3. Нажмите **Поделиться** (Share)
-4. Выберите: **Протокол**: AmneziaWG, **Формат**: AmneziaWG Format
-5. Сохраните `.conf`-файл
-
-Нет своего сервера AmneziaWG — в конфигураторе есть режим **«Нет AmneziaVPN — Cloudflare WARP»** с бесплатным конфигом WARP. Что делать, если в конфиге не хватает параметров, и как устроен режим WARP — [docs/install.md](docs/install.md#получение-параметров-awg).
-
-## Серверный режим (1:N) — подробная настройка
-
-Один awg-proxy на VPS или MikroTik обслуживает много клиентов: WireGuard-сервер плюс awg-proxy в режиме `server` (Docker Compose или systemd), добавление клиентов, прямые клиенты AmneziaWG, [маршрутизация между клиентами](docs/server-mode.md#маршрутизация-между-клиентами) — [docs/server-mode.md](docs/server-mode.md).
-
-## Дополнительные настройки
-
-- [Переменные окружения](docs/env.md) — полная таблица и подробное описание каждой
-- [AmneziaWG 3.0, 3.1 и IPv6](docs/protocol.md) — что меняется на проводе, почему S1–S4 ≥ 12, цепочка отката, Happy Eyeballs
-- [Маршрутизация, DNS и MTU](docs/routing.md) — маршруты через туннель, PPPoE и MTU, пределы DNS-маршрутизации, address-list
+Если в `.conf` не хватает параметров и что делает режим WARP — [docs/install.md](docs/install.md#получение-параметров-awg).
 
 ## Обновление
 
@@ -179,13 +154,13 @@ proxy1c (normal) ──AWG──┘
 
 Ошибки с готовыми решениями — в [docs/troubleshooting.md](docs/troubleshooting.md):
 
+- [`not allowed by device-mode`](docs/troubleshooting.md#not-allowed-by-device-mode) — не сделан шаг 2 быстрого старта
 - [`execvpe /awg-proxy: No such file or directory`](docs/troubleshooting.md#execvpe-awg-proxy-no-such-file-or-directory) — образ скачался не полностью
 - [`Site-to-site: handshake did not complete`](docs/troubleshooting.md#site-to-site-handshake-did-not-complete)
 - [`Storage device not found`](docs/troubleshooting.md#storage-device-not-found) — диск не отформатирован в ext4
 - [`Insufficient disk space`](docs/troubleshooting.md#insufficient-disk-space)
 - [`no space to extract layer`](docs/troubleshooting.md#no-space-to-extract-layer) — нет места под распаковку образа, есть обход через RAM
 - [`start failed: no default dns servers`](docs/troubleshooting.md#start-failed-no-default-dns-servers) — RouterOS 7.24, у контейнера не задан DNS
-- [`not allowed by device-mode`](docs/troubleshooting.md#not-allowed-by-device-mode)
 - [`child spawn failed` / `could not load next layer`](docs/troubleshooting.md#child-spawn-failed--could-not-load-next-layer) — роутеры с 16 МБ flash
 - [`exited with signal 4 (Illegal instruction)`](docs/troubleshooting.md#exited-with-signal-4-illegal-instruction) — hEX refresh / hEX S 2025 / hAP ax S, нужен образ armv5
 - [Список RU-адресов не загружается после перезагрузки](docs/troubleshooting.md#список-ru-адресов-не-загружается-после-перезагрузки)

@@ -1,16 +1,17 @@
 # awg-proxy — AmneziaWG for MikroTik (timbrs/amneziawg-mikrotik-c)
 
-> awg-proxy is a ~300 KB RouterOS container that lets the native MikroTik WireGuard client connect to AmneziaWG servers (AWG 1.0, 1.5, 2.0, 3.0, 3.1; Cloudflare WARP configs work too). The router does the WireGuard encryption; the container only rewrites packet headers, padding and junk packets. It is installed with an offline browser configurator that turns an AmneziaVPN `.conf` into RouterOS commands. Current repository: https://github.com/timbrs/amneziawg-mikrotik-c — the old Go version timbrs/amneziawg-mikrotik is deprecated.
+> awg-proxy is a ~90 KB RouterOS container that lets the native MikroTik WireGuard client connect to AmneziaWG servers (AWG 1.0, 1.5, 2.0, 3.0, 3.1; Cloudflare WARP configs work too). The router does the WireGuard encryption; the container only rewrites packet headers, padding and junk packets. It is installed with an offline browser configurator that turns an AmneziaVPN `.conf` into RouterOS commands. Current repository: https://github.com/timbrs/amneziawg-mikrotik-c — the old Go version timbrs/amneziawg-mikrotik is deprecated.
 >
 > Русский: контейнер для RouterOS, который подключает штатный WireGuard MikroTik к серверам AmneziaWG. Ставится конфигуратором https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html — он работает офлайн и никуда не отправляет ключи. Документация есть на русском и английском, разделы совпадают.
 
-Key facts (docs reviewed 2026-10-22, awg-proxy 1.4.3):
+Key facts (docs reviewed 2026-10-29, awg-proxy 1.4.4):
 
-- RouterOS 7.4+ with the `container` package. RouterOS 7.21+: `awg-proxy-{arch}.tar.gz` (OCI). RouterOS 7.20 and older: `awg-proxy-{arch}-7.20-Docker.tar.gz`. RouterOS 7.22+: install from the registry `ghcr.io/timbrs/awg-proxy:latest` and update with `/container/repull` or the configurator's `<prefix>-update` script.
+- RouterOS 7.4+ with the `container` package (7.18+: System → Packages → Check For Updates → Enable container → Apply Changes, or `/system/package/update/check-for-updates`, `/system/package/enable container`, `/system/package/apply-changes`; older: the npk from Extra packages). RouterOS 7.21+: `awg-proxy-{arch}.tar.gz` (OCI). RouterOS 7.20 and older: `awg-proxy-{arch}-7.20-Docker.tar.gz`. RouterOS 7.22+: install from the registry `ghcr.io/timbrs/awg-proxy:latest` and update with `/container/repull` or the configurator's `<prefix>-update` script.
 - Architectures: arm64 (hAP ax², hAP ax³, RB5009, CCR2004/2116/2216), arm/ARMv7 (hAP ac², hAP ac³, RB4011, RB3011), armv5 (hEX refresh E50UG, hEX S 2025 E60iUGS, hAP ax S E62iUGS — separate image `awg-proxy-armv5.tar.gz` / `ghcr.io/timbrs/awg-proxy:latest-armv5`), x86_64 (CHR). MIPS (hEX RB750Gr3, hEX S RB760iGS, hAP ac lite, hAP lite, RB2011) and tile (CCR1xxx) are NOT supported: RouterOS has no container package for them.
 - Needs about 16 MB of free RAM. On 16 MB-flash routers put the container on an ext4 USB stick and set `/container/config set tmpdir=usb1/pull`.
 - Modes: normal client (default), reverse (site-to-site between two MikroTiks), server (1:N hub on a VPS or a MikroTik).
 - Speed is limited by the router CPU doing WireGuard crypto, not by the proxy.
+- Port range: `AWG_REMOTE=host:20000-29999` (up to 32 ports/ranges) draws a random port per connection, hops off a silent one in ~15 s and, since 1.4.4, moves to another port every 30–120 min without a drop (`AWG_PORT_ROTATE`, off for WARP). The server must forward the whole range to its port: `scripts/awg-ports.sh` on a VPS, the "More server ports" field for a MikroTik hub (the hub needs 1.4.4+).
 
 ## Docs (Russian, primary)
 
@@ -23,6 +24,7 @@ Key facts (docs reviewed 2026-10-22, awg-proxy 1.4.3):
 - [Routing, DNS and MTU](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/routing.md): routes through the tunnel, PPPoE/MTU, DNS address-list routing limits
 - [Server mode](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/server-mode.md): 1:N hub, direct AmneziaWG clients, routing between clients
 - [Troubleshooting](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/troubleshooting.md): exact RouterOS/container error messages and fixes
+- [Port range](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/ports.md): make the server take AmneziaWG on thousands of UDP ports (scripts/awg-ports.sh, one command), and how to give the range to the configurator
 
 ## Docs (English)
 
@@ -35,6 +37,7 @@ Key facts (docs reviewed 2026-10-22, awg-proxy 1.4.3):
 - [Routing, DNS and MTU](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/en/routing.md)
 - [Server mode](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/en/server-mode.md)
 - [Troubleshooting](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/en/troubleshooting.md)
+- [Port range](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/en/ports.md)
 
 ## Optional
 

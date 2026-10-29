@@ -184,6 +184,10 @@ On MikroTik:
 # Should show a recent handshake
 ```
 
+## Several Ports on the Hub
+
+A hub can take clients on a range of ports instead of one: client routers then draw a random port for every connection and move to another every 30–120 minutes on the fly. For a MikroTik hub that is the **"More server ports"** field in the configurator, for a hub on a VPS the `awg-ports.sh` script. How to switch it on, an existing hub included — [ports.md](ports.md#a-mikrotik-hub-server-mode). The hub needs awg-proxy 1.4.4 or newer: an older one sent replies back to the old port, and every move on the clients fell back.
+
 ## Routing Between Clients
 
 In the star topology, each client only sees the server's LAN by default. Client 1 (192.168.8.0/24) **does not know** about client 2's network (192.168.11.0/24) and vice versa. Traffic between clients goes through the server, but routes must be added manually.

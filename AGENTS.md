@@ -7,7 +7,7 @@
 
 UDP-прокси на C, который превращает обычный трафик WireGuard в AmneziaWG и обратно. Работает в
 контейнере RouterOS на слабых роутерах MikroTik (Cortex-A53 на 870 МГц, 32-битный arm, armv5),
-поэтому размер бинарника (~300 КБ) и такты на пакет важнее удобства кода.
+поэтому размер бинарника (110–200 КБ, образ ~90 КБ) и такты на пакет важнее удобства кода.
 
 ```
 MikroTik WG ──UDP──> [awg-proxy в контейнере] ──UDP──> сервер AmneziaWG
@@ -34,7 +34,9 @@ MikroTik WG ──UDP──> [awg-proxy в контейнере] ──UDP──
 | `tools/awg-gen.js` | Те же команды RouterOS из командной строки: грузит `docs/conf3.0.html` в jsdom и заполняет форму, своей логики генерации нет. `node tools/awg-gen.js --help` |
 | `tests/*.test.js` | Проверки конфигуратора на jsdom |
 | `bench/` | Стенды замеров и совместимости (`bench/awg3-interop` — против amneziawg-go v3.1) |
-| `Dockerfile`, `scripts/`, `build-c.sh` | Сборка образов: scratch и один статический бинарник |
+| `Dockerfile`, `scripts/mkdockertar*.sh`, `build-c.sh` | Сборка образов: scratch и один статический бинарник |
+| `scripts/awg-ports.sh` | Для сервера, не для роутера: диапазон UDP-портов на сервер AmneziaWG (iptables, systemd). Ставится одной командой из `docs/ports.md`, поэтому путь в `main` менять нельзя |
+| `tests/awg-ports.test.sh` | Проверка `scripts/awg-ports.sh` на настоящих iptables в Docker |
 
 ## Сборка и тесты
 
@@ -58,6 +60,20 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/src" -w /src debian:bookworm-slim s
 ```bash
 npm install jsdom
 for f in tests/*.test.js; do node "$f" || break; done
+```
+
+Скрипт диапазона портов для сервера (три контейнера, нужен `NET_ADMIN`):
+
+```bash
+bash tests/awg-ports.test.sh
+```
+
+Смена порта против своего же хаба (настоящий WireGuard с обеих сторон, NAT диапазона на хабе,
+10 минут: в тишине и под iperf3; нужен образ `bench/awg3-interop` и свежий бинарник в
+`../builds/awg-proxy`):
+
+```bash
+bash bench/awg3-interop/hubrot.sh all
 ```
 
 **В GitHub Actions тестов нет и не будет.** Сетевые тесты в CI однажды привели к блокировке

@@ -3,7 +3,7 @@
 > Part of the [awg-proxy](../../README_en.md) documentation: a RouterOS container that connects MikroTik to AmneziaWG servers. The easiest way to install it is the [configurator](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html), which generates all commands. Other pages: [install](install.md) · [updating](update.md) · [variables](env.md) · [AWG 3.x and IPv6](protocol.md) · [routing and MTU](routing.md) · [server mode](server-mode.md) · [troubleshooting](troubleshooting.md).
 
 The questions come from user discussions and are worded the way people usually ask them. Answers are
-current for awg-proxy 1.4.3 (October 2026).
+current for awg-proxy 1.4.4 (October 2026).
 
 ## Is it for me
 
@@ -36,7 +36,7 @@ configurator sets `restart-policy=on-failure`. RouterOS 6 is not supported.
 
 ### Is there enough memory? I have 128 MB RAM / 16 MB flash
 
-The image is about 300 KB and the proxy needs about 16 MB of free RAM, so awg-proxy runs on a hAP ac²
+The image is about 90 KB and the proxy needs about 16 MB of free RAM (it takes 1–2 MB itself), so awg-proxy runs on a hAP ac²
 (128 MB RAM), where heavy containers such as mihomo no longer fit.
 
 Flash is the harder part. A 16 MB-flash router (hAP ac²) usually has no room to unpack image layers. Plug in a
@@ -93,7 +93,7 @@ expects its own `awg.conf`.
 
 mihomo is a multi-protocol proxy router (VLESS, Hysteria2, subscriptions, domain rules). It is heavier: tens of
 megabytes of RAM, and on weak routers the OOM killer takes it down. awg-proxy does one thing, AmneziaWG, in
-300 KB. Many people run both: mihomo for VLESS and AmneziaWG through awg-proxy, because mihomo's built-in
+about 90 KB. Many people run both: mihomo for VLESS and AmneziaWG through awg-proxy, because mihomo's built-in
 AmneziaWG reportedly stutters on video.
 
 ### Is the old timbrs/amneziawg-mikrotik (Go) repository still current?
@@ -172,6 +172,15 @@ will not connect however it is disguised.
 
 That is not an error. The kernel is not merging incoming packets, so the proxy switches to plain receive. The
 tunnel is unaffected. `AWG_NO_GRO=1` removes the line.
+
+### The log says `rotate: ... moving to port`. What is that?
+
+The proxy changed the server port on the fly (`AWG_PORT_ROTATE`). It only happens when `AWG_REMOTE` names a list or a range of ports: every 30–120 minutes the port moves to another one of the list, so the tunnel does not sit on the same port for days. The link does not drop: until the new port answers, every packet goes down both. Then the log says one of two things:
+
+- `port N answered, staying (12 ms, 40 sent twice)` — the new port answered, the proxy stays on it;
+- `port N stayed silent, back to M` or `port N refused, back to M` — the new port did not answer within a second; the proxy went back to the old one and will try later. If that happens every time, the server does not take the whole range: check it with [ports.md](ports.md). If the server is a MikroTik hub, it needs awg-proxy 1.4.4 or newer.
+
+To switch it off: `AWG_PORT_ROTATE=0`. For Cloudflare WARP the configurator switches it off by itself: Cloudflare keeps a session on the port it started on.
 
 ### How do I see which version is installed?
 
