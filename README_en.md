@@ -49,6 +49,8 @@ Without this step the configurator's commands will not work.
 
 In the **AmneziaVPN** app: pick the connection → **Share** → protocol **AmneziaWG**, format **AmneziaWG Format** → save the file. No server of your own? A free Cloudflare WARP config will do; the configurator has a separate mode for it, with instructions.
 
+> **The Sponsor button at the top of the page is not a donation box.** It leads to a VPS for your own VPN: [Freakhosting BVPS-2](https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/) for **$34 a year** — 2 vCPU, 2 GB RAM, 40 GB NVMe, a 10 Gbit/s port with unlimited traffic. You pay the host the usual price, and the host gives the project a small bonus: a win for both. The AmneziaVPN app installs the AmneziaWG server on that VPS by itself. Price as of the last check; it may change.
+
 ### 4. Generate the commands and paste them into the terminal
 
 Open the [**configurator**](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html), paste the `.conf`, press **Generate commands** and run the commands in the MikroTik terminal in order. The configurator works offline in the browser: your keys go nowhere. The same commands are also available [from the command line](#command-line-generator).
