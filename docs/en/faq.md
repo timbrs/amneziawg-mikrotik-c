@@ -3,7 +3,7 @@
 > Part of the [awg-proxy](../../README_en.md) documentation: a RouterOS container that connects MikroTik to AmneziaWG servers. The easiest way to install it is the [configurator](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html), which generates all commands. Other pages: [install](install.md) · [updating](update.md) · [variables](env.md) · [AWG 3.x and IPv6](protocol.md) · [routing and MTU](routing.md) · [server mode](server-mode.md) · [troubleshooting](troubleshooting.md).
 
 The questions come from user discussions and are worded the way people usually ask them. Answers are
-current for awg-proxy 1.4.4 (October 2026).
+current for awg-proxy 1.4.5 (October 2026).
 
 ## Is it for me
 

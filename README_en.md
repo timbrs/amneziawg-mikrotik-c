@@ -85,7 +85,7 @@ Done: the tunnel is up, and all traffic or only the services you picked in the c
 
 This is the current repository. The old Go version, [timbrs/amneziawg-mikrotik](https://github.com/timbrs/amneziawg-mikrotik), is no longer developed.
 
-Docs last reviewed on 29 October 2026 for awg-proxy 1.4.4. Tested on RouterOS 7.24.4 (hAP ax², arm64) and hAP ac² (arm) against AmneziaWG 3.1 servers (amneziawg-go and the kernel module).
+Docs last reviewed on 30 October 2026 for awg-proxy 1.4.5. Tested on RouterOS 7.24.4 (hAP ax², arm64) and hAP ac² (arm) against AmneziaWG 3.1 servers (amneziawg-go and the kernel module).
 
 ![Speed test on MikroTik AX3](https://github.com/user-attachments/assets/9fb34444-681b-4f34-8306-8f202f1b121d)
 

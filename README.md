@@ -85,7 +85,7 @@
 
 Это актуальный репозиторий. Старая Go-версия [timbrs/amneziawg-mikrotik](https://github.com/timbrs/amneziawg-mikrotik) больше не развивается.
 
-Последняя сверка документации: 29 октября 2026, awg-proxy 1.4.4. Проверено на RouterOS 7.24.4 (hAP ax², arm64) и hAP ac² (arm) с серверами AmneziaWG 3.1 (amneziawg-go и модуль ядра).
+Последняя сверка документации: 30 октября 2026, awg-proxy 1.4.5. Проверено на RouterOS 7.24.4 (hAP ax², arm64) и hAP ac² (arm) с серверами AmneziaWG 3.1 (amneziawg-go и модуль ядра).
 
 ![Замеры скорости на MikroTik AX3](https://github.com/user-attachments/assets/9fb34444-681b-4f34-8306-8f202f1b121d)
 
