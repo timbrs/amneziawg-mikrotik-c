@@ -213,6 +213,56 @@ Docker Hub awg-proxy не нужен: образ лежит в GHCR (`ghcr.io/ti
 релизом и ничего не трогает, если она та же. Ночью его запускает scheduler, если при установке не снимали галочку автообновления. Работает для
 установки из реестра (RouterOS 7.22+). Подробно — в [обновлении](update.md).
 
+### После обновления RouterOS до 7.25 контейнер больше не обновляется
+
+Так бывает, если awg-proxy ставили конфигуратором до 1.4.3 (до 8 октября 2026). Скрипт `<prefix>-update`
+из той версии не понимает номер RouterOS без третьего числа: из «7.25» он берёт только двойку, считает
+RouterOS старой и выходит. Контейнер при этом работает, но ночное обновление и самолечение перекачкой
+больше не срабатывают, а пока контейнер жив, в логе об этом ни слова. То же на бетах вроде 7.26beta3.
+
+Как проверить: `/system/script/run awg-proxy-1-update` пишет
+`/container/repull needs RouterOS 7.22+, this router runs 7.25`. Или посчитайте скрипты со старым
+разбором версии, `0` значит, что всё в порядке:
+
+```routeros
+:put [:len [/system script find where source~"endPos"]]
+```
+
+Переустанавливать ничего не нужно. Вставьте в терминал роутера целиком: команда заменит в этих скриптах
+четыре строки разбора версии на нынешние из конфигуратора, остальное в них не тронет.
+
+```routeros
+:foreach i in=[/system script find where source~"endPos"] do={
+  :local s [/system script get $i source]
+  :local k1 ":local rest [:pick \$ver (\$dotPos + 1) [:len \$ver]]"
+  :local k2 ":local endPos [:find \$rest \".\"]"
+  :local k4 ":local minor [:tonum [:pick \$rest 0 \$endPos]]"
+  :for n from=1 to=5 do={
+    :local a [:find $s $k1]
+    :if ([:typeof $a] != "nil") do={
+      :local b [:find $s $k2 $a]
+      :local c [:find $s $k4 $a]
+      :if ([:typeof $b] != "nil" && [:typeof $c] != "nil") do={
+        :local sep [:pick $s ($a + [:len $k1]) $b]
+        :local new (":local rest ([:pick \$ver (\$dotPos + 1) [:len \$ver]] . \" \")" . $sep . ":local minor 0" . $sep . ":local mi 0" . $sep . ":while ([:typeof [:find \"0123456789\" [:pick \$rest \$mi (\$mi + 1)]]] != \"nil\") do={ :set minor (\$minor * 10 + [:tonum [:pick \$rest \$mi (\$mi + 1)]]); :set mi (\$mi + 1) }")
+        :set s ([:pick $s 0 $a] . $new . [:pick $s ($c + [:len $k4]) [:len $s]])
+      }
+    }
+  }
+  :if ([:typeof [:find $s "endPos"]] = "nil") do={
+    /system script set $i source=$s
+    :put ([/system script get $i name] . ": fixed")
+  } else={
+    :put ([/system script get $i name] . ": not changed")
+  }
+}
+```
+
+На каждый исправленный скрипт она напишет `<имя>: fixed`. `not changed` значит, что ожидаемых строк в
+скрипте не нашлось и он остался как был. Повторный запуск ничего не меняет. Сразу после правки
+`/system/script/run awg-proxy-1-update` обновит контейнер, не дожидаясь ночи. Править можно и заранее,
+до перехода на 7.25: на 7.24 исправленный скрипт работает так же.
+
 ### Конфигуратор обновился. Сносить всё и ставить заново?
 
 Зависит от того, что поменялось.

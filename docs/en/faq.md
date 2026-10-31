@@ -214,6 +214,59 @@ version with the latest release and touches nothing when they match. A scheduler
 unticked auto-update during install. It works for registry installs (RouterOS 7.22+). Details:
 [updating](update.md).
 
+### After upgrading RouterOS to 7.25 the container no longer updates
+
+This happens if awg-proxy was installed with a configurator older than 1.4.3 (before 8 October 2026).
+The `<prefix>-update` script from that version cannot read a RouterOS version without a third number:
+from "7.25" it takes only the 2, decides RouterOS is too old and quits. The container keeps running,
+but the nightly update and the re-pull self-healing stop working, and while the container is alive
+nothing about it reaches the log.
+Betas such as 7.26beta3 hit the same problem.
+
+To check: `/system/script/run awg-proxy-1-update` prints
+`/container/repull needs RouterOS 7.22+, this router runs 7.25`. Or count the scripts with the old
+version parsing, `0` means you are fine:
+
+```routeros
+:put [:len [/system script find where source~"endPos"]]
+```
+
+No reinstall is needed. Paste this whole block into the router terminal: it replaces the four
+version-parsing lines in those scripts with the configurator's current ones and leaves the rest of the
+script alone.
+
+```routeros
+:foreach i in=[/system script find where source~"endPos"] do={
+  :local s [/system script get $i source]
+  :local k1 ":local rest [:pick \$ver (\$dotPos + 1) [:len \$ver]]"
+  :local k2 ":local endPos [:find \$rest \".\"]"
+  :local k4 ":local minor [:tonum [:pick \$rest 0 \$endPos]]"
+  :for n from=1 to=5 do={
+    :local a [:find $s $k1]
+    :if ([:typeof $a] != "nil") do={
+      :local b [:find $s $k2 $a]
+      :local c [:find $s $k4 $a]
+      :if ([:typeof $b] != "nil" && [:typeof $c] != "nil") do={
+        :local sep [:pick $s ($a + [:len $k1]) $b]
+        :local new (":local rest ([:pick \$ver (\$dotPos + 1) [:len \$ver]] . \" \")" . $sep . ":local minor 0" . $sep . ":local mi 0" . $sep . ":while ([:typeof [:find \"0123456789\" [:pick \$rest \$mi (\$mi + 1)]]] != \"nil\") do={ :set minor (\$minor * 10 + [:tonum [:pick \$rest \$mi (\$mi + 1)]]); :set mi (\$mi + 1) }")
+        :set s ([:pick $s 0 $a] . $new . [:pick $s ($c + [:len $k4]) [:len $s]])
+      }
+    }
+  }
+  :if ([:typeof [:find $s "endPos"]] = "nil") do={
+    /system script set $i source=$s
+    :put ([/system script get $i name] . ": fixed")
+  } else={
+    :put ([/system script get $i name] . ": not changed")
+  }
+}
+```
+
+It prints `<name>: fixed` for every script it fixed. `not changed` means the expected lines were not in
+that script, so it was left as it was. Running it again changes nothing. Right after the fix,
+`/system/script/run awg-proxy-1-update` updates the container without waiting for the night. You can
+also apply it before moving to 7.25: on 7.24 the fixed script works the same way.
+
 ### The configurator changed. Do I remove everything and install again?
 
 Depends on what changed.
