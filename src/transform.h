@@ -187,6 +187,7 @@ typedef struct {
     int no_df;          /* clear DF bit on UDP sockets (AWG_NO_DF=1) */
     int stats_interval; /* seconds between throughput/drop stat lines, 0 = off */
 
+    int normal_multi; /* Linux normal: index translation and per-client MAC1 */
     int mode;           /* 0=normal, 1=reverse, 2=server */
 
     /* Profile fallback chain (v3 → v2 → v1.5 → v1). The active profile's
@@ -268,6 +269,9 @@ uint8_t *transform_outbound_with_mac1(uint8_t *buf, int dataoff, int n,
  * and length, or NULL if invalid/junk. ks may be NULL; when supplied with
  * ks->valid == 0 it caches the header-protection keystream block so repeated
  * attempts over the profile chain compute ChaCha20 only once. */
+uint8_t *transform_inbound_multi(uint8_t *buf, int n, const awg_config_t *cfg,
+    const awg_profile_t *pr, awg_hp_ks_t *ks, int *out_len, int *peer);
+
 uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
                                    const awg_profile_t *pr, awg_hp_ks_t *ks,
                                    int *out_len);

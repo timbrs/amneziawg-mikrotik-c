@@ -416,9 +416,9 @@ int config_server_resolve_peer_for_init(const awg_config_t *cfg,
 }
 
 __attribute__((hot))
-uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
+static uint8_t *inbound_decode(uint8_t *buf, int n, const awg_config_t *cfg,
                                    const awg_profile_t *pr, awg_hp_ks_t *ks,
-                                   int *out_len) {
+                                   int *out_len, int *peer) {
     if (n < 4) return NULL;
 
     /* Fast path: identity transform (never taken when hp is on — h4_noop
@@ -450,9 +450,19 @@ uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
         uint32_t h = read32_le(buf + pr->s1) ^ type_mask;
         if (hrange_contains(&pr->h1, h)) {
             if (kstream) chacha20_xor(cfg->hp_key, buf, buf + pr->s1, WG_INIT_SIZE);
+            const uint8_t *key = cfg->mac1key_in;
+            if (peer) {
+                uint8_t mac[16];
+                *peer = -1;
+                for (int i = 0; i < cfg->server_peer_count; i++) {
+                    blake2s_128mac(cfg->server_peer_mac1keys[i], buf + pr->s1, 116, mac);
+                    if (!memcmp(mac, buf + pr->s1 + 116, 16)) { *peer = i; break; }
+                }
+                if (*peer < 0) return NULL;
+                key = cfg->server_peer_mac1keys[*peer];
+            }
             write32_le(buf + pr->s1, WG_HANDSHAKE_INIT);
-            if (cfg->mac1key_in)
-                recompute_mac1(buf + pr->s1, cfg->mac1key_in);
+            if (key) recompute_mac1(buf + pr->s1, key);
             *out_len = WG_INIT_SIZE;
             return buf + pr->s1;
         }
@@ -462,9 +472,19 @@ uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
         uint32_t h = read32_le(buf + pr->s2) ^ type_mask;
         if (hrange_contains(&pr->h2, h)) {
             if (kstream) chacha20_xor(cfg->hp_key, buf, buf + pr->s2, WG_RESP_SIZE);
+            const uint8_t *key = cfg->mac1key_in;
+            if (peer) {
+                uint8_t mac[16];
+                *peer = -1;
+                for (int i = 0; i < cfg->server_peer_count; i++) {
+                    blake2s_128mac(cfg->server_peer_mac1keys[i], buf + pr->s2, 60, mac);
+                    if (!memcmp(mac, buf + pr->s2 + 60, 16)) { *peer = i; break; }
+                }
+                if (*peer < 0) return NULL;
+                key = cfg->server_peer_mac1keys[*peer];
+            }
             write32_le(buf + pr->s2, WG_HANDSHAKE_RESPONSE);
-            if (cfg->mac1key_in)
-                recompute_mac1_response(buf + pr->s2, cfg->mac1key_in);
+            if (key) recompute_mac1_response(buf + pr->s2, key);
             *out_len = WG_RESP_SIZE;
             return buf + pr->s2;
         }
@@ -493,6 +513,19 @@ uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
     }
 
     return NULL;
+}
+
+uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
+                                   const awg_profile_t *pr, awg_hp_ks_t *ks,
+                                   int *out_len) {
+    return inbound_decode(buf, n, cfg, pr, ks, out_len, NULL);
+}
+
+uint8_t *transform_inbound_multi(uint8_t *buf, int n, const awg_config_t *cfg,
+                                 const awg_profile_t *pr, awg_hp_ks_t *ks,
+                                 int *out_len, int *peer) {
+    *peer = -1;
+    return inbound_decode(buf, n, cfg, pr, ks, out_len, peer);
 }
 
 __attribute__((hot))

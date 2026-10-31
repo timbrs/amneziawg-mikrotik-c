@@ -134,3 +134,11 @@ docker-amd64-7.20-docker:
 	VERSION=$(VERSION) ../scripts/mkdockertar-c.sh linux amd64 "" $(IMAGE_NAME):$(VERSION)-amd64 $(BUILD_DIR)/$(IMAGE_NAME)-amd64-7.20-Docker.tar.gz
 
 docker-all-7.20-docker: docker-arm64-7.20-docker docker-arm-7.20-docker docker-armv5-7.20-docker docker-amd64-7.20-docker
+
+.PHONY: test-normal-multi test-normal-sessions
+test-normal-multi: build
+	AWG_REAL_PROXY=$(abspath $(BUILD_DIR))/awg-proxy python3 tests/test_normal_multi.py
+
+test-normal-sessions:
+	$(CC) $(TEST_CFLAGS) -o /tmp/test_normal_sessions src/test_normal_sessions.c -lpthread
+	/tmp/test_normal_sessions

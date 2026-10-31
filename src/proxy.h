@@ -51,11 +51,14 @@ static inline int cliaddr_eq(const cliaddr_t *a, const cliaddr_t *b) {
     if (a->sa.sa_family != b->sa.sa_family) return 0;
     if (a->sa.sa_family == AF_INET6)
         return a->v6.sin6_port == b->v6.sin6_port &&
+               a->v6.sin6_scope_id == b->v6.sin6_scope_id &&
                memcmp(&a->v6.sin6_addr, &b->v6.sin6_addr,
                       sizeof(struct in6_addr)) == 0;
     return a->v4.sin_port == b->v4.sin_port &&
            a->v4.sin_addr.s_addr == b->v4.sin_addr.s_addr;
 }
+
+#include "normal_sessions.h"
 
 typedef struct {
     uint32_t sender_index;
@@ -243,7 +246,8 @@ typedef struct {
 
 typedef struct {
     /* === Hot fields === */
-    awg_config_t *cfg;              /* 8B */
+    awg_config_t *cfg;
+    normal_sessions_t *normal;              /* 8B */
     int listen_fd;                  /* 4B */
     _Atomic int remote_fd;          /* 4B */
     _Atomic int remote_fd2;         /* 4B — Happy Eyeballs probe socket, -1 = none */

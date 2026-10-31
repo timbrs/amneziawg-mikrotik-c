@@ -386,14 +386,19 @@ int main(void) {
         else if (v[0] == 's') cfg->mode = AWG_MODE_SERVER;
     }
 
-    if (cfg->mode != AWG_MODE_SERVER && (!cpub_str || !cpub_str[0])) {
-        log_msg("FATAL: ", "AWG_CLIENT_PUB is not set");
-        _exit(1);
+    cfg->normal_multi = cfg->mode == AWG_MODE_NORMAL &&
+        ((cpubs_str && cpubs_str[0]) || (cpubs_file_str && cpubs_file_str[0]));
+    if ((v = getenv("AWG_NORMAL_MULTI")) && v[0]) {
+        int enabled = parse_bool_str(v);
+        if (enabled && cfg->mode != AWG_MODE_NORMAL) fatal("AWG_NORMAL_MULTI requires normal mode");
+        if (!enabled && cfg->normal_multi) fatal("AWG_CLIENT_PUBS requires multi-client normal mode");
+        cfg->normal_multi = enabled;
     }
-    if (cfg->mode == AWG_MODE_SERVER && (!cpub_str || !cpub_str[0]) &&
-        (!cpubs_str || !cpubs_str[0]) && (!cpubs_file_str || !cpubs_file_str[0])) {
-        fatal("server mode requires AWG_CLIENT_PUB or AWG_CLIENT_PUBS/AWG_CLIENT_PUBS_FILE");
-    }
+    if (cfg->mode != AWG_MODE_SERVER && !cfg->normal_multi && (!cpub_str || !cpub_str[0]))
+        fatal("AWG_CLIENT_PUB is not set");
+    if ((!cpub_str || !cpub_str[0]) && (!cpubs_str || !cpubs_str[0]) &&
+        (!cpubs_file_str || !cpubs_file_str[0]))
+        fatal("requires AWG_CLIENT_PUB or AWG_CLIENT_PUBS/AWG_CLIENT_PUBS_FILE");
 
     /* Parse integers */
     cfg->jc = parse_int_str(jc_str);
@@ -420,11 +425,22 @@ int main(void) {
         if (len != 32) fatal("AWG_CLIENT_PUB: must decode to 32 bytes");
     }
 
-    if (cfg->mode == AWG_MODE_SERVER) {
+    if (cfg->mode == AWG_MODE_SERVER || cfg->normal_multi) {
+        if (cfg->normal_multi && cpub_str && cpub_str[0])
+            parse_server_peer_list(cfg, "AWG_CLIENT_PUB", cpub_str);
         if (cpubs_str && cpubs_str[0])
             parse_server_peer_list(cfg, "AWG_CLIENT_PUBS", cpubs_str);
         if (cpubs_file_str && cpubs_file_str[0])
             load_server_peer_file(cfg, cpubs_file_str);
+    }
+
+    if (cfg->normal_multi) {
+        static const uint8_t zero[32] = {0};
+        if (!cfg->server_peer_count || !memcmp(cfg->server_pub, zero, 32))
+            fatal("multi-client normal requires nonzero server and client public keys");
+        for (int i = 0; i < cfg->server_peer_count; i++)
+            if (!memcmp(cfg->server_peer_pubs[i], zero, 32))
+                fatal("multi-client normal requires nonzero client public keys");
     }
 
     /* Optional v2 params */
@@ -587,6 +603,9 @@ int main(void) {
         else
             src_port = parse_int_str(v);
     }
+
+    if (cfg->normal_multi && src_port == 0)
+        fatal("multi-client normal cannot use AWG_SRC_PORT=auto; use random or a fixed port");
 
     /* CPU affinity */
     cfg->cpu_c2s = -1;

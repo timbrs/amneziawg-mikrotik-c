@@ -1,4 +1,5 @@
 #include "proxy.h"
+#include "blake2s.h"
 #include "cps.h"
 #include "log.h"
 #include <string.h>
@@ -1573,6 +1574,11 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
                const char *listen_str, const char *remote_str, int src_port) {
     const char *cfg_err = NULL;
     memset(p, 0, sizeof(*p));
+    if (cfg->normal_multi) {
+        p->normal = calloc(1, sizeof(*p->normal));
+        if (!p->normal) return -1;
+        if (pthread_mutex_init(&p->normal->lock, NULL)) { free(p->normal); p->normal = NULL; return -1; }
+    }
     p->cfg = cfg;
     p->listen_fd = -1;
     atomic_store_explicit(&p->remote_fd, -1, memory_order_relaxed);
@@ -1700,6 +1706,7 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     }
     uint64_t seed = rnd.seed;
     fastrand_init(&p->rng, seed);
+    if (p->normal) p->normal->next = (uint32_t)fastrand_u64(&p->rng);
     /* The two directions must never emit the same padding bytes at the same
      * time, so they run independent streams from independent seeds. */
     fastrand_init(&p->rng_c2s, seed ^ 0x9E3779B97F4A7C15ULL);
@@ -1737,7 +1744,7 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
         p->recv_c2s.msgs[i].msg_hdr.msg_iovlen = 1;
     }
     /* In reverse/server mode, capture addr from every packet for routing */
-    if (cfg->mode != AWG_MODE_NORMAL) {
+    if (cfg->mode != AWG_MODE_NORMAL || cfg->normal_multi) {
         for (int i = 0; i < BATCH_SIZE; i++) {
             p->recv_c2s.msgs[i].msg_hdr.msg_name = &p->recv_c2s.addrs[i];
             p->recv_c2s.msgs[i].msg_hdr.msg_namelen = p->cli_len;
@@ -2607,6 +2614,7 @@ static void *c2s_thread_normal(void *arg) {
                     }
                     memcpy(p->recv_c2s.bufs[nrecv] + prefix, p->gro_buf_c2s + off, plen);
                     p->recv_c2s.msgs[nrecv].msg_len = plen;
+                    p->recv_c2s.addrs[nrecv] = p->gro_addr_c2s;
                     nrecv++;
                 }
                 if (nrecv > 0) gro_no_coalesce = 0;
@@ -2619,7 +2627,10 @@ static void *c2s_thread_normal(void *arg) {
                 }
                 if (nrecv == 0) continue;
             } else {
-                if (++gro_no_coalesce >= 8) {
+                /* With multiple clients a queued datagram may already be
+                 * coalesced. Switching to recvmmsg without ancillary data would
+                 * truncate it. Keep the chosen GRO receive path for this socket. */
+                if (!p->cfg->normal_multi && ++gro_no_coalesce >= 8) {
                     p->gro_enabled_c2s = 0;
                     disable_gro(p->listen_fd);
                     gro_rearm_in = gro_rearm_gap;
@@ -2646,7 +2657,8 @@ static void *c2s_thread_normal(void *arg) {
             }
             for (int i = 0; i < prev_nrecv; i++)
                 p->recv_c2s.iovecs[i].iov_len = BUF_SIZE;
-            p->recv_c2s.msgs[0].msg_hdr.msg_namelen = p->cli_len;
+            for (int i = 0; i < (cfg->normal_multi ? BATCH_SIZE : 1); i++)
+                p->recv_c2s.msgs[i].msg_hdr.msg_namelen = p->cli_len;
 
             nrecv = spin_recvmmsg(p, p->listen_fd, p->recv_c2s.msgs, BATCH_SIZE);
             if (nrecv <= 0) {
@@ -2660,7 +2672,8 @@ static void *c2s_thread_normal(void *arg) {
         stats_add_rx(&p->st_c2s_rx, nrecv);
 
         /* Check client address from first packet */
-        if (note_client_addr(p, &p->recv_c2s.addrs[0]) && p->auto_src_port) {
+        if (cfg->normal_multi) atomic_store_explicit(&p->has_client, 1, memory_order_relaxed);
+        if (!cfg->normal_multi && note_client_addr(p, &p->recv_c2s.addrs[0]) && p->auto_src_port) {
             int cp = ntohs(cliaddr_port(&p->recv_c2s.addrs[0]));
             if (p->local_port != cp) {
                 p->local_port = cp;
@@ -2694,6 +2707,19 @@ static void *c2s_thread_normal(void *arg) {
             if (n <= 0) continue;
 
             uint8_t *data = p->recv_c2s.bufs[i] + prefix;
+            if (cfg->normal_multi && n >= 8) {
+                uint32_t type, local, wire;
+                memcpy(&type, data, 4);
+                if ((type == WG_HANDSHAKE_INIT && n == WG_INIT_SIZE) ||
+                    (type == WG_HANDSHAKE_RESPONSE && n == WG_RESP_SIZE)) {
+                    memcpy(&local, data + 4, 4);
+                    if (!normal_register(p->normal, &p->recv_c2s.addrs[i], local, type == WG_HANDSHAKE_RESPONSE, &wire)) {
+                        log_debug("normal: session table full, dropping new handshake");
+                        continue;
+                    }
+                    memcpy(data + 4, &wire, 4);
+                }
+            }
 
             /* Transport data fast-path */
             if (n >= WG_TRANSPORT_MIN) {
@@ -2979,6 +3005,25 @@ static void *c2s_thread(void *arg) {
 
 /* ---- s2c packet processing: normal mode (AWG→WG inbound) ---- */
 
+/* Restore the client's index only after checking the received AWG MAC1.
+ * WG payload encryption is untouched; these public routing headers are not
+ * transport AEAD associated data. MAC1 must cover the restored response. */
+static int normal_route_packet(proxy_t *p, uint8_t *pkt, int n, int peer, cliaddr_t *addr) {
+    uint32_t type, wire, local;
+    if (n < 8) return 0;
+    memcpy(&type, pkt, 4);
+    if (type == WG_HANDSHAKE_INIT)
+        return peer >= 0 && normal_peer_addr(p->normal, peer, addr);
+    int offset = type == WG_HANDSHAKE_RESPONSE ? 8 : 4;
+    if (n < offset + 4) return 0;
+    memcpy(&wire, pkt + offset, 4);
+    if (!normal_lookup(p->normal, wire, peer, addr, &local)) return 0;
+    memcpy(pkt + offset, &local, 4);
+    if (type == WG_HANDSHAKE_RESPONSE && peer >= 0)
+        recompute_mac1_response(pkt, p->cfg->server_peer_mac1keys[peer]);
+    return 1;
+}
+
 __attribute__((hot))
 static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
                                           struct iovec *send_iovecs,
@@ -3010,7 +3055,9 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
                 int idx = *nsend;
                 send_iovecs[idx].iov_base = pkt + s4;
                 send_iovecs[idx].iov_len = n - s4;
-                send_addrs[idx] = p->client_addr;
+                if (cfg->normal_multi) {
+                    if (!normal_route_packet(p, pkt + s4, n - s4, -1, &send_addrs[idx])) return 0;
+                } else send_addrs[idx] = p->client_addr;
                 (*nsend)++;
                 if (!atomic_exchange_explicit(&p->fe_transport_s2c, 1, memory_order_relaxed))
                     log_info("s2c: first transport packet to client");
@@ -3020,9 +3067,10 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
     }
 
     /* Slow path: handshake or unknown */
-    int out_len;
-    uint8_t *out = transform_inbound_profile(pkt, n, cfg, config_active_profile(cfg),
-                                             &ks, &out_len);
+    int out_len, peer = -1;
+    uint8_t *out = cfg->normal_multi
+        ? transform_inbound_multi(pkt, n, cfg, config_active_profile(cfg), &ks, &out_len, &peer)
+        : transform_inbound_profile(pkt, n, cfg, config_active_profile(cfg), &ks, &out_len);
     if (!out) {
         log_debug("s2c: junk packet dropped");
         return 0;
@@ -3051,7 +3099,9 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
     int idx = *nsend;
     send_iovecs[idx].iov_base = out;
     send_iovecs[idx].iov_len = out_len;
-    send_addrs[idx] = p->client_addr;
+    if (cfg->normal_multi) {
+        if (!normal_route_packet(p, out, out_len, peer, &send_addrs[idx])) return 0;
+    } else send_addrs[idx] = p->client_addr;
     (*nsend)++;
     if (mtype == WG_HANDSHAKE_RESPONSE &&
         !atomic_exchange_explicit(&p->fe_resp_sent, 1, memory_order_relaxed))
@@ -3399,7 +3449,10 @@ static void *s2c_thread(void *arg) {
                 }
             } else {
                 /* Single packet — GRO not coalescing */
-                if (++gro_no_coalesce >= 8) {
+                /* With multiple clients a queued datagram may already be
+                 * coalesced. Switching to recvmmsg without ancillary data would
+                 * truncate it. Keep the chosen GRO receive path for this socket. */
+                if (!p->cfg->normal_multi && ++gro_no_coalesce >= 8) {
                     p->gro_enabled = 0;
                     disable_gro(remote_fd);
                     gro_rearm_in = gro_rearm_gap;
