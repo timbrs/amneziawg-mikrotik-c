@@ -22,6 +22,11 @@ function ok(name, cond, extra) {
     if (cond) { passes++; console.log('  PASS  ' + name); }
     else { fails++; console.log('  FAIL  ' + name + (extra ? ': ' + extra : '')); }
 }
+// Site-to-site спрятан в конфигураторе; его проверки оставлены как были,
+// обёрнуты в skip() и не запускаются. TODO: если до конца 2026 года режим
+// никто не попросит вернуть, в 2027 удалить их вместе с ним.
+const SITE_TO_SITE_HIDDEN = 'site-to-site спрятан в конфигураторе';
+function skip(name, why, checks) { console.log('  SKIP  ' + name + ': ' + why); }
 
 const w = new JSDOM(html, { runScripts: 'dangerously', url: 'https://example.invalid/' }).window;
 const need = ['buildUninstallScriptSource', 'buildStandaloneUninstallScriptSource',
@@ -39,8 +44,10 @@ const sources = {
     'клиент (tunnel)':   w.buildUninstallScriptSource(false, 'disk1', P, net, 'tunnel'),
     'standalone':        w.buildStandaloneUninstallScriptSource(true, P, 'non-ru'),
     'сервер':            w.buildServerUninstallSource(P, 'disk1', net),
-    'site-to-site':      w.buildS2SUninstallSource(P, 'disk1', net, false),
 };
+skip('site-to-site', SITE_TO_SITE_HIDDEN, function () {
+    sources['site-to-site'] = w.buildS2SUninstallSource(P, 'disk1', net, false);
+});
 
 for (const [label, src] of Object.entries(sources)) {
     // Общий список RU не принадлежит установке — трогать его нельзя.

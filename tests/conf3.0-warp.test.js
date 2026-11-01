@@ -23,6 +23,11 @@ function ok(name, cond, extra) {
     if (cond) { passes++; console.log('  PASS  ' + name); }
     else { fails++; console.log('  FAIL  ' + name + (extra ? ': ' + extra : '')); }
 }
+// Site-to-site is hidden in the configurator; its checks are kept as they
+// were, wrapped in skip() and not run. TODO: if nobody asks for the mode back
+// by the end of 2026, delete them in 2027 together with it.
+const SITE_TO_SITE_HIDDEN = 'site-to-site is hidden in the configurator';
+function skip(name, why, checks) { console.log('  SKIP  ' + name + ': ' + why); }
 function eq(name, a, b) { ok(name, a === b, JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
 
 function offlineGuard(win) {
@@ -325,9 +330,11 @@ paste(otherText);
 ok('another server gets the full form', !body.classList.contains('warp-simple'));
 eq('and no WARP row', w.document.getElementById('warp-row').style.display, 'none');
 paste(bare);
-w.document.querySelector('input[name="deploy-mode"][value="site-to-site"]').checked = true;
-w.onModeChange();
-ok('site-to-site ignores the pasted WARP config', !body.classList.contains('warp-simple'));
+skip('site-to-site ignores the pasted WARP config', SITE_TO_SITE_HIDDEN, function () {
+    w.document.querySelector('input[name="deploy-mode"][value="site-to-site"]').checked = true;
+    w.onModeChange();
+    ok('site-to-site ignores the pasted WARP config', !body.classList.contains('warp-simple'));
+});
 w.clearAll();
 ok('clearing resets the form', !body.classList.contains('warp-simple'));
 
@@ -339,7 +346,8 @@ const radio = function (v) { return w.document.querySelector('input[name="deploy
 const panel = w.document.getElementById('warp-panel');
 const pick = function (v) { radio(v).checked = true; w.onModeChange(); };
 ok('WARP is a deployment mode', !!radio('warp'));
-eq('the fourth one', [].map.call(w.document.getElementsByName('deploy-mode'), function (r) { return r.value; }).indexOf('warp'), 3);
+eq('the third one, site-to-site being hidden', [].map.call(w.document.getElementsByName('deploy-mode'), function (r) { return r.value; }).join(','),
+   'container,standalone,warp,server');
 ok('no separate WARP banner any more', !w.document.getElementById('warp-gen'));
 w.clearAll();
 eq('the instructions are hidden in the container mode', panel.style.display, 'none');

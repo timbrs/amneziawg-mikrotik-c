@@ -81,7 +81,7 @@
 - **Несколько портов сервера.** Если сервер принимает AmneziaWG на диапазоне портов, прокси берёт случайный порт при каждом подключении, уходит с неотвечающего примерно за 15 секунд и раз в 30–120 минут меняет порт на ходу — без обрыва, игры и стримы этого не замечают. Как настроить сервер (VPS одной командой или хаб на MikroTik) — [docs/ports.md](docs/ports.md).
 - **Обновляется и лечится сам.** На RouterOS 7.22+ контейнер ставится из реестра, обновляется одной командой или ночью по расписанию и поднимается сам, если упал.
 - **Лёгкий и быстрый.** Образ — около 90 КБ, в памяти — 1–2 МБ. На hAP ax² и ax³ — сотни Мбит/с: упирается в процессор роутера, который шифрует WireGuard, а не в прокси.
-- **Не только клиент.** Два MikroTik друг с другом (site-to-site) и хаб на много клиентов на VPS или MikroTik (серверный режим).
+- **Не только клиент.** MikroTik может сам быть сервером AmneziaWG: к нему подключаются другие MikroTik, телефоны и ноутбуки. Такой же сервер ставится и на VPS (серверный режим).
 
 Это актуальный репозиторий. Старая Go-версия [timbrs/amneziawg-mikrotik](https://github.com/timbrs/amneziawg-mikrotik) больше не развивается.
 
@@ -120,8 +120,8 @@
 Другие режимы:
 
 - **site-to-site (reverse)** — два MikroTik соединяются друг с другом через AmneziaWG без отдельного сервера:
-  `MikroTik1 WG ↔ [awg-proxy normal] ──AWG──> [awg-proxy reverse] ↔ MikroTik2 WG`. Только точка-точка.
-- **server (хаб 1:N)** — один awg-proxy на VPS или MikroTik принимает много клиентов и отдаёт их обычному WireGuard-серверу: [docs/server-mode.md](docs/server-mode.md).
+  `MikroTik1 WG ↔ [awg-proxy normal] ──AWG──> [awg-proxy reverse] ↔ MikroTik2 WG`. Только точка-точка. Конфигуратор этот режим больше не предлагает: два MikroTik так же соединяет «MikroTik как сервер AmneziaWG».
+- **server** — сервер AmneziaWG: один awg-proxy на VPS или MikroTik принимает много клиентов и отдаёт их обычному WireGuard-серверу. В конфигураторе это режим «MikroTik как сервер AmneziaWG»: [docs/server-mode.md](docs/server-mode.md).
 
 ## Документация
 
@@ -134,7 +134,7 @@
 | [env.md](docs/env.md) | Все переменные окружения контейнера |
 | [protocol.md](docs/protocol.md) | AmneziaWG 3.0 и 3.1 на проводе, цепочка отката, IPv6 |
 | [routing.md](docs/routing.md) | Маршруты через туннель, DNS, MTU и PPPoE, address-list |
-| [server-mode.md](docs/server-mode.md) | Хаб 1:N на VPS или MikroTik |
+| [server-mode.md](docs/server-mode.md) | MikroTik или VPS как сервер AmneziaWG |
 | [troubleshooting.md](docs/troubleshooting.md) | Тексты ошибок и что с ними делать |
 
 Краткая выжимка со ссылками для ИИ-ассистентов — [llms.txt](https://timbrs.github.io/amneziawg-mikrotik-c/llms.txt). Тем, кто правит код, — [AGENTS.md](AGENTS.md).
@@ -228,7 +228,7 @@ npm install jsdom                        # один раз, в корне реп
 node tools/awg-gen.js amnezia.conf > awg.rsc
 node tools/awg-gen.js --scenario non-ru --exclude steam,epic amnezia.conf
 node tools/awg-gen.js --part routing --services youtube,telegram amnezia.conf
-node tools/awg-gen.js --mode site-to-site --endpoint 198.51.100.1 --part side-b
+node tools/awg-gen.js --mode server --net awg --endpoint 198.51.100.1 --part server
 node tools/awg-gen.js --help             # все опции, сервисы и накопители
 ```
 

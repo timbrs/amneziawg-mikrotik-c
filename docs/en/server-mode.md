@@ -1,4 +1,4 @@
-# Server Mode (1:N) — Detailed Setup
+# Server Mode: a MikroTik or a VPS as an AmneziaWG Server — Detailed Setup
 
 > Part of the [awg-proxy](../../README_en.md) documentation: a RouterOS container that connects MikroTik to AmneziaWG servers. The easiest way to install it is the [configurator](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html), which generates all commands. Other pages: [install](install.md) · [updating](update.md) · [variables](env.md) · [AWG 3.x and IPv6](protocol.md) · [routing and MTU](routing.md) · [server mode](server-mode.md) · [troubleshooting](troubleshooting.md) · [FAQ](faq.md).
 
@@ -186,7 +186,7 @@ On MikroTik:
 
 ## Several Ports on the Hub
 
-A hub can take clients on a range of ports instead of one: client routers then draw a random port for every connection and move to another every 30–120 minutes on the fly. For a MikroTik hub that is the **"More server ports"** field in the configurator, for a hub on a VPS the `awg-ports.sh` script. How to switch it on, an existing hub included — [ports.md](ports.md#a-mikrotik-hub-server-mode). The hub needs awg-proxy 1.4.4 or newer: an older one sent replies back to the old port, and every move on the clients fell back.
+A hub can take clients on a range of ports instead of one: client routers then draw a random port for every connection and move to another every 30–120 minutes on the fly. For a MikroTik hub that is the **"More server ports"** field in the configurator, for a hub on a VPS the `awg-ports.sh` script. How to switch it on, an existing hub included — [ports.md](ports.md#a-mikrotik-as-an-amneziawg-server-server-mode). The hub needs awg-proxy 1.4.4 or newer: an older one sent replies back to the old port, and every move on the clients fell back.
 
 ## Routing Between Clients
 

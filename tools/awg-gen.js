@@ -29,7 +29,12 @@ const PAGE = path.join(ROOT, 'docs', 'conf3.0.html');
 const PAGE_URL = 'https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html';
 
 const CONF = ['container', 'standalone', 'warp'];
-const HUB = ['site-to-site', 'server'];
+// Site-to-site is hidden on the page, so it is not offered here either: its
+// parts and options below stay, but --mode does not take it and its options
+// are not parsed or listed.
+// TODO: if nobody asks for it back by the end of 2026, remove it in 2027
+// together with the page's code (see the note at the mode radios there).
+const HUB = ['server'];
 const MODES = CONF.concat(HUB);
 const ROUTED = ['dns-fwd', 'non-ru'];
 
@@ -120,13 +125,15 @@ function press(ui, flag, call, what) {
 
 const AUTO = { auto: '__auto' };
 const hubId = (mode, s2s, srv) => mode === 'site-to-site' ? s2s : srv;
+// An option for no mode that is offered is left out, as if it did not exist.
+const offered = o => !o.modes || o.modes.some(m => MODES.indexOf(m) >= 0);
 
 // One entry per option, applied in this order. `modes`, `scenarios` and
 // `nets` say where the page shows the control; elsewhere the option is
 // refused rather than silently dropped.
 const OPTIONS = [
     { group: 'General' },
-    { name: 'mode', arg: 'MODE', help: 'container (default), standalone, warp, site-to-site, server' },
+    { name: 'mode', arg: 'MODE', help: 'container (default), standalone, warp, server (MikroTik as an AmneziaWG server)' },
     { name: 'prefix', arg: 'NAME', help: 'tunnel name: awg-proxy-1 by default, awg-server-1 for server',
       apply: (ui, v) => pickOrCustom(ui, 'prefix-select', 'prefix-custom', v) },
     { name: 'part', arg: 'NAME', help: 'print only this part, exactly as the page shows it (see Parts)' },
@@ -209,7 +216,7 @@ const OPTIONS = [
     { name: 'no-warp-ports', bool: true, modes: CONF, help: 'WARP: keep the endpoint port as written instead of all WARP ports',
       apply: ui => ui.check('warp-ports-enable', false) },
 
-    { group: 'Site-to-site and server: no .conf, keys are generated on this machine' },
+    { group: 'Server mode: no .conf, keys are generated on this machine' },
     // The level goes first: changing it rolls new parameters, port included.
     { name: 'proto', arg: 'LEVEL', modes: HUB, help: 'AmneziaWG level: v3 (default), v2, v1.5, v1',
       apply(ui, v, mode) {
@@ -218,11 +225,11 @@ const OPTIONS = [
       } },
     { name: 'no-compat', bool: true, modes: HUB, help: 'no fallback chain for peers on older levels',
       apply: (ui, v, mode) => ui.check(hubId(mode, 's2s-proto-compat', 'srv-proto-compat'), false) },
-    { name: 'endpoint', arg: 'HOST', modes: HUB, help: 'public IP or name of side B / of the hub',
+    { name: 'endpoint', arg: 'HOST', modes: HUB, help: 'public IP or name of the server router',
       apply: (ui, v, mode) => ui.type(hubId(mode, 's2s-endpoint-b', 'srv-endpoint'), v) },
     { name: 'port', arg: 'N', modes: HUB, help: 'AmneziaWG port on it (default: random)',
       apply: (ui, v, mode) => ui.type(hubId(mode, 's2s-awg-port', 'srv-awg-port'), v) },
-    { name: 'subnet', arg: 'CIDR', modes: HUB, help: 'tunnel subnet: a /30 for site-to-site, a /24 for server (default: random)',
+    { name: 'subnet', arg: 'CIDR', modes: HUB, help: 'tunnel subnet, a /24 (default: random)',
       apply: (ui, v, mode) => ui.type(hubId(mode, 's2s-tunnel-subnet', 'srv-tunnel-subnet'), v) },
     { name: 'lan-a', arg: 'CIDR', modes: ['site-to-site'], help: 'LAN of side A (optional)',
       apply: (ui, v) => ui.type('s2s-lan-a', v) },
@@ -234,17 +241,17 @@ const OPTIONS = [
       apply: (ui, v) => ui.select('s2s-storage-b', oneOf('--storage-b', v, ui.options('s2s-storage-b'), AUTO)) },
     { name: 'net', arg: 'none|l3|awg', modes: ['server'], help: 'network merging: l3 (default), none, awg (a phone or laptop client)',
       apply: (ui, v) => ui.choose('srv-net', oneOf('--net', v, ui.values('srv-net'))) },
-    { name: 'lan-server', arg: 'CIDR', modes: ['server'], nets: ['none', 'l3'], help: 'LAN of the hub (required for l3)',
+    { name: 'lan-server', arg: 'CIDR', modes: ['server'], nets: ['none', 'l3'], help: 'LAN of the server router (required for l3)',
       apply: (ui, v) => ui.type('srv-lan-server', v) },
     { name: 'lan-client', arg: 'CIDR', modes: ['server'], nets: ['none', 'l3'], help: 'LAN of the client (required for l3)',
       apply: (ui, v) => ui.type('srv-lan-client', v) },
-    { name: 'storage-server', arg: 'DISK', modes: ['server'], help: 'storage on the hub: auto (default), disk1, usb1, usb1-part1',
+    { name: 'storage-server', arg: 'DISK', modes: ['server'], help: 'storage on the server router: auto (default), disk1, usb1, usb1-part1',
       apply: (ui, v) => ui.select('srv-storage-server', oneOf('--storage-server', v, ui.options('srv-storage-server'), AUTO)) },
     { name: 'storage-client', arg: 'DISK', modes: ['server'], nets: ['none', 'l3'], help: 'storage on the client router, as above',
       apply: (ui, v) => ui.select('srv-storage-client', oneOf('--storage-client', v, ui.options('srv-storage-client'), AUTO)) },
     { name: 'client', arg: 'N', modes: ['server'], help: 'client number (default 1)',
       apply: (ui, v) => ui.type('srv-client-num', v) },
-    { name: 'share-url', arg: 'URL', modes: ['server'], help: 'add a client to an existing hub: the link saved when it was set up' },
+    { name: 'share-url', arg: 'URL', modes: ['server'], help: 'add a client to an existing server router: the link saved when it was set up' },
 ];
 
 function helpText(page) {
@@ -253,7 +260,7 @@ function helpText(page) {
         '',
         'Usage:',
         '  node tools/awg-gen.js [options] FILE.conf      (or - for stdin, or pipe it in)',
-        '  node tools/awg-gen.js --mode site-to-site|server [options]',
+        '  node tools/awg-gen.js --mode server [options]',
         '',
         'Runs the configurator page docs/conf3.0.html in jsdom and prints the',
         'script the page would show: the same code makes it, and nothing leaves',
@@ -266,6 +273,7 @@ function helpText(page) {
     ];
     OPTIONS.forEach(function (o) {
         if (o.group) { L.push('', o.group + ':'); return; }
+        if (!offered(o)) return;
         const flag = (o.short ? '-' + o.short + ', ' : '    ') + '--' + o.name + (o.arg ? ' ' + o.arg : '');
         const words = o.help.split(' ');
         let line = '  ' + flag.padEnd(28);
@@ -278,7 +286,6 @@ function helpText(page) {
     });
     L.push('', 'Parts (--part):');
     L.push('  container, standalone, warp: ' + PARTS.conf.map(p => p.name).join(', '));
-    L.push('  site-to-site: ' + PARTS['site-to-site'].map(p => p.name).join(', '));
     L.push('  server: ' + PARTS.server.map(p => p.name).join(', '));
     if (page) {
         const on = map => Object.keys(map).map(k => k + (map[k].on ? '*' : '')).join(', ');
@@ -291,7 +298,7 @@ function helpText(page) {
         '  node tools/awg-gen.js amnezia.conf > awg.rsc',
         '  node tools/awg-gen.js --part routing --services youtube,telegram amnezia.conf',
         '  node tools/awg-gen.js --scenario non-ru --exclude steam,epic amnezia.conf',
-        '  node tools/awg-gen.js --mode site-to-site --endpoint 198.51.100.1 --part side-b');
+        '  node tools/awg-gen.js --mode server --net awg --endpoint 198.51.100.1 --part server');
     return L.join('\n') + '\n';
 }
 
@@ -349,7 +356,7 @@ function run(argv, io) {
     try {
         const spec = {};
         OPTIONS.forEach(function (o) {
-            if (!o.name) return;
+            if (!o.name || !offered(o)) return;
             spec[o.name] = { type: o.bool ? 'boolean' : 'string' };
             if (o.short) spec[o.name].short = o.short;
             if (o.multiple) spec[o.name].multiple = true;
@@ -407,7 +414,7 @@ function run(argv, io) {
         let url = PAGE_URL;
         if (opts['share-url']) {
             const c = /(?:[?&]c=)?([A-Za-z0-9_-]+)$/.exec(opts['share-url'].trim());
-            if (!c) throw new UsageError('--share-url: expected the link the page gave when the hub was set up');
+            if (!c) throw new UsageError('--share-url: expected the link the page gave when the server router was set up');
             url += '?c=' + c[1];
         }
         ui = loadPage(url, io.beforeParse);

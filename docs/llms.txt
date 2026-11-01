@@ -9,9 +9,9 @@ Key facts (docs reviewed 2026-10-29, awg-proxy 1.4.4):
 - RouterOS 7.4+ with the `container` package (7.18+: System → Packages → Check For Updates → Enable container → Apply Changes, or `/system/package/update/check-for-updates`, `/system/package/enable container`, `/system/package/apply-changes`; older: the npk from Extra packages). RouterOS 7.21+: `awg-proxy-{arch}.tar.gz` (OCI). RouterOS 7.20 and older: `awg-proxy-{arch}-7.20-Docker.tar.gz`. RouterOS 7.22+: install from the registry `ghcr.io/timbrs/awg-proxy:latest` and update with `/container/repull` or the configurator's `<prefix>-update` script.
 - Architectures: arm64 (hAP ax², hAP ax³, RB5009, CCR2004/2116/2216), arm/ARMv7 (hAP ac², hAP ac³, RB4011, RB3011), armv5 (hEX refresh E50UG, hEX S 2025 E60iUGS, hAP ax S E62iUGS — separate image `awg-proxy-armv5.tar.gz` / `ghcr.io/timbrs/awg-proxy:latest-armv5`), x86_64 (CHR). MIPS (hEX RB750Gr3, hEX S RB760iGS, hAP ac lite, hAP lite, RB2011) and tile (CCR1xxx) are NOT supported: RouterOS has no container package for them.
 - Needs about 16 MB of free RAM. On 16 MB-flash routers put the container on an ext4 USB stick and set `/container/config set tmpdir=usb1/pull`.
-- Modes: normal client (default), reverse (site-to-site between two MikroTiks), server (1:N hub on a VPS or a MikroTik).
+- Modes: normal client (default), reverse (site-to-site between two MikroTiks), server (an AmneziaWG server for many clients on a VPS or a MikroTik; in the configurator: "MikroTik as an AmneziaWG server"). The configurator no longer offers site-to-site: the server mode joins two MikroTiks just as well.
 - Speed is limited by the router CPU doing WireGuard crypto, not by the proxy.
-- Port range: `AWG_REMOTE=host:20000-29999` (up to 32 ports/ranges) draws a random port per connection, hops off a silent one in ~15 s and, since 1.4.4, moves to another port every 30–120 min without a drop (`AWG_PORT_ROTATE`, off for WARP). The server must forward the whole range to its port: `scripts/awg-ports.sh` on a VPS, the "More server ports" field for a MikroTik hub (the hub needs 1.4.4+).
+- Port range: `AWG_REMOTE=host:20000-29999` (up to 32 ports/ranges) draws a random port per connection, hops off a silent one in ~15 s and, since 1.4.4, moves to another port every 30–120 min without a drop (`AWG_PORT_ROTATE`, off for WARP). The server must forward the whole range to its port: `scripts/awg-ports.sh` on a VPS, the "More server ports" field for a MikroTik server (it needs 1.4.4+).
 
 ## Docs (Russian, primary)
 
@@ -22,7 +22,7 @@ Key facts (docs reviewed 2026-10-29, awg-proxy 1.4.4):
 - [Environment variables](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/env.md): every `AWG_*` variable
 - [AmneziaWG 3.0, 3.1 and IPv6](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/protocol.md): wire format, S1–S4 ≥ 12, fallback chain, Happy Eyeballs
 - [Routing, DNS and MTU](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/routing.md): routes through the tunnel, PPPoE/MTU, DNS address-list routing limits
-- [Server mode](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/server-mode.md): 1:N hub, direct AmneziaWG clients, routing between clients
+- [Server mode](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/server-mode.md): a MikroTik or a VPS as an AmneziaWG server, direct AmneziaWG clients, routing between clients
 - [Troubleshooting](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/troubleshooting.md): exact RouterOS/container error messages and fixes
 - [Port range](https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/docs/ports.md): make the server take AmneziaWG on thousands of UDP ports (scripts/awg-ports.sh, one command), and how to give the range to the configurator
 

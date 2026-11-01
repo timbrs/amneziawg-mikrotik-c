@@ -50,7 +50,7 @@ On a hAP ax² (128 MB flash, no USB) awg-proxy fits in internal storage. If Rout
 ### Do I need a public IP?
 
 Not for the normal mode, where the router is a client of an AmneziaWG server. A public IP or IPv6 is needed
-only on the side others connect to: the server router in site-to-site, or the hub in server mode.
+only on the side others connect to: the router or VPS in server mode ("MikroTik as an AmneziaWG server").
 
 ### I have no AmneziaVPN. What do I paste into the configurator?
 
@@ -284,11 +284,11 @@ Depends on what changed.
 Already installed on top and got duplicates? The same `<prefix>-uninstall` removes everything with that
 prefix, duplicates included. Install cleanly after it.
 
-A server-mode hub is not reinstalled this way: the configurator would generate new keys for it, and every
+A router in server mode is not reinstalled this way: the configurator would generate new keys for it, and every
 client would have to be set up again.
 
-### Can phones connect to a MikroTik hub?
+### Can phones connect to a MikroTik server?
 
-Yes. In "Server (1:N hub)" mode the configurator also produces a `.conf` and a share link for the AmneziaWG and
-AmneziaVPN apps. The hub's proxy takes the public keys of such direct clients from `AWG_CLIENT_PUBS`. Details:
+Yes. In "MikroTik as an AmneziaWG server" mode the configurator also produces a `.conf` and a share link for the AmneziaWG and
+AmneziaVPN apps. The proxy on the server router takes the public keys of such direct clients from `AWG_CLIENT_PUBS`. Details:
 [server mode](server-mode.md).

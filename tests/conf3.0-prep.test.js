@@ -21,6 +21,11 @@ function ok(name, cond, extra) {
     if (cond) { passes++; console.log('  PASS  ' + name); }
     else { fails++; console.log('  FAIL  ' + name + (extra ? ': ' + extra : '')); }
 }
+// Site-to-site is hidden in the configurator; its checks are kept as they
+// were, wrapped in skip() and not run. TODO: if nobody asks for the mode back
+// by the end of 2026, delete them in 2027 together with it.
+const SITE_TO_SITE_HIDDEN = 'site-to-site is hidden in the configurator';
+function skip(name, why, checks) { console.log('  SKIP  ' + name + ': ' + why); }
 
 function offlineGuard(win) {
     for (const name of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource']) {
@@ -76,8 +81,11 @@ function mode(value) {
     w.onModeChange();
     return card.style.display !== 'none';
 }
-['container', 'warp', 'site-to-site', 'server'].forEach(function (m) {
+['container', 'warp', 'server'].forEach(function (m) {
     ok('shown in the ' + m + ' mode', mode(m));
+});
+skip('shown in the site-to-site mode', SITE_TO_SITE_HIDDEN, function () {
+    ok('shown in the site-to-site mode', mode('site-to-site'));
 });
 ok('hidden for the proxy on a device of its own', !mode('standalone'));
 ok('back again', mode('container'));

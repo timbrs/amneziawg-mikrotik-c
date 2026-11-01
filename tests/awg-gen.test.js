@@ -26,6 +26,11 @@ function ok(name, cond, extra) {
     if (cond) { passes++; console.log('  PASS  ' + name); }
     else { fails++; console.log('  FAIL  ' + name + (extra ? ': ' + extra : '')); }
 }
+// Site-to-site is hidden on the page and in the CLI; its checks are kept as
+// they were, wrapped in skip() and not run. TODO: if nobody asks for the mode
+// back by the end of 2026, delete them in 2027 together with it.
+const SITE_TO_SITE_HIDDEN = 'site-to-site is hidden in the configurator';
+function skip(name, why, checks) { console.log('  SKIP  ' + name + ': ' + why); }
 function same(name, a, b) {
     if (a === b) { ok(name, true); return; }
     let i = 0;
@@ -191,6 +196,7 @@ check('bare WARP with junk packets', ['--mode', 'warp', '--warp-junk', '--scenar
             .box('#warp-ports-enable', false).generate(),
       { install: 'output', uninstall: 'uninstall-output' });
 
+skip('site-to-site, AWG 2.0 without the fallback chain', SITE_TO_SITE_HIDDEN, function () {
 check('site-to-site, AWG 2.0 without the fallback chain',
       ['--mode', 'site-to-site', '--proto', 'v2', '--no-compat', '--endpoint', '198.51.100.1', '--port', '40000',
        '--subnet', '10.9.9.0/30', '--dns', '192.168.88.1', '--lan-a', '192.168.1.0/24', '--lan-b', '192.168.2.0/24',
@@ -200,6 +206,7 @@ check('site-to-site, AWG 2.0 without the fallback chain',
             .type('s2s-dns', '192.168.88.1').type('s2s-lan-a', '192.168.1.0/24').type('s2s-lan-b', '192.168.2.0/24')
             .pick('s2s-storage-a', 'usb1').generate(),
       S2S_PARTS);
+});
 
 const hub = check('server hub, L3, client 2',
       ['--mode', 'server', '--endpoint', 'vpn.example.com', '--dns', '192.168.88.1',
@@ -249,8 +256,10 @@ const noDns = refused('a hostname endpoint and no public DNS', ['--lang', 'en'],
 ok('names the option that fixes it', /--dns/.test(noDns.err), noDns.err);
 refused('standalone without the device address', ['--mode', 'standalone'], AWG,
         p => p.radio('deploy-mode', 'standalone').type('conf-input', AWG).generate());
+skip('site-to-site without side B', SITE_TO_SITE_HIDDEN, function () {
 refused('site-to-site without side B', ['--mode', 'site-to-site'], undefined,
         p => p.radio('deploy-mode', 'site-to-site').generate());
+});
 
 /* ---- the command line ---- */
 console.log('--- command line');
@@ -260,9 +269,11 @@ function usage(name, args, stdin, re) {
     ok(name + ': says why', re.test(r.err), r.err);
 }
 usage('an unknown option', ['--frobnicate'], AWG, /Unknown option/);
-usage('an unknown mode', ['--mode', 'cloud'], AWG, /container, standalone, warp, site-to-site, server/);
+usage('an unknown mode', ['--mode', 'cloud'], AWG, /container, standalone, warp, server$/m);
+usage('site-to-site, hidden on the page', ['--mode', 'site-to-site'], undefined, /container, standalone, warp, server$/m);
+usage('an option of site-to-site only', ['--lan-a', '192.168.1.0/24'], AWG, /Unknown option '--lan-a'/);
 usage('an unknown service', ['--services', 'youtub'], AWG, /youtube/);
-usage('an option from another mode', ['--endpoint', '198.51.100.1'], AWG, /--endpoint is for --mode site-to-site, server/);
+usage('an option from another mode', ['--endpoint', '198.51.100.1'], AWG, /--endpoint is for --mode server, not container/);
 usage('services outside DNS routing', ['--scenario', 'tunnel', '--services', 'youtube'], AWG, /--scenario dns-fwd/);
 usage('a part this mode does not make', ['--part', 'side-a'], AWG, /install/);
 usage('a .conf where keys are generated', ['--mode', 'server', 'x.conf'], undefined, /takes no \.conf/);
@@ -305,7 +316,8 @@ const help = node(['--help']);
 ok('--help: exit 0', help.status === 0, help.stderr);
 ok('lists the modes, the parts and the services from the page',
    /--mode MODE/.test(help.stdout) && /--part NAME/.test(help.stdout) && /youtube\*/.test(help.stdout) &&
-   /side-a, uninstall-a/.test(help.stdout), help.stdout.slice(0, 200));
+   /server: link, server, client/.test(help.stdout), help.stdout.slice(0, 200));
+ok('and no site-to-site: it is hidden', !/site-to-site|side-a|--lan-a/.test(help.stdout), help.stdout.slice(0, 200));
 const bad = node(['--lang', 'en'], plain.replace(/^S1 = .*$/m, 'S1 = x'));
 ok('a refused config: exit 1, the reason on stderr, nothing on stdout',
    bad.status === 1 && /S1/.test(bad.stderr) && bad.stdout === '', bad.status + ' ' + bad.stderr);

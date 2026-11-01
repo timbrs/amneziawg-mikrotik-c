@@ -31,6 +31,11 @@ function ok(name, cond, extra) {
     if (cond) { passes++; console.log('  PASS  ' + name); }
     else { fails++; console.log('  FAIL  ' + name + (extra ? ': ' + extra : '')); }
 }
+// Site-to-site is hidden in the configurator; its checks are kept as they
+// were, wrapped in skip() and not run. TODO: if nobody asks for the mode back
+// by the end of 2026, delete them in 2027 together with it.
+const SITE_TO_SITE_HIDDEN = 'site-to-site is hidden in the configurator';
+function skip(name, why, checks) { console.log('  SKIP  ' + name + ': ' + why); }
 function eq(name, a, b) { ok(name, a === b, JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
 
 // The page must never reach the network from a test run, so every way out is
@@ -253,11 +258,13 @@ ok('server uninstall removes them too',
    srvUninstall.indexOf('/system/scheduler/remove [find where comment~"awg-proxy-1"]') >= 0 &&
    srvUninstall.indexOf('/system/script/remove [find where comment~"awg-proxy-1"') >= 0);
 
-const s2sUninstall = w.buildS2SUninstallSource('awg-proxy-1', 'disk1',
-                                               w.getTunnelNetwork('awg-proxy-1'), false);
-ok('site-to-site uninstall removes them too',
-   s2sUninstall.indexOf('/system/scheduler/remove [find where comment~"awg-proxy-1"]') >= 0 &&
-   s2sUninstall.indexOf('/system/script/remove [find where comment~"awg-proxy-1"') >= 0);
+skip('site-to-site uninstall removes them too', SITE_TO_SITE_HIDDEN, function () {
+    const s2sUninstall = w.buildS2SUninstallSource('awg-proxy-1', 'disk1',
+                                                   w.getTunnelNetwork('awg-proxy-1'), false);
+    ok('site-to-site uninstall removes them too',
+       s2sUninstall.indexOf('/system/scheduler/remove [find where comment~"awg-proxy-1"]') >= 0 &&
+       s2sUninstall.indexOf('/system/script/remove [find where comment~"awg-proxy-1"') >= 0);
+});
 
 /* ---- external storage keeps its tmpdir handling ---- */
 const usb = w.buildImageSetupLines('awg-proxy-1', 'usb1', {}).join(NL);

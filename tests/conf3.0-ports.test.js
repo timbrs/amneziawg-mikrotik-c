@@ -24,6 +24,11 @@ function ok(name, cond, extra) {
     if (cond) { passes++; console.log('  PASS  ' + name); }
     else { fails++; console.log('  FAIL  ' + name + (extra ? ': ' + extra : '')); }
 }
+// Site-to-site is hidden in the configurator; its checks are kept as they
+// were, wrapped in skip() and not run. TODO: if nobody asks for the mode back
+// by the end of 2026, delete them in 2027 together with it.
+const SITE_TO_SITE_HIDDEN = 'site-to-site is hidden in the configurator';
+function skip(name, why, checks) { console.log('  SKIP  ' + name + ': ' + why); }
 function eq(name, a, b) { ok(name, a === b, JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
 
 const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'https://example.invalid/' });
@@ -211,7 +216,9 @@ function shownIn(mode) {
 ok('offered for a container install', shownIn('container'));
 ok('and for a proxy on a device of its own', shownIn('standalone'));
 ok('not in WARP mode: Cloudflare has its own list', !shownIn('warp'));
-ok('not for site-to-site', !shownIn('site-to-site'));
+skip('not for site-to-site', SITE_TO_SITE_HIDDEN, function () {
+    ok('not for site-to-site', !shownIn('site-to-site'));
+});
 ok('not for the hub', !shownIn('server'));
 shownIn('container');
 

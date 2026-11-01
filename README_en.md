@@ -81,7 +81,7 @@ Done: the tunnel is up, and all traffic or only the services you picked in the c
 - **Several server ports.** If the server takes AmneziaWG on a range of ports, the proxy draws a random one for every connection, leaves one that does not answer in about 15 seconds and moves to another every 30–120 minutes on the fly — with no drop that games or streams would notice. How to set up the server (a VPS with one command or a MikroTik hub) — [docs/en/ports.md](docs/en/ports.md).
 - **Updates and heals itself.** On RouterOS 7.22+ the container comes from the registry, updates with one command or nightly on a schedule, and comes back up by itself if it falls over.
 - **Light and fast.** The image is about 90 KB, 1–2 MB in memory. Hundreds of Mbit/s on a hAP ax² and ax³: the limit is the router's CPU doing the WireGuard crypto, not the proxy.
-- **Not only a client.** Two MikroTiks to each other (site-to-site) and a hub for many clients on a VPS or a MikroTik (server mode).
+- **Not only a client.** A MikroTik can be an AmneziaWG server itself: other MikroTiks, phones and laptops connect to it. The same server goes on a VPS too (server mode).
 
 This is the current repository. The old Go version, [timbrs/amneziawg-mikrotik](https://github.com/timbrs/amneziawg-mikrotik), is no longer developed.
 
@@ -120,8 +120,8 @@ The router encrypts traffic with its stock WireGuard and sends the packets not t
 Other modes:
 
 - **site-to-site (reverse)** — two MikroTiks connect to each other over AmneziaWG with no separate server:
-  `MikroTik1 WG ↔ [awg-proxy normal] ──AWG──> [awg-proxy reverse] ↔ MikroTik2 WG`. Point-to-point only.
-- **server (1:N hub)** — one awg-proxy on a VPS or a MikroTik takes many clients and hands them to a plain WireGuard server: [docs/en/server-mode.md](docs/en/server-mode.md).
+  `MikroTik1 WG ↔ [awg-proxy normal] ──AWG──> [awg-proxy reverse] ↔ MikroTik2 WG`. Point-to-point only. The configurator no longer offers this mode: "MikroTik as an AmneziaWG server" joins two MikroTiks just as well.
+- **server** — an AmneziaWG server: one awg-proxy on a VPS or a MikroTik takes many clients and hands them to a plain WireGuard server. In the configurator it is the "MikroTik as an AmneziaWG server" mode: [docs/en/server-mode.md](docs/en/server-mode.md).
 
 ## Documentation
 
@@ -136,7 +136,7 @@ Detailed documentation lives in [`docs/en/`](docs/en/) (Russian: [`docs/`](docs/
 | [env.md](docs/en/env.md) | Every container environment variable |
 | [protocol.md](docs/en/protocol.md) | AmneziaWG 3.0 and 3.1 on the wire, the fallback chain, IPv6 |
 | [routing.md](docs/en/routing.md) | Routes through the tunnel, DNS, MTU and PPPoE, address-list |
-| [server-mode.md](docs/en/server-mode.md) | A 1:N hub on a VPS or a MikroTik |
+| [server-mode.md](docs/en/server-mode.md) | A MikroTik or a VPS as an AmneziaWG server |
 | [troubleshooting.md](docs/en/troubleshooting.md) | Error messages and what to do about them |
 
 A short summary with links for AI assistants: [llms.txt](https://timbrs.github.io/amneziawg-mikrotik-c/llms.txt). Working on the code? See [AGENTS.md](AGENTS.md).
@@ -230,7 +230,7 @@ npm install jsdom                        # once, in the repository root
 node tools/awg-gen.js amnezia.conf > awg.rsc
 node tools/awg-gen.js --scenario non-ru --exclude steam,epic amnezia.conf
 node tools/awg-gen.js --part routing --services youtube,telegram amnezia.conf
-node tools/awg-gen.js --mode site-to-site --endpoint 198.51.100.1 --part side-b
+node tools/awg-gen.js --mode server --net awg --endpoint 198.51.100.1 --part server
 node tools/awg-gen.js --help             # every option, the services and the disks
 ```
 

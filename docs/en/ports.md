@@ -74,12 +74,12 @@ Any one of three ways:
 
 The range on MikroTik alone is not enough: if the server does not take those ports, the proxy keeps landing on silent ports and hopping. Server first, router second.
 
-## A MikroTik hub (server mode)
+## A MikroTik as an AmneziaWG server (server mode)
 
-If the server is a MikroTik in "Server (1:N hub)" mode, the hub's own firewall does the range: a dst-nat rule sends every port of it to the one port of the container.
+If the server is a MikroTik in "MikroTik as an AmneziaWG server" mode, the router's own firewall does the range: a dst-nat rule sends every port of it to the one port of the container.
 
-- **A new hub.** In the configurator fill in **"More server ports"**, for example `30000-30999`. The configurator puts dst-nat and the forward rule on the main port and the range on the hub, and writes them into the clients' `AWG_REMOTE`. The range is kept in the "add a client" link, so later clients get it by themselves.
-- **A hub already in place.** Add the range to its two rules (`awg-server-1` is your installation's prefix, `27015` its port), and to the IPv6 ones if there are any:
+- **A new server.** In the configurator fill in **"More server ports"**, for example `30000-30999`. The configurator puts dst-nat and the forward rule on the main port and the range on the server router, and writes them into the clients' `AWG_REMOTE`. The range is kept in the "add a client" link, so later clients get it by themselves.
+- **A server already in place.** Add the range to its two rules (`awg-server-1` is your installation's prefix, `27015` its port), and to the IPv6 ones if there are any:
 
   ```routeros
   /ip/firewall/nat/set [find comment=awg-server-1-dstnat] dst-port=27015,30000-30999
@@ -94,7 +94,7 @@ If the server is a MikroTik in "Server (1:N hub)" mode, the hub's own firewall d
   /container/start [find interface=veth-awg-server-1]
   ```
 
-Pick a range the hub forwards nothing else on: dst-nat takes all of it. **The hub needs awg-proxy 1.4.4 or newer.** Until the new port answers, a client sends every packet down both ports, and an older hub sent the replies back to the old port — every move fell back (the link stayed up, but the port never changed).
+Pick a range the server router forwards nothing else on: dst-nat takes all of it. **The server router needs awg-proxy 1.4.4 or newer.** Until the new port answers, a client sends every packet down both ports, and an older proxy on the server sent the replies back to the old port — every move fell back (the link stayed up, but the port never changed).
 
 ## By hand, without the script
 
