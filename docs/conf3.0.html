@@ -22,6 +22,8 @@
             --text-muted: #6b7280;
             --accent: #4f46e5;
             --accent-hover: #4338ca;
+            --link: #c2410c;
+            --link-hover: #9a3412;
             --prep-bg: #fef3c7;
             --prep-bg-hover: #fde68a;
             --prep-border: #f59e0b;
@@ -438,6 +440,14 @@
             background: #fafafa;
         }
 
+        a {
+            color: var(--link);
+        }
+
+        a:hover {
+            color: var(--link-hover);
+        }
+
         .promo {
             --promo: #15803d;
             --promo-line: #4ade80;
@@ -448,7 +458,7 @@
             border-radius: 8px;
             background: #f3fdf6;
             font-size: 0.85rem;
-            line-height: 1.55;
+            line-height: 1.5;
         }
 
         .promo-title {
@@ -487,15 +497,149 @@
         }
 
         .promo[open] .promo-title {
-            margin-bottom: 6px;
+            margin-bottom: 8px;
         }
 
-        .promo p {
-            margin: 2px 0;
+        .promo-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 10px;
         }
 
-        .promo a {
-            color: var(--promo);
+        .promo-card {
+            padding: 10px 12px;
+            border: 1px solid var(--card-border);
+            border-top: 3px solid var(--card-line);
+            border-radius: 8px;
+            background: var(--card-bg);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .promo-go {
+            margin-top: auto;
+            padding-top: 10px;
+        }
+
+        .promo-card .promo-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 18px;
+            border: 1.5px solid var(--card-line);
+            border-radius: 8px;
+            background: var(--card-soft);
+            color: var(--card);
+            font-size: 0.9rem;
+            font-weight: 600;
+            text-decoration: none;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+            transition: background 0.15s, color 0.15s, box-shadow 0.15s, transform 0.1s;
+        }
+
+        .promo-card .promo-btn:hover,
+        .promo-card .promo-btn:focus-visible {
+            background: var(--card-btn);
+            border-color: var(--card-btn);
+            color: #fff;
+            box-shadow: 0 0 0 3px var(--card-glow), 0 6px 16px var(--card-glow);
+            transform: translateY(-1px);
+            outline: none;
+        }
+
+        .promo-card .promo-btn:active {
+            transform: scale(0.97);
+            box-shadow: 0 0 0 2px var(--card-glow);
+        }
+
+        .promo-arrow {
+            transition: transform 0.15s;
+        }
+
+        .promo-btn:hover .promo-arrow {
+            transform: translateX(3px);
+        }
+
+        .promo-cheap {
+            --card: #15803d;
+            --card-line: #4ade80;
+            --card-border: #bbf7d0;
+            --card-btn: #16a34a;
+            --card-soft: rgba(34, 197, 94, 0.12);
+            --card-glow: rgba(34, 197, 94, 0.35);
+            --card-bg: linear-gradient(160deg, #ffffff, #dcfce7);
+        }
+
+        .promo-fast {
+            --card: #c2410c;
+            --card-line: #f97316;
+            --card-border: #fed7aa;
+            --card-btn: #ea580c;
+            --card-soft: rgba(249, 115, 22, 0.12);
+            --card-glow: rgba(249, 115, 22, 0.4);
+            --card-bg: linear-gradient(160deg, #fff7ed, #ffedd5);
+        }
+
+        .promo-head {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: 700;
+            font-size: 0.95rem;
+            color: var(--card);
+        }
+
+        .promo-cheap .promo-head::before {
+            content: "\1F33F";
+        }
+
+        .promo-fast .promo-head::before {
+            content: "\1F525";
+        }
+
+        .promo-tag {
+            margin-bottom: 4px;
+            color: var(--card);
+        }
+
+        .promo-card a {
+            color: var(--card);
+            font-weight: 700;
+        }
+
+        .promo-price {
+            margin-top: 4px;
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--card);
+        }
+
+        .promo-rub {
+            font-size: 0.82rem;
+            font-weight: 400;
+            color: var(--text-muted);
+        }
+
+        .promo-card .promo-code {
+            font-family: var(--mono);
+            font-size: 0.85rem;
+            background: transparent;
+            padding: 1px 5px;
+            border: 1px dashed var(--card-line);
+            border-radius: 4px;
+            user-select: all;
+        }
+
+        .promo-vat {
+            margin-top: 4px;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+        }
+
+        .promo-note {
+            margin-top: 6px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
         }
 
         #warp-panel {
@@ -608,6 +752,8 @@
                 --text-muted: #888888;
                 --accent: #f97316;
                 --accent-hover: #ea580c;
+                --link: #fb923c;
+                --link-hover: #fdba74;
                 --prep-bg: #3b2f05;
                 --prep-bg-hover: #4d3d06;
                 --prep-border: #facc15;
@@ -643,7 +789,10 @@
             .btn-secondary:hover { background: #333; }
 
             .scenario-panel { background: #242424; }
-            .promo { --promo: #86efac; --promo-line: #4ade80; background: #14231a; border-color: #1f3d29; }            .checkbox-grid label:hover { background: #2a2a2a; }
+            .promo { --promo: #86efac; background: #14231a; border-color: #1f3d29; }
+            .promo-cheap { --card: #86efac; --card-border: #2a5a3a; --card-bg: linear-gradient(160deg, #1a1a1a, #10301c); }
+            .promo-fast { --card: #fdba74; --card-border: #5c2d0e; --card-bg: linear-gradient(160deg, #2a1709, #3a1d08); }
+            .checkbox-grid label:hover { background: #2a2a2a; }
 
             .alert-warning { background: #2a1a00; border-color: #92400e; color: #fcd34d; }
 
@@ -819,9 +968,9 @@
     <details class="card prep-card" id="prep-card">
         <summary><span class="prep-chev" aria-hidden="true">&#9654;</span>
             <span><span class="prep-head" data-i18n="prepTitle">First, prepare the router</span>
-            <span class="prep-tap" data-i18n="prepTap">Click to open: the container package, device-mode and how to check them</span></span></summary>
+            <span class="prep-tap" data-i18n="prepTap">Click to open: the container package, device-mode, your own VPN server and how to check them</span></span></summary>
         <div class="prep-body">
-        <p style="font-size:0.86rem;margin:12px 0 0;line-height:1.5" data-i18n="prepLead">Without these three steps the commands below will not run. Each one is done once.</p>
+        <p style="font-size:0.86rem;margin:12px 0 0;line-height:1.5" data-i18n="prepLead">Without these four steps the commands below will not run. Each one is done once.</p>
         <ol class="prep-steps">
             <li><b data-i18n="prepArchT">The router fits.</b>
                 <span data-i18n="prepArch">An ARM, ARM64 or x86 CPU and RouterOS 7.4 or newer. In the terminal:</span>
@@ -846,8 +995,13 @@
                 <pre class="prep-cmd">/system/device-mode/update container=yes fetch=yes bandwidth-test=yes scheduler=yes</pre>
                 <span data-i18n="prepMode2">Then, within 5 minutes, press a button on the router (Reset or Mode) or power it off and on: that is how RouterOS makes sure you are next to it. Check:</span>
                 <code>/system/device-mode/print</code> <span data-i18n="prepMode3">shows yes everywhere.</span></li>
+            <li><b data-i18n="prepVpsT">You have your own VPN server.</b>
+                <span data-i18n="prepVps">Rent a VPS and install</span>
+                <a href="https://storage.googleapis.com/amnezia/amnezia.org" target="_blank" rel="noopener">AmneziaVPN</a><span data-i18n="prepVpsApp"> on it: the app sets up the AmneziaWG server over SSH by itself and gives you the .conf for the router.</span>
+                <div style="margin-top:6px" data-i18n="prepVps2">Which server to take:</div>
+                <div id="prep-vps-cards" style="margin-top:6px"></div></li>
         </ol>
-        <div class="hint" data-i18n="prepDone">All three done? Paste the .conf below. After Generate, the "Router check" block prints a script that looks at the router and says what is still missing.</div>
+        <div class="hint" data-i18n="prepDone">All four done? Paste the .conf below. After Generate, the "Router check" block prints a script that looks at the router and says what is still missing.</div>
         </div>
     </details>
 
@@ -902,12 +1056,12 @@
         </div>
         <div id="ports-row" style="margin-top:10px">
             <label><input type="checkbox" id="ports-enable" onchange="onPortsToggle()">
-            <span data-i18n="portsLabel">The server takes AmneziaWG on several ports</span></label>
+            <span data-i18n="portsLabel">The server should take AmneziaWG on several ports</span></label>
             <div id="ports-panel" style="display:none;margin-top:6px">
                 <input type="text" id="ports-spec" placeholder="20113-30112" oninput="portsTyped()">
                 <div id="ports-spec-error" class="field-error" role="alert" style="display:none"></div>
-                <div class="hint" data-i18n="portsHint">The ports and ranges the server takes, separated by commas, up to 32 pieces. The proxy draws one at random for every connection and leaves one that does not answer in about 15 s.</div>
-                <div class="hint" style="margin-top:6px"><span data-i18n="portsHowTo">Not set up on the server yet? Run this on the server: it finds AmneziaWG, picks free ports, keeps them over a reboot and prints the range to paste here.</span>
+                <div class="hint" data-i18n="portsHint">The server listens on several ports at once, and the container hops between them: it picks a random port for every connection and leaves one that does not answer in about 15 s. List the ports and ranges, separated by commas, up to 32 pieces.</div>
+                <div class="hint" style="margin-top:6px"><span data-i18n="portsHowTo">To make the server listen on several ports, run this on it: the script finds AmneziaWG, picks free ports, keeps them over a reboot and prints the range to paste here.</span>
                     <pre class="prep-cmd">curl -fsSL https://raw.githubusercontent.com/timbrs/amneziawg-mikrotik-c/main/scripts/awg-ports.sh | sudo bash</pre>
                     <span data-i18n="portsMore">How it works and how to do it by hand:</span>
                     <a href="https://github.com/timbrs/amneziawg-mikrotik-c/blob/main/docs/ports.md" target="_blank" rel="noopener">docs/ports.md</a> &middot;
@@ -916,13 +1070,29 @@
         </div>
         <details class="promo">
             <summary class="promo-title" data-i18n="promoTitle">VPS без ограничений по трафику</summary>
-            <p>
-                <span data-i18n="promoIntro">Разместить сервер AmneziaWG можно у</span>
-                <a href="https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/" target="_blank" rel="noopener">Freakhosting</a><span data-i18n="promoSection">, раздел Budget VPS</span>.
-            </p>
-            <p><b data-i18n="promoPlanLabel">Рекомендуемый тариф:</b> BVPS-2 &mdash; <span data-i18n="promoSpecs">2 vCPU, 2 ГБ RAM, 40 ГБ NVMe SSD</span>.</p>
-            <p><b data-i18n="promoAdvLabel">Ключевое преимущество:</b> <span data-i18n="promoAdv">порт 10 Гбит/с с безлимитным трафиком &mdash; идеально для VPN.</span></p>
-            <p><b data-i18n="promoPriceLabel">Цена:</b> <span data-i18n="promoPrice">всего $34 в год (около 2700 руб.; на момент проверки, цена может меняться)</span>.</p>
+            <div class="promo-cards">
+                <div class="promo-card promo-cheap">
+                    <div class="promo-head" data-i18n="promoCheapTitle">Простой и дешёвый</div>
+                    <div class="promo-tag" data-i18n="promoCheapTag">Для своего VPN хватает с запасом</div>
+                    <div><a href="https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/" target="_blank" rel="noopener">Freakhosting</a> &middot; BVPS-2</div>
+                    <div data-i18n="promoCheapSpecs">2 vCPU · 2 ГБ RAM · 40 ГБ NVMe</div>
+                    <div data-i18n="promoCheapNet">1 Гбит/с, трафик без лимита</div>
+                    <div class="promo-price"><span data-i18n="promoCheapPrice">$34 в год</span> <span class="promo-rub">&asymp; 2700 &#8381;</span></div>
+                    <div class="promo-go"><a class="promo-btn" href="https://freakhosting.com/clientarea/aff.php?aff=730&redirectto=https://freakhosting.com/budget-vps/" target="_blank" rel="noopener"><span data-i18n="promoGo">Перейти</span><span class="promo-arrow" aria-hidden="true">&rarr;</span></a></div>
+                </div>
+                <div class="promo-card promo-fast">
+                    <div class="promo-head" data-i18n="promoFastTitle">Мощный и производительный</div>
+                    <div class="promo-tag" data-i18n="promoFastTag">Тянет не только VPN, но и тяжёлые задачи</div>
+                    <div><a href="https://www.netcup.com/en/server/vps?ref=353517" target="_blank" rel="noopener">netcup</a> &middot; VPS 500 G12.5</div>
+                    <div data-i18n="promoFastSpecs">2 vCore x86 · 4 ГБ RAM · 64 ГБ</div>
+                    <div data-i18n="promoFastNet">2,5 Гбит/с, трафик без лимита, IPv4 + IPv6 (выдаётся подсеть /64)</div>
+                    <div class="promo-price"><span data-i18n="promoFastPrice">8 € в месяц</span> <span class="promo-rub">&asymp; 732 &#8381;</span></div>
+                    <div><span data-i18n="promoVoucher">−5 € по промокоду</span> <code class="promo-code">36nc17781681630</code></div>
+                    <div class="promo-vat" data-i18n="promoVat">netcup сначала показывает цену с немецким НДС 19&nbsp;%. Вверху сайта нажмите на флаг с процентом и выберите вариант с 0&nbsp;%: покупатели вне ЕС НДС не платят.</div>
+                    <div class="promo-go"><a class="promo-btn" href="https://www.netcup.com/en/server/vps?ref=353517" target="_blank" rel="noopener"><span data-i18n="promoGo">Перейти</span><span class="promo-arrow" aria-hidden="true">&rarr;</span></a></div>
+                </div>
+            </div>
+            <div class="promo-note" data-i18n="promoNote">Цены на момент проверки, могут меняться.</div>
         </details>
         <div id="scenario-row" style="margin-top:14px">
             <label data-i18n="scenarioLabel">Routing scenario</label>
@@ -1404,9 +1574,9 @@
             btnWarpQuic: 'Make the packet before the handshake look like Chrome QUIC (I1, Jc = 0)',
             warpSimpleNote: 'Only what WARP needs is asked here; everything else keeps its defaults.',
             warpPortsLabel: 'Random WARP port',
-            portsLabel: 'The server takes AmneziaWG on several ports',
-            portsHint: 'The ports and ranges the server takes, separated by commas, up to 32 pieces. The proxy draws one at random for every connection and leaves one that does not answer in about 15 s.',
-            portsHowTo: 'Not set up on the server yet? Run this on the server: it finds AmneziaWG, picks free ports, keeps them over a reboot and prints the range to paste here.',
+            portsLabel: 'The server should take AmneziaWG on several ports',
+            portsHint: 'The server listens on several ports at once, and the container hops between them: it picks a random port for every connection and leaves one that does not answer in about 15 s. List the ports and ranges, separated by commas, up to 32 pieces.',
+            portsHowTo: 'To make the server listen on several ports, run this on it: the script finds AmneziaWG, picks free ports, keeps them over a reboot and prints the range to paste here.',
             portsMore: 'How it works and how to do it by hand:',
             errPortsInvalid: 'Server ports: give ports and ranges separated by commas, no spaces, up to 32 pieces, e.g. 20113-30112 or 443,8443,20000-29999.',
             warpShowAll: 'Show all settings',
@@ -1439,8 +1609,8 @@
             subtitle: 'Paste an AmneziaWG .conf (1.0 through 3.0) to generate ready-to-use MikroTik RouterOS commands',
             privacy: 'All configuration and data is processed locally in your browser. Nothing is transmitted anywhere. Your private keys are safe.',
             prepTitle: 'First, prepare the router',
-            prepTap: 'Click to open: the container package, device-mode and how to check them',
-            prepLead: 'Without these three steps the commands below will not run. Each one is done once.',
+            prepTap: 'Click to open: the container package, device-mode, your own VPN server and how to check them',
+            prepLead: 'Without these four steps the commands below will not run. Each one is done once.',
             prepArchT: 'The router fits.',
             prepArch: 'An ARM, ARM64 or x86 CPU and RouterOS 7.4 or newer. In the terminal:',
             prepArch2: '\u2014 architecture-name must say arm64, arm or x86_64. MIPS (hEX, hEX S, hAP ac lite, hAP lite) will not do: MikroTik makes no container package for it.',
@@ -1457,7 +1627,11 @@
             prepMode: 'Run:',
             prepMode2: 'Then, within 5 minutes, press a button on the router (Reset or Mode) or power it off and on: that is how RouterOS makes sure you are next to it. Check:',
             prepMode3: 'shows yes everywhere.',
-            prepDone: 'All three done? Paste the .conf below. After Generate, the \u201cRouter check\u201d block prints a script that looks at the router and says what is still missing.',
+            prepVpsT: 'You have your own VPN server.',
+            prepVps: 'Rent a VPS and install',
+            prepVpsApp: ' on it: the app sets up the AmneziaWG server over SSH by itself and gives you the .conf for the router.',
+            prepVps2: 'Which server to take:',
+            prepDone: 'All four done? Paste the .conf below. After Generate, the \u201cRouter check\u201d block prints a script that looks at the router and says what is still missing.',
             confTitle: 'AmneziaWG Configuration File',
             confLabel: '.conf file contents',
             modeLabel: 'Deployment mode',
@@ -1521,14 +1695,20 @@
             ipv6Hint: 'The IPv6 header is 40 bytes instead of 20, so a full-size packet no longer fits a 1500-byte path and the WireGuard MTU has to come down. Ticked automatically when the endpoint is an IPv6 literal. For a DNS name the box stays off (IPv4 MTU) \u2014 tick it yourself if you know the name has an AAAA record; the generated script also asks the router with :resolve type=ipv6 and lowers the MTU if it answers.',
             ipv6MtuNote: 'The endpoint is IPv6, so the WireGuard MTU is lowered by the extra 20 bytes of IPv6 header.',
             promoTitle: 'VPS with unlimited traffic',
-            promoIntro: 'You can host an AmneziaWG server at',
-            promoSection: ', section Budget VPS',
-            promoPlanLabel: 'Recommended plan:',
-            promoSpecs: '2 vCPU, 2 GB RAM, 40 GB NVMe SSD',
-            promoAdvLabel: 'Key advantage:',
-            promoAdv: '10 Gbps port with unlimited traffic \u2014 perfect for VPN.',
-            promoPriceLabel: 'Price:',
-            promoPrice: 'just $34 per year (about 2700 RUB; as of the last check, the price may change)',
+            promoCheapTitle: 'Simple and cheap',
+            promoCheapTag: 'Plenty for your own VPN',
+            promoCheapSpecs: '2 vCPU \u00b7 2 GB RAM \u00b7 40 GB NVMe',
+            promoCheapNet: '1 Gbps, unlimited traffic',
+            promoCheapPrice: '$34 a year',
+            promoFastTitle: 'Powerful and fast',
+            promoFastTag: 'Handles not just a VPN but heavy workloads too',
+            promoFastSpecs: '2 vCore x86 \u00b7 4 GB RAM \u00b7 64 GB',
+            promoFastNet: '2.5 Gbps, unlimited traffic, IPv4 + IPv6 (with a /64 subnet)',
+            promoFastPrice: '\u20ac8 a month',
+            promoVoucher: '\u20ac5 off with code',
+            promoVat: 'netcup first shows the price with 19% German VAT. Click the flag with the percentage at the top of the site and pick the 0% option: buyers outside the EU pay no VAT.',
+            promoGo: 'Visit',
+            promoNote: 'Prices as of the last check; they may change.',
             scenarioLabel: 'Routing scenario',
             scenarioTunnel: 'Tunnel only (manual routes)',
             scenarioDns: 'DNS-based routing for services',
@@ -1684,9 +1864,9 @@
             btnWarpQuic: 'Сделать пакет перед рукопожатием похожим на QUIC Chrome (I1, Jc = 0)',
             warpSimpleNote: 'Здесь спрашивается только то, что нужно WARP, остальное остаётся по умолчанию.',
             warpPortsLabel: 'Случайный порт WARP',
-            portsLabel: 'Сервер принимает AmneziaWG на нескольких портах',
-            portsHint: 'Порты и диапазоны, которые принимает сервер, через запятую, до 32 кусков. Прокси берёт случайный при каждом подключении и уходит с неотвечающего примерно через 15 с.',
-            portsHowTo: 'На сервере ещё не настроено? Выполните на сервере: скрипт найдёт AmneziaWG, подберёт свободные порты, сохранит их на перезагрузку и напечатает диапазон, который нужно вставить сюда.',
+            portsLabel: '\u0421\u0435\u0440\u0432\u0435\u0440 \u0434\u043e\u043b\u0436\u0435\u043d \u043f\u0440\u0438\u043d\u0438\u043c\u0430\u0442\u044c AmneziaWG \u043d\u0430 \u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u0438\u0445 \u043f\u043e\u0440\u0442\u0430\u0445',
+            portsHint: '\u0421\u0435\u0440\u0432\u0435\u0440 \u0441\u043b\u0443\u0448\u0430\u0435\u0442 \u0441\u0440\u0430\u0437\u0443 \u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043f\u043e\u0440\u0442\u043e\u0432, \u0430 \u043a\u043e\u043d\u0442\u0435\u0439\u043d\u0435\u0440 \u043f\u0440\u044b\u0433\u0430\u0435\u0442 \u043f\u043e \u043d\u0438\u043c: \u043f\u0440\u0438 \u043a\u0430\u0436\u0434\u043e\u043c \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0438 \u0431\u0435\u0440\u0451\u0442 \u0441\u043b\u0443\u0447\u0430\u0439\u043d\u044b\u0439 \u043f\u043e\u0440\u0442 \u0438 \u0443\u0445\u043e\u0434\u0438\u0442 \u0441 \u043d\u0435\u043e\u0442\u0432\u0435\u0447\u0430\u044e\u0449\u0435\u0433\u043e \u043f\u0440\u0438\u043c\u0435\u0440\u043d\u043e \u0447\u0435\u0440\u0435\u0437 15 \u0441. \u041f\u0435\u0440\u0435\u0447\u0438\u0441\u043b\u0438\u0442\u0435 \u043f\u043e\u0440\u0442\u044b \u0438 \u0434\u0438\u0430\u043f\u0430\u0437\u043e\u043d\u044b \u0447\u0435\u0440\u0435\u0437 \u0437\u0430\u043f\u044f\u0442\u0443\u044e, \u0434\u043e 32 \u043a\u0443\u0441\u043a\u043e\u0432.',
+            portsHowTo: '\u0427\u0442\u043e\u0431\u044b \u0441\u0435\u0440\u0432\u0435\u0440 \u0441\u043b\u0443\u0448\u0430\u043b \u043d\u0435\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043f\u043e\u0440\u0442\u043e\u0432, \u0432\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u0435 \u043d\u0430 \u043d\u0451\u043c: \u0441\u043a\u0440\u0438\u043f\u0442 \u043d\u0430\u0439\u0434\u0451\u0442 AmneziaWG, \u043f\u043e\u0434\u0431\u0435\u0440\u0451\u0442 \u0441\u0432\u043e\u0431\u043e\u0434\u043d\u044b\u0435 \u043f\u043e\u0440\u0442\u044b, \u0441\u043e\u0445\u0440\u0430\u043d\u0438\u0442 \u0438\u0445 \u043d\u0430 \u043f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0443 \u0438 \u043d\u0430\u043f\u0435\u0447\u0430\u0442\u0430\u0435\u0442 \u0434\u0438\u0430\u043f\u0430\u0437\u043e\u043d, \u043a\u043e\u0442\u043e\u0440\u044b\u0439 \u043d\u0443\u0436\u043d\u043e \u0432\u0441\u0442\u0430\u0432\u0438\u0442\u044c \u0441\u044e\u0434\u0430.',
             portsMore: 'Как это устроено и как сделать вручную:',
             errPortsInvalid: 'Порты сервера: перечислите порты и диапазоны через запятую, без пробелов, до 32 кусков, например 20113-30112 или 443,8443,20000-29999.',
             warpShowAll: 'Показать все настройки',
@@ -1719,8 +1899,8 @@
             subtitle: 'Вставьте .conf AmneziaWG (от 1.0 до 3.0) для генерации команд MikroTik RouterOS',
             privacy: '\u0412\u0441\u044f \u043a\u043e\u043d\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044f \u0438 \u0434\u0430\u043d\u043d\u044b\u0435 \u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u044e\u0442\u0441\u044f \u043b\u043e\u043a\u0430\u043b\u044c\u043d\u043e \u0432 \u0432\u0430\u0448\u0435\u043c \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435. \u041d\u0438\u0447\u0435\u0433\u043e \u043d\u0438\u043a\u0443\u0434\u0430 \u043d\u0435 \u043f\u0435\u0440\u0435\u0434\u0430\u0451\u0442\u0441\u044f. \u0412\u0430\u0448\u0438 \u043f\u0440\u0438\u0432\u0430\u0442\u043d\u044b\u0435 \u043a\u043b\u044e\u0447\u0438 \u0432 \u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e\u0441\u0442\u0438.',
             prepTitle: 'Сначала подготовьте роутер',
-            prepTap: 'Нажмите, чтобы раскрыть: пакет container, device-mode и как их проверить',
-            prepLead: 'Без этих трёх шагов команды ниже не заработают. Каждый делается один раз.',
+            prepTap: '\u041d\u0430\u0436\u043c\u0438\u0442\u0435, \u0447\u0442\u043e\u0431\u044b \u0440\u0430\u0441\u043a\u0440\u044b\u0442\u044c: \u043f\u0430\u043a\u0435\u0442 container, device-mode, \u0441\u0432\u043e\u0439 VPN-\u0441\u0435\u0440\u0432\u0435\u0440 \u0438 \u043a\u0430\u043a \u0438\u0445 \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c',
+            prepLead: '\u0411\u0435\u0437 \u044d\u0442\u0438\u0445 \u0447\u0435\u0442\u044b\u0440\u0451\u0445 \u0448\u0430\u0433\u043e\u0432 \u043a\u043e\u043c\u0430\u043d\u0434\u044b \u043d\u0438\u0436\u0435 \u043d\u0435 \u0437\u0430\u0440\u0430\u0431\u043e\u0442\u0430\u044e\u0442. \u041a\u0430\u0436\u0434\u044b\u0439 \u0434\u0435\u043b\u0430\u0435\u0442\u0441\u044f \u043e\u0434\u0438\u043d \u0440\u0430\u0437.',
             prepArchT: 'Роутер подходит.',
             prepArch: 'Процессор ARM, ARM64 или x86 и RouterOS 7.4 или новее. В терминале:',
             prepArch2: '\u2014 в architecture-name должно быть arm64, arm или x86_64. MIPS (hEX, hEX S, hAP ac lite, hAP lite) не подойдёт: MikroTik не делает для него пакет контейнеров.',
@@ -1737,7 +1917,11 @@
             prepMode: 'Выполните:',
             prepMode2: 'Затем в течение 5 минут нажмите кнопку на роутере (Reset или Mode) или выключите и включите питание: так RouterOS убеждается, что вы рядом. Проверить:',
             prepMode3: '\u2014 везде должно быть yes.',
-            prepDone: 'Все три шага сделаны? Вставьте .conf ниже. После \u00ab\u0421\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c\u00bb блок \u00ab\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0430\u00bb выдаст скрипт, который посмотрит роутер и скажет, чего ещё не хватает.',
+            prepVpsT: '\u0415\u0441\u0442\u044c \u0441\u0432\u043e\u0439 VPN-\u0441\u0435\u0440\u0432\u0435\u0440.',
+            prepVps: '\u0410\u0440\u0435\u043d\u0434\u0443\u0439\u0442\u0435 VPS \u0438 \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u0435 \u043d\u0430 \u043d\u0435\u0433\u043e',
+            prepVpsApp: ': \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0435 \u0441\u0430\u043c\u043e \u043d\u0430\u0441\u0442\u0440\u043e\u0438\u0442 \u0441\u0435\u0440\u0432\u0435\u0440 AmneziaWG \u043f\u043e SSH \u0438 \u0432\u044b\u0434\u0430\u0441\u0442 .conf \u0434\u043b\u044f \u0440\u043e\u0443\u0442\u0435\u0440\u0430.',
+            prepVps2: '\u041a\u0430\u043a\u043e\u0439 \u0441\u0435\u0440\u0432\u0435\u0440 \u0432\u0437\u044f\u0442\u044c:',
+            prepDone: 'Все четыре шага сделаны? Вставьте .conf ниже. После \u00ab\u0421\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u0442\u044c\u00bb блок \u00ab\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0430\u00bb выдаст скрипт, который посмотрит роутер и скажет, чего ещё не хватает.',
             confTitle: '\u041a\u043e\u043d\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u043e\u043d\u043d\u044b\u0439 \u0444\u0430\u0439\u043b AmneziaWG',
             confLabel: '\u0421\u043e\u0434\u0435\u0440\u0436\u0438\u043c\u043e\u0435 .conf \u0444\u0430\u0439\u043b\u0430',
             modeLabel: '\u0420\u0435\u0436\u0438\u043c \u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438',
@@ -1801,14 +1985,20 @@
             ipv6Hint: '\u0417\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a IPv6 \u0437\u0430\u043d\u0438\u043c\u0430\u0435\u0442 40 \u0431\u0430\u0439\u0442 \u0432\u043c\u0435\u0441\u0442\u043e 20, \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u043f\u043e\u043b\u043d\u043e\u0440\u0430\u0437\u043c\u0435\u0440\u043d\u044b\u0439 \u043f\u0430\u043a\u0435\u0442 \u043f\u0435\u0440\u0435\u0441\u0442\u0430\u0451\u0442 \u043f\u043e\u043c\u0435\u0449\u0430\u0442\u044c\u0441\u044f \u0432 1500 \u0431\u0430\u0439\u0442 \u0438 MTU WireGuard \u043f\u0440\u0438\u0445\u043e\u0434\u0438\u0442\u0441\u044f \u043f\u043e\u043d\u0438\u0437\u0438\u0442\u044c. \u0421\u0442\u0430\u0432\u0438\u0442\u0441\u044f \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438, \u0435\u0441\u043b\u0438 \u0432 \u043f\u043e\u043b\u0435 endpoint \u0443\u043a\u0430\u0437\u0430\u043d IPv6-\u043b\u0438\u0442\u0435\u0440\u0430\u043b. \u0414\u043b\u044f DNS-\u0438\u043c\u0435\u043d\u0438 \u0433\u0430\u043b\u043e\u0447\u043a\u0430 \u043f\u043e \u0443\u043c\u043e\u043b\u0447\u0430\u043d\u0438\u044e \u0441\u043d\u044f\u0442\u0430 (MTU \u043a\u0430\u043a \u0434\u043b\u044f IPv4) \u2014 \u043f\u043e\u0441\u0442\u0430\u0432\u044c\u0442\u0435 \u0435\u0451 \u0432\u0440\u0443\u0447\u043d\u0443\u044e, \u0435\u0441\u043b\u0438 \u0437\u043d\u0430\u0435\u0442\u0435, \u0447\u0442\u043e \u0443 \u0438\u043c\u0435\u043d\u0438 \u0435\u0441\u0442\u044c AAAA-\u0437\u0430\u043f\u0438\u0441\u044c; \u0441\u0433\u0435\u043d\u0435\u0440\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439 \u0441\u043a\u0440\u0438\u043f\u0442 \u0434\u043e\u043f\u043e\u043b\u043d\u0438\u0442\u0435\u043b\u044c\u043d\u043e \u0441\u043f\u0440\u0430\u0448\u0438\u0432\u0430\u0435\u0442 \u0440\u043e\u0443\u0442\u0435\u0440 \u0447\u0435\u0440\u0435\u0437 :resolve type=ipv6 \u0438 \u043f\u043e\u043d\u0438\u0436\u0430\u0435\u0442 MTU, \u0435\u0441\u043b\u0438 \u0442\u043e\u0442 \u043e\u0442\u0432\u0435\u0442\u0438\u043b.',
             ipv6MtuNote: 'Endpoint \u2014 IPv6, \u043f\u043e\u044d\u0442\u043e\u043c\u0443 MTU WireGuard \u043f\u043e\u043d\u0438\u0436\u0435\u043d \u043d\u0430 \u043b\u0438\u0448\u043d\u0438\u0435 20 \u0431\u0430\u0439\u0442 \u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043a\u0430 IPv6.',
             promoTitle: 'VPS \u0431\u0435\u0437 \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u0439 \u043f\u043e \u0442\u0440\u0430\u0444\u0438\u043a\u0443',
-            promoIntro: '\u0420\u0430\u0437\u043c\u0435\u0441\u0442\u0438\u0442\u044c \u0441\u0435\u0440\u0432\u0435\u0440 AmneziaWG \u043c\u043e\u0436\u043d\u043e \u0443',
-            promoSection: ', \u0440\u0430\u0437\u0434\u0435\u043b Budget VPS',
-            promoPlanLabel: '\u0420\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0443\u0435\u043c\u044b\u0439 \u0442\u0430\u0440\u0438\u0444:',
-            promoSpecs: '2 vCPU, 2 \u0413\u0411 RAM, 40 \u0413\u0411 NVMe SSD',
-            promoAdvLabel: '\u041a\u043b\u044e\u0447\u0435\u0432\u043e\u0435 \u043f\u0440\u0435\u0438\u043c\u0443\u0449\u0435\u0441\u0442\u0432\u043e:',
-            promoAdv: '\u043f\u043e\u0440\u0442 10 \u0413\u0431\u0438\u0442/\u0441 \u0441 \u0431\u0435\u0437\u043b\u0438\u043c\u0438\u0442\u043d\u044b\u043c \u0442\u0440\u0430\u0444\u0438\u043a\u043e\u043c \u2014 \u0438\u0434\u0435\u0430\u043b\u044c\u043d\u043e \u0434\u043b\u044f VPN.',
-            promoPriceLabel: '\u0426\u0435\u043d\u0430:',
-            promoPrice: '\u0432\u0441\u0435\u0433\u043e $34 \u0432 \u0433\u043e\u0434 (\u043e\u043a\u043e\u043b\u043e 2700 \u0440\u0443\u0431.; \u043d\u0430 \u043c\u043e\u043c\u0435\u043d\u0442 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438, \u0446\u0435\u043d\u0430 \u043c\u043e\u0436\u0435\u0442 \u043c\u0435\u043d\u044f\u0442\u044c\u0441\u044f)',
+            promoCheapTitle: '\u041f\u0440\u043e\u0441\u0442\u043e\u0439 \u0438 \u0434\u0435\u0448\u0451\u0432\u044b\u0439',
+            promoCheapTag: '\u0414\u043b\u044f \u0441\u0432\u043e\u0435\u0433\u043e VPN \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0441 \u0437\u0430\u043f\u0430\u0441\u043e\u043c',
+            promoCheapSpecs: '2 vCPU \u00b7 2 \u0413\u0411 RAM \u00b7 40 \u0413\u0411 NVMe',
+            promoCheapNet: '1 \u0413\u0431\u0438\u0442/\u0441, \u0442\u0440\u0430\u0444\u0438\u043a \u0431\u0435\u0437 \u043b\u0438\u043c\u0438\u0442\u0430',
+            promoCheapPrice: '$34 \u0432 \u0433\u043e\u0434',
+            promoFastTitle: '\u041c\u043e\u0449\u043d\u044b\u0439 \u0438 \u043f\u0440\u043e\u0438\u0437\u0432\u043e\u0434\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0439',
+            promoFastTag: '\u0422\u044f\u043d\u0435\u0442 \u043d\u0435 \u0442\u043e\u043b\u044c\u043a\u043e VPN, \u043d\u043e \u0438 \u0442\u044f\u0436\u0451\u043b\u044b\u0435 \u0437\u0430\u0434\u0430\u0447\u0438',
+            promoFastSpecs: '2 vCore x86 \u00b7 4 \u0413\u0411 RAM \u00b7 64 \u0413\u0411',
+            promoFastNet: '2,5 \u0413\u0431\u0438\u0442/\u0441, \u0442\u0440\u0430\u0444\u0438\u043a \u0431\u0435\u0437 \u043b\u0438\u043c\u0438\u0442\u0430, IPv4 + IPv6 (\u0432\u044b\u0434\u0430\u0451\u0442\u0441\u044f \u043f\u043e\u0434\u0441\u0435\u0442\u044c /64)',
+            promoFastPrice: '8 \u20ac \u0432 \u043c\u0435\u0441\u044f\u0446',
+            promoVoucher: '\u22125 \u20ac \u043f\u043e \u043f\u0440\u043e\u043c\u043e\u043a\u043e\u0434\u0443',
+            promoVat: 'netcup \u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u0442 \u0446\u0435\u043d\u0443 \u0441 \u043d\u0435\u043c\u0435\u0446\u043a\u0438\u043c \u041d\u0414\u0421 19\u00a0%. \u0412\u0432\u0435\u0440\u0445\u0443 \u0441\u0430\u0439\u0442\u0430 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 \u043d\u0430 \u0444\u043b\u0430\u0433 \u0441 \u043f\u0440\u043e\u0446\u0435\u043d\u0442\u043e\u043c \u0438 \u0432\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0432\u0430\u0440\u0438\u0430\u043d\u0442 \u0441 0\u00a0%: \u043f\u043e\u043a\u0443\u043f\u0430\u0442\u0435\u043b\u0438 \u0432\u043d\u0435 \u0415\u0421 \u041d\u0414\u0421 \u043d\u0435 \u043f\u043b\u0430\u0442\u044f\u0442.',
+            promoGo: '\u041f\u0435\u0440\u0435\u0439\u0442\u0438',
+            promoNote: '\u0426\u0435\u043d\u044b \u043d\u0430 \u043c\u043e\u043c\u0435\u043d\u0442 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438, \u043c\u043e\u0433\u0443\u0442 \u043c\u0435\u043d\u044f\u0442\u044c\u0441\u044f.',
             scenarioLabel: '\u0421\u0446\u0435\u043d\u0430\u0440\u0438\u0439 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438',
             scenarioTunnel: '\u0422\u043e\u043b\u044c\u043a\u043e \u0442\u0443\u043d\u043d\u0435\u043b\u044c (\u0440\u0443\u0447\u043d\u044b\u0435 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u044b)',
             scenarioDns: 'DNS-\u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u044f \u0434\u043b\u044f \u0441\u0435\u0440\u0432\u0438\u0441\u043e\u0432',
@@ -7469,6 +7659,13 @@
     // Initialize checkboxes
     initServiceCheckboxes();
     initExclusionCheckboxes();
+
+    // The same VPS cards as under the .conf field, in prep step 4
+    (function () {
+        var box = document.getElementById('prep-vps-cards');
+        box.appendChild(document.querySelector('.promo .promo-cards').cloneNode(true));
+        box.appendChild(document.querySelector('.promo .promo-note').cloneNode(true));
+    })();
 
     // Apply i18n on load
     applyI18n();
