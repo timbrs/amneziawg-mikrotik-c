@@ -1147,10 +1147,13 @@
                     <input type="text" id="srv-awg-port">
                 </div>
                 <div>
-                    <label for="srv-awg-band" data-i18n="srvAwgBand">More server ports (optional)</label>
-                    <input type="text" id="srv-awg-band" placeholder="30000-30999" oninput="clearFieldFlag('srv-awg-band', 'srv-awg-band-error')">
-                    <div id="srv-awg-band-error" class="field-error" role="alert" style="display:none"></div>
-                    <div class="hint" data-i18n="srvAwgBandHint">Ports and ranges separated by commas, e.g. 30000-30999. The server router forwards them all to the main port; client routers draw one at random for every connection and move to another every 30-120 minutes. Empty: the main port only.</div>
+                    <label><input type="checkbox" id="srv-band-enable" checked onchange="onSrvBandToggle()"> <span data-i18n="srvBandEnable">Port randomization (recommended)</span></label>
+                    <div id="srv-band-panel">
+                        <label for="srv-awg-band" data-i18n="srvAwgBand">More server ports</label>
+                        <input type="text" id="srv-awg-band" placeholder="30000-30999" oninput="srvBandTyped()">
+                        <div id="srv-awg-band-error" class="field-error" role="alert" style="display:none"></div>
+                        <div class="hint" data-i18n="srvAwgBandHint">Filled in with a random block of 1000 ports; you can type your own. Ports and ranges separated by commas, e.g. 30000-30999. The server router forwards them all to the main port; client routers draw one at random for every connection and move to another every 30-120 minutes. Pick a range with no other port forwards on the server router. Unticked: the main port only.</div>
+                    </div>
                 </div>
                 <div>
                     <label for="srv-tunnel-subnet" data-i18n="srvTunnelSubnet">Tunnel subnet (/24)</label>
@@ -1570,8 +1573,9 @@
             modeServerHint: 'This MikroTik becomes the AmneziaWG server itself: other MikroTiks (with awg-proxy too) and phones or laptops with the AmneziaWG app connect to it. Use it to join offices, homes and remote sites into one network, or to let your devices out to the internet through this router. The router needs a public IP or IPv6. Keys and AmneziaWG parameters are generated right here. At the end you get a link: save it, it adds the next clients.',
             srvEndpoint: 'Server public IP or domain',
             srvAwgPort: 'Server AWG port (public)',
-            srvAwgBand: 'More server ports (optional)',
-            srvAwgBandHint: 'Ports and ranges separated by commas, e.g. 30000-30999. The server router forwards them all to the main port; client routers draw one at random for every connection and move to another every 30–120 minutes. Empty: the main port only.',
+            srvBandEnable: 'Port randomization (recommended)',
+            srvAwgBand: 'More server ports',
+            srvAwgBandHint: 'Filled in with a random block of 1000 ports; you can type your own. Ports and ranges separated by commas, e.g. 30000-30999. The server router forwards them all to the main port; client routers draw one at random for every connection and move to another every 30–120 minutes. Pick a range with no other port forwards on the server router. Unticked: the main port only.',
             errSrvBand: 'More server ports: ports and ranges separated by commas, no spaces, up to 8 pieces, e.g. 30000-30999 or 443,8443,30000-30999.',
             srvTunnelSubnet: 'Tunnel subnet (/24)',
             srvDns: 'DNS server (required if endpoint is a domain, not IP)',
@@ -1846,8 +1850,9 @@
             modeServerHint: 'Ваш MikroTik сам становится сервером AmneziaWG: к нему подключаются другие MikroTik (тоже с awg-proxy) и телефоны или ноутбуки с приложением AmneziaWG. Так объединяют офисы, квартиры и удалённые точки в одну сеть или выпускают свои устройства в интернет через этот роутер. Роутеру нужен белый IP или IPv6. Ключи и параметры AmneziaWG генерируются здесь же. В конце будет ссылка — сохраните её, по ней добавляются следующие клиенты.',
             srvEndpoint: '\u041f\u0443\u0431\u043b\u0438\u0447\u043d\u044b\u0439 IP \u0438\u043b\u0438 \u0434\u043e\u043c\u0435\u043d \u0441\u0435\u0440\u0432\u0435\u0440\u0430',
             srvAwgPort: 'AWG-\u043f\u043e\u0440\u0442 \u0441\u0435\u0440\u0432\u0435\u0440\u0430 (\u043f\u0443\u0431\u043b\u0438\u0447\u043d\u044b\u0439)',
-            srvAwgBand: 'Ещё порты сервера (необязательно)',
-            srvAwgBandHint: 'Порты и диапазоны через запятую, например 30000-30999. Роутер-сервер перенаправит их все на основной порт, а клиентские роутеры будут брать случайный при каждом подключении и менять его раз в 30–120 минут. Пусто — только основной порт.',
+            srvBandEnable: 'Рандомизация портов (рекомендуется)',
+            srvAwgBand: 'Ещё порты сервера',
+            srvAwgBandHint: 'Заполнено случайным блоком из 1000 портов — можно вписать свой. Порты и диапазоны через запятую, например 30000-30999. Роутер-сервер перенаправит их все на основной порт, а клиентские роутеры будут брать случайный при каждом подключении и менять его раз в 30–120 минут. Берите диапазон, на котором у роутера-сервера нет других пробросов портов. Галочка снята — только основной порт.',
             errSrvBand: 'Ещё порты сервера: перечислите порты и диапазоны через запятую, без пробелов, до 8 кусков, например 30000-30999 или 443,8443,30000-30999.',
             srvTunnelSubnet: '\u041f\u043e\u0434\u0441\u0435\u0442\u044c \u0442\u0443\u043d\u043d\u0435\u043b\u044f (/24)',
             srvDns: 'DNS-\u0441\u0435\u0440\u0432\u0435\u0440 (\u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u0435\u043d, \u0435\u0441\u043b\u0438 \u0432 endpoint \u0443\u043a\u0430\u0437\u0430\u043d \u0434\u043e\u043c\u0435\u043d, \u0430 \u043d\u0435 IP)',
@@ -5467,6 +5472,7 @@
             // Add-client runs overwrite this right after onModeChange() with the
             // subnet from the share link (see the parseURLParams block on load).
             document.getElementById('srv-tunnel-subnet').value = randomTunnelSubnet(24);
+            fillSrvBand(false);
             showSrvParams();
         }
         return serverParams;
@@ -5475,6 +5481,7 @@
     function regenerateServerParams() {
         serverParams = generateChainParams();
         document.getElementById('srv-awg-port').value = serverParams.port;
+        fillSrvBand(true);
         showSrvParams();
     }
 
@@ -5724,6 +5731,43 @@
     // first, then the band.
     function hubPorts(awgPort, band) {
         return band ? awgPort + ',' + band : String(awgPort);
+    }
+
+    // Port randomization is on by default: a new hub gets a random block of 1000
+    // ports somewhere in 30000-49999, clear of its own AWG and WireGuard ports.
+    // A block the user typed is theirs: it is kept when the parameters are rolled
+    // again; only a block filled in here is drawn anew.
+    var srvBandAuto = false;
+    function randomHubBand(avoid) {
+        for (var i = 0; i < 50; i++) {
+            var start = randomInt(30000, 49000);
+            var end = start + 999;
+            var hit = (avoid || []).some(function (p) { return p >= start && p <= end; });
+            if (!hit) return start + '-' + end;
+        }
+        return '';
+    }
+    function fillSrvBand(force) {
+        var field = document.getElementById('srv-awg-band');
+        if (serverFromURL || !document.getElementById('srv-band-enable').checked) return;
+        if (force ? (srvBandAuto || !field.value.trim()) : !field.value.trim()) {
+            field.value = randomHubBand(serverParams ? [serverParams.port, serverParams.wgListenPort] : []);
+            srvBandAuto = true;
+        }
+    }
+    function onSrvBandToggle() {
+        var on = document.getElementById('srv-band-enable').checked;
+        document.getElementById('srv-band-panel').style.display = on ? 'block' : 'none';
+        clearFieldFlag('srv-awg-band', 'srv-awg-band-error');
+        fillSrvBand(false);
+    }
+    function srvBandTyped() {
+        srvBandAuto = false;
+        clearFieldFlag('srv-awg-band', 'srv-awg-band-error');
+    }
+    function srvBandValue() {
+        return document.getElementById('srv-band-enable').checked
+            ? document.getElementById('srv-awg-band').value.trim() : '';
     }
 
     function copySrvURL() {
@@ -6280,7 +6324,7 @@
         var isAddClient = !!serverFromURL;
         var endpoint = document.getElementById('srv-endpoint').value.trim();
         var awgPortStr = document.getElementById('srv-awg-port').value.trim();
-        var awgBand = document.getElementById('srv-awg-band').value.trim();
+        var awgBand = srvBandValue();
         var tunnelSubnet = document.getElementById('srv-tunnel-subnet').value.trim();
         var storageServer = document.getElementById('srv-storage-server').value;
         var storageClient = document.getElementById('srv-storage-client').value;
@@ -7445,8 +7489,12 @@
         // Fill fields from URL
         document.getElementById('srv-endpoint').value = urlData.endpoint;
         document.getElementById('srv-awg-port').value = urlData.awgPort;
+        // The band is the hub's: a client added from its link takes it as it is.
+        document.getElementById('srv-band-enable').checked = !!urlData.awgBand;
+        document.getElementById('srv-band-enable').disabled = true;
         document.getElementById('srv-awg-band').value = urlData.awgBand || '';
         document.getElementById('srv-awg-band').readOnly = true;
+        document.getElementById('srv-band-panel').style.display = urlData.awgBand ? 'block' : 'none';
         document.getElementById('srv-tunnel-subnet').value = urlData.tunnelSubnet;
         document.getElementById('srv-client-num').value = urlData.nextClient;
         // Set server LAN from URL

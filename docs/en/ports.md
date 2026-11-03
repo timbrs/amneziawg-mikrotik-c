@@ -78,7 +78,7 @@ The range on MikroTik alone is not enough: if the server does not take those por
 
 If the server is a MikroTik in "MikroTik as an AmneziaWG server" mode, the router's own firewall does the range: a dst-nat rule sends every port of it to the one port of the container.
 
-- **A new server.** In the configurator fill in **"More server ports"**, for example `30000-30999`. The configurator puts dst-nat and the forward rule on the main port and the range on the server router, and writes them into the clients' `AWG_REMOTE`. The range is kept in the "add a client" link, so later clients get it by themselves.
+- **A new server.** In the configurator the **"Port randomization"** box is ticked from the start, and **"More server ports"** is already filled in with a random block of 1000 ports somewhere in 30000-49999, clear of the main port and the WireGuard port. Type your own range, for example `30000-30999`, or untick the box to keep the main port only. The configurator puts dst-nat and the forward rule on the main port and the range on the server router, and writes them into the clients' `AWG_REMOTE`. The range is kept in the "add a client" link, so later clients get it by themselves. From the command line: `tools/awg-gen.js --mode server --ports 30000-30999` or `--no-port-band`.
 - **A server already in place.** Add the range to its two rules (`awg-server-1` is your installation's prefix, `27015` its port), and to the IPv6 ones if there are any:
 
   ```routeros

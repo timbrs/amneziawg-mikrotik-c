@@ -125,8 +125,71 @@ ok('more than 8 pieces are refused', g.err.length > 0, g.err);
 g = generateWith(BAND);
 ok('a good band goes through', !g.err, g.err);
 ok('and reaches the client', g.client.indexOf('198.51.100.1:27015,' + BAND) >= 0);
-ok('every new line is translated', ['srvAwgBand', 'srvAwgBandHint', 'errSrvBand']
+ok('every new line is translated', ['srvBandEnable', 'srvAwgBand', 'srvAwgBandHint', 'errSrvBand']
    .every(function (k) { return w.I18N.en[k] && w.I18N.ru[k] && w.I18N.en[k] !== w.I18N.ru[k]; }));
+
+/* ---- port randomization: on by default with a random block of 1000 ---- */
+(function () {
+    const d = new JSDOM(html, { runScripts: 'dangerously', url: 'https://example.invalid/conf3.0.html' });
+    const wd = d.window, dd = wd.document;
+    dd.querySelector('input[name="deploy-mode"][value="server"]').checked = true;
+    wd.onModeChange();
+    const box = dd.getElementById('srv-band-enable');
+    const band = dd.getElementById('srv-awg-band').value;
+    const m = /^(\d+)-(\d+)$/.exec(band);
+    ok('the box is ticked on a fresh hub', box && box.checked && !box.disabled);
+    ok('the band is a block of 1000 ports', m && Number(m[2]) - Number(m[1]) === 999, band);
+    ok('inside 30000-49999', m && Number(m[1]) >= 30000 && Number(m[2]) <= 49999, band);
+    const sp = wd.serverParams;
+    ok('clear of the hub\'s own ports', m && [sp.port, sp.wgListenPort].every(function (p) {
+        return p < Number(m[1]) || p > Number(m[2]);
+    }), band + ' vs ' + sp.port + '/' + sp.wgListenPort);
+    // Many fresh hubs: the blocks differ, they are not one fixed default.
+    const seen = {};
+    for (let i = 0; i < 20; i++) seen[wd.randomHubBand([27015])] = 1;
+    ok('blocks are drawn at random', Object.keys(seen).length > 10, Object.keys(seen).length);
+    // Rolling the parameters again draws a new block, unless the user typed one.
+    wd.regenerateServerParams();
+    const sp2 = wd.serverParams, b2 = dd.getElementById('srv-awg-band').value;
+    const m2 = /^(\d+)-(\d+)$/.exec(b2);
+    ok('a new roll keeps the block clear of the new ports', m2 && [sp2.port, sp2.wgListenPort].every(function (p) {
+        return p < Number(m2[1]) || p > Number(m2[2]);
+    }), b2);
+    const f = dd.getElementById('srv-awg-band');
+    f.value = '41000-41999';
+    f.dispatchEvent(new wd.Event('input', { bubbles: true }));
+    wd.regenerateServerParams();
+    eq('a typed block survives a new roll', f.value, '41000-41999');
+    // Unticked: the main port only, as before.
+    box.click();
+    ok('unticking hides the field', dd.getElementById('srv-band-panel').style.display === 'none');
+    dd.querySelector('input[name="srv-net"][value="none"]').checked = true;
+    wd.onSrvNetChange();
+    dd.getElementById('srv-endpoint').value = '198.51.100.1';
+    dd.getElementById('srv-awg-port').value = '27015';
+    dd.getElementById('errors-container').innerHTML = '';
+    wd.generateServer();
+    const cl = dd.getElementById('srv-out-client').dataset.plain || '';
+    ok('unticked: the client dials the main port only', /AWG_REMOTE value="198\.51\.100\.1:27015"/.test(cl), cl.slice(0, 200));
+    box.click();
+    wd.generateServer();
+    const cl2 = dd.getElementById('srv-out-client').dataset.plain || '';
+    ok('ticked again: the client gets the band', cl2.indexOf('198.51.100.1:27015,41000-41999') >= 0);
+    // A client added from the link: the box shows the hub's choice and is locked.
+    const link = dd.getElementById('srv-share-url').value;
+    const da = new JSDOM(html, { runScripts: 'dangerously', url: link });
+    const ba = da.window.document.getElementById('srv-band-enable');
+    ok('add-client: the box follows the link and is locked', ba && ba.checked && ba.disabled);
+    eq('add-client: the band is the hub\'s', da.window.document.getElementById('srv-awg-band').value, '41000-41999');
+    const plainLink = (function () {
+        box.click();
+        wd.generateServer();
+        return dd.getElementById('srv-share-url').value;
+    })();
+    const dp = new JSDOM(html, { runScripts: 'dangerously', url: plainLink });
+    const bp = dp.window.document.getElementById('srv-band-enable');
+    ok('add-client from a hub without a band: box off and locked', bp && !bp.checked && bp.disabled);
+})();
 
 function eq(name, a, b) { ok(name, a === b, JSON.stringify(a) + ' !== ' + JSON.stringify(b)); }
 
