@@ -25,3 +25,6 @@ bench/awg3-interop/shared/
 bench/awg3-interop/perfshared/
 # Снимок конфигурации боевого контейнера для отката — локальный, не для репозитория
 bench/*.bak
+
+# Сборки под Windows (test_*.exe и т.п.)
+*.exe
