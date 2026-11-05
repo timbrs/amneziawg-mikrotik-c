@@ -790,6 +790,27 @@ static void log_frag_warn(proxy_t *p, int v6, int outer) {
     log_msgn("WARN: ", parts, 7);
 }
 
+/* No blocking receive or DNS resolution may hold this read lock. Writers
+ * already own remote_mu; c2s rotation only try-locks remote_mu, so it cannot
+ * wait for a writer that is waiting for the end of the current send batch. */
+static int remote_io_begin(proxy_t *p) {
+    pthread_rwlock_rdlock(&p->remote_io);
+    return atomic_load_explicit(&p->remote_fd, memory_order_acquire);
+}
+
+static void remote_io_end(proxy_t *p) {
+    pthread_rwlock_unlock(&p->remote_io);
+}
+
+static void remote_request_reconnect(proxy_t *p) {
+    int fd = remote_io_begin(p);
+    if (fd >= 0) {
+        atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);
+        shutdown(fd, SHUT_RDWR);
+    }
+    remote_io_end(p);
+}
+
 /* The path MTU the kernel has learned for the server, reported once per value.
  *
  * An ICMP "fragmentation needed" (IPv6: "packet too big") for a packet sent
@@ -804,8 +825,11 @@ static void log_frag_warn(proxy_t *p, int v6, int outer) {
  * route forgets the value after ten minutes and learns the same one again,
  * hence once per value. */
 static void check_path_mtu(proxy_t *p) {
-    int fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
-    if (fd < 0) return;
+    int fd = remote_io_begin(p);
+    if (fd < 0) {
+        remote_io_end(p);
+        return;
+    }
     /* The family comes from the socket itself: p->remote is rewritten by a
      * port rotation in the c2s thread and is not this thread's to read. */
     int family = AF_INET;
@@ -814,9 +838,10 @@ static void check_path_mtu(proxy_t *p) {
     int v6 = (family == AF_INET6);
     int mtu = 0;
     socklen_t len = sizeof(mtu);
-    if (getsockopt(fd, v6 ? IPPROTO_IPV6 : IPPROTO_IP, v6 ? IPV6_MTU : IP_MTU,
-                   &mtu, &len) < 0 ||
-        !awg_path_mtu_usable(mtu) || mtu == p->path_mtu)
+    int err = getsockopt(fd, v6 ? IPPROTO_IPV6 : IPPROTO_IP,
+                         v6 ? IPV6_MTU : IP_MTU, &mtu, &len);
+    remote_io_end(p);
+    if (err < 0 || !awg_path_mtu_usable(mtu) || mtu == p->path_mtu)
         return;
     p->path_mtu = mtu;
     atomic_store_explicit(&p->frag_lim, mtu, memory_order_relaxed);
@@ -1236,6 +1261,7 @@ static void he_finish(proxy_t *p, int use_alt, int learn) {
         pthread_mutex_unlock(&p->remote_mu);
         return;
     }
+    pthread_rwlock_wrlock(&p->remote_io);
     atomic_store_explicit(&p->remote_fd2, -1, memory_order_release);
 
     if (use_alt) {
@@ -1245,16 +1271,18 @@ static void he_finish(proxy_t *p, int use_alt, int learn) {
                               memory_order_relaxed);
         atomic_store_explicit(&p->remote_fd, fd2, memory_order_release);
         if (old >= 0) close(old);
-        log_info(p->remote.sa.ss_family == AF_INET6
-                     ? "happy eyeballs: IPv6 answered first, using it"
-                     : "happy eyeballs: IPv4 answered first, using it");
     } else {
         close(fd2);
     }
+    int v6 = p->remote.sa.ss_family == AF_INET6;
     p->remote_alt.len = 0;
+    pthread_rwlock_unlock(&p->remote_io);
     pthread_mutex_unlock(&p->remote_mu);
 
-    if (p->remote.sa.ss_family == AF_INET6)
+    if (use_alt)
+        log_info(v6 ? "happy eyeballs: IPv6 answered first, using it"
+                    : "happy eyeballs: IPv4 answered first, using it");
+    if (v6)
         log_ipv6_mtu_hint(p, "remote is IPv6");
 
     /* Both families were on the table and one of them demonstrably answered.
@@ -1262,7 +1290,7 @@ static void he_finish(proxy_t *p, int use_alt, int learn) {
      * is no verdict to remember — switching families there is a retry, not a
      * measurement. */
     if (learn)
-        he_learn(p, p->remote.sa.ss_family == AF_INET6);
+        he_learn(p, v6);
 }
 
 /* UDP has no handshake, so the only liveness signal is a packet coming back.
@@ -1642,6 +1670,8 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     }
 
     pthread_mutex_init(&p->remote_mu, NULL);
+    pthread_rwlock_init(&p->remote_io, NULL);
+    pthread_mutex_init(&p->client_mu, NULL);
     atomic_store_explicit(&p->rot_old_fd, -1, memory_order_relaxed);
     p->main_epfd = -1;
     if ((cfg->rot_t_lo || cfg->rot_mb_lo) && !p->warp) {
@@ -1956,6 +1986,7 @@ static int rot_refused_now(proxy_t *p, int err) {
 /* Ask for a reconnect once per broken socket. shutdown() is what makes it
  * prompt: the s2c thread is parked in a blocking recv on that fd and would not
  * look at reconnect_needed until something woke it. */
+/* The c2s caller holds remote_io for this send. */
 static void note_remote_send_err(proxy_t *p, int err) {
     if (!send_err_is_fatal(err) || rot_refused_now(p, err)) return;
     if (atomic_exchange_explicit(&p->reconnect_needed, 1, memory_order_relaxed))
@@ -2130,7 +2161,10 @@ static int send_batch_gso(proxy_t *p, int fd, struct mmsghdr *msgs,
                     want++;
             }
         }
-        int r = sendmmsg(fd, msgs + sent, want, MSG_NOSIGNAL);
+        /* A connected c2s socket is pinned until the batch completes. Do
+         * not let a full send buffer stall reconnect or descriptor retirement. */
+        int flags = MSG_NOSIGNAL | (addrs ? 0 : MSG_DONTWAIT);
+        int r = sendmmsg(fd, msgs + sent, want, flags);
         if (r <= 0) {
             err = errno;
             log_debug2("sendmmsg failed: ", strerror(err));
@@ -2492,6 +2526,16 @@ static void rot_main_tick(proxy_t *p, rot_main_t *m, uint32_t now) {
 
 /* ---- c2s thread ---- */
 
+/* Copy the whole address once per return batch, including IPv6 scope/port.
+ * The c2s thread is the sole writer; the main rotation drain also reads it. */
+static int client_snapshot(proxy_t *p, cliaddr_t *out) {
+    pthread_mutex_lock(&p->client_mu);
+    int have = atomic_load_explicit(&p->has_client, memory_order_relaxed);
+    if (have) *out = p->client_addr;
+    pthread_mutex_unlock(&p->client_mu);
+    return have;
+}
+
 /* Latch the address a batch came from as "the client". Returns 1 only when it
  * changed — normal mode uses that to re-pin its source port. A family other
  * than the socket's means the kernel never filled msg_name, so there is
@@ -2501,8 +2545,10 @@ static int note_client_addr(proxy_t *p, const cliaddr_t *a) {
     if (atomic_load_explicit(&p->has_client, memory_order_acquire) &&
         cliaddr_eq(&p->client_addr, a))
         return 0;
+    pthread_mutex_lock(&p->client_mu);
     p->client_addr = *a;
     atomic_store_explicit(&p->has_client, 1, memory_order_release);
+    pthread_mutex_unlock(&p->client_mu);
     int v6 = (a->sa.sa_family == AF_INET6);
     char abuf[INET6_ADDRSTRLEN], pbuf[12];
     const char *parts[] = { "client: ", v6 ? "[" : "",
@@ -2556,7 +2602,9 @@ static void *c2s_thread_normal(void *arg) {
         /* A move's copies for the old port are waiting: sleep only until the
          * next one is due. One predicted branch otherwise. */
         if (p->rot_lag_n) {
+            (void)remote_io_begin(p);
             int w = rot_lag_service(p, mono_us());
+            remote_io_end(p);
             if (w >= 0 && gro_pend_off >= gro_pend_total) {
                 struct pollfd pf = { .fd = p->listen_fd, .events = POLLIN };
                 if (poll(&pf, 1, w) <= 0) continue;
@@ -2659,6 +2707,8 @@ static void *c2s_thread_normal(void *arg) {
         atomic_store_explicit(&p->last_active, 1, memory_order_relaxed);
         stats_add_rx(&p->st_c2s_rx, nrecv);
 
+        int remote_fd = remote_io_begin(p);
+
         /* Check client address from first packet */
         if (note_client_addr(p, &p->recv_c2s.addrs[0]) && p->auto_src_port) {
             int cp = ntohs(cliaddr_port(&p->recv_c2s.addrs[0]));
@@ -2671,8 +2721,10 @@ static void *c2s_thread_normal(void *arg) {
             }
         }
 
-        int remote_fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
-        if (remote_fd < 0) continue;
+        if (remote_fd < 0) {
+            remote_io_end(p);
+            continue;
+        }
 
         /* A due port moves before this batch goes out, so the batch is what
          * carries the server over. Three relaxed loads while not due. */
@@ -2790,6 +2842,7 @@ static void *c2s_thread_normal(void *arg) {
             send_batch_remote(p, remote_fd, p->send_c2s.msgs,
                               p->send_c2s.iovecs, nsend);
         }
+        remote_io_end(p);
         if (rot_on && xport) {
             uint32_t t = atomic_load_explicit(&p->tick, memory_order_relaxed);
             rot_seen.client = t;
@@ -2835,8 +2888,11 @@ static void *c2s_thread_reverse(void *arg) {
         if (!server_mode)
             note_client_addr(p, &p->recv_c2s.addrs[0]);
 
-        int remote_fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
-        if (remote_fd < 0) continue;
+        int remote_fd = remote_io_begin(p);
+        if (remote_fd < 0) {
+            remote_io_end(p);
+            continue;
+        }
 
         /* Transform inbound (AWG→WG) and forward to WG server */
         int nsend = 0;
@@ -2963,6 +3019,7 @@ static void *c2s_thread_reverse(void *arg) {
             send_batch_remote(p, remote_fd, p->send_c2s.msgs,
                               p->send_c2s.iovecs, nsend);
         }
+        remote_io_end(p);
     }
 
     return NULL;
@@ -2981,6 +3038,7 @@ static void *c2s_thread(void *arg) {
 
 __attribute__((hot))
 static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
+                                          const cliaddr_t *client,
                                           struct iovec *send_iovecs,
                                           cliaddr_t *send_addrs,
                                           int *nsend) {
@@ -3010,7 +3068,7 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
                 int idx = *nsend;
                 send_iovecs[idx].iov_base = pkt + s4;
                 send_iovecs[idx].iov_len = n - s4;
-                send_addrs[idx] = p->client_addr;
+                send_addrs[idx] = *client;
                 (*nsend)++;
                 if (!atomic_exchange_explicit(&p->fe_transport_s2c, 1, memory_order_relaxed))
                     log_info("s2c: first transport packet to client");
@@ -3051,7 +3109,7 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
     int idx = *nsend;
     send_iovecs[idx].iov_base = out;
     send_iovecs[idx].iov_len = out_len;
-    send_addrs[idx] = p->client_addr;
+    send_addrs[idx] = *client;
     (*nsend)++;
     if (mtype == WG_HANDSHAKE_RESPONSE &&
         !atomic_exchange_explicit(&p->fe_resp_sent, 1, memory_order_relaxed))
@@ -3071,7 +3129,7 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
     int server_mode = (cfg->mode == AWG_MODE_SERVER);
 
     /* Determine destination address */
-    cliaddr_t *dest_addr = NULL;
+    cliaddr_t client, *dest_addr = NULL;
     session_entry_t *dest_entry = NULL;
     uint32_t msg_type = 0;
     const uint8_t *out_mac1key = NULL;
@@ -3124,8 +3182,8 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
         dest_addr = &dest_entry->addr;
     } else {
         /* reverse 1:1: use single client_addr */
-        if (!atomic_load_explicit(&p->has_client, memory_order_acquire)) return 0;
-        dest_addr = &p->client_addr;
+        if (!client_snapshot(p, &client)) return 0;
+        dest_addr = &client;
     }
 
     /* The reply must go out in the profile this client speaks. */
@@ -3214,15 +3272,15 @@ static inline int process_s2c_pkt_reverse(proxy_t *p, uint8_t *base, uint8_t *pk
 }
 
 static int do_reconnect_locked(proxy_t *p) {
-    int old_fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
-    if (old_fd >= 0) {
+    pthread_rwlock_wrlock(&p->remote_io);
+    int old_fd = atomic_exchange_explicit(&p->remote_fd, -1, memory_order_acq_rel);
+    if (old_fd >= 0)
         close(old_fd);
-        atomic_store_explicit(&p->remote_fd, -1, memory_order_release);
-    }
     /* A probe interrupted by reconnect_needed leaves its socket behind. */
     int old_fd2 = atomic_exchange_explicit(&p->remote_fd2, -1, memory_order_acq_rel);
     if (old_fd2 >= 0)
         close(old_fd2);
+    pthread_rwlock_unlock(&p->remote_io);
     /* Whatever move was pending is moot on a new connection. */
     atomic_store_explicit(&p->rot_state, ROT_IDLE, memory_order_relaxed);
 
@@ -3234,8 +3292,11 @@ static int do_reconnect_locked(proxy_t *p) {
     atomic_store_explicit(&p->last_active, 1, memory_order_relaxed);
     atomic_store_explicit(&p->last_remote_rx, 0, memory_order_relaxed);
     atomic_store_explicit(&p->client_init, 0, memory_order_relaxed);
-    if (p->cfg->mode == AWG_MODE_NORMAL)
+    if (p->cfg->mode == AWG_MODE_NORMAL) {
+        pthread_mutex_lock(&p->client_mu);
         atomic_store_explicit(&p->has_client, 0, memory_order_release);
+        pthread_mutex_unlock(&p->client_mu);
+    }
     atomic_store_explicit(&p->reconnect_needed, 0, memory_order_relaxed);
     /* The trailer window describes a path, and this is a new one — amneziawg
      * resets it the same way when a peer's endpoint changes. */
@@ -3374,7 +3435,8 @@ static void *s2c_thread(void *arg) {
                 if (p->warp) warp_keep(p);
             }
 
-            if (!atomic_load_explicit(&p->has_client, memory_order_acquire)) continue;
+            cliaddr_t client;
+            if (!client_snapshot(p, &client)) continue;
 
             if (seg_size > 0 && n > seg_size) {
                 gro_no_coalesce = 0;
@@ -3387,7 +3449,7 @@ static void *s2c_thread(void *arg) {
                     int end = off + seg_size;
                     if (end > n) end = n;
                     int pkt_len = end - off;
-                    process_s2c_pkt_normal(p, p->gro_buf + off, pkt_len,
+                    process_s2c_pkt_normal(p, p->gro_buf + off, pkt_len, &client,
                                            p->send_s2c.iovecs, p->send_s2c.addrs, &nsend);
                 }
                 if (off < n) {
@@ -3406,7 +3468,7 @@ static void *s2c_thread(void *arg) {
                     if (!gro_said++)
                         log_info("s2c: GRO not coalescing, falling back to recvmmsg");
                 }
-                process_s2c_pkt_normal(p, p->gro_buf, n,
+                process_s2c_pkt_normal(p, p->gro_buf, n, &client,
                                        p->send_s2c.iovecs, p->send_s2c.addrs, &nsend);
             }
         } else {
@@ -3443,7 +3505,8 @@ static void *s2c_thread(void *arg) {
                 if (p->warp && first_n > 0) warp_keep(p);
             }
 
-            if (!reverse && !atomic_load_explicit(&p->has_client, memory_order_acquire)) continue;
+            cliaddr_t client;
+            if (!reverse && !client_snapshot(p, &client)) continue;
 
             for (int i = 0; i < nrecv; i++) {
                 int n = (int)p->recv_s2c.msgs[i].msg_len;
@@ -3454,7 +3517,7 @@ static void *s2c_thread(void *arg) {
                                             s2c_headroom,
                                             p->send_s2c.iovecs, p->send_s2c.addrs, &nsend);
                 } else {
-                    process_s2c_pkt_normal(p, p->recv_s2c.bufs[i], n,
+                    process_s2c_pkt_normal(p, p->recv_s2c.bufs[i], n, &client,
                                            p->send_s2c.iovecs, p->send_s2c.addrs, &nsend);
                 }
             }
@@ -3508,10 +3571,11 @@ static void rot_drain_old(proxy_t *p, int fd) {
     for (int round = 0; round < 8; round++) {
         int n = recvmmsg(fd, p->rot_drain.in, BATCH_SIZE, MSG_DONTWAIT, NULL);
         if (n <= 0) return;
-        if (!atomic_load_explicit(&p->has_client, memory_order_acquire)) continue;
+        cliaddr_t client;
+        if (!client_snapshot(p, &client)) continue;
         int ns = 0;
         for (int i = 0; i < n; i++)
-            process_s2c_pkt_normal(p, p->rot_drain.bufs[i], (int)p->rot_drain.in[i].msg_len,
+            process_s2c_pkt_normal(p, p->rot_drain.bufs[i], (int)p->rot_drain.in[i].msg_len, &client,
                                    p->rot_drain.out_iov, p->rot_drain.addrs, &ns);
         if (ns) {
             _Atomic uint32_t gm = 0, gs = 0;
@@ -3550,7 +3614,9 @@ static void rot_main_poll(proxy_t *p) {
     if (!back) {
         /* Empty it first: whatever is queued there is the client's, and a
          * close would throw it away. */
+        pthread_rwlock_wrlock(&p->remote_io);
         old = atomic_exchange_explicit(&p->rot_old_fd, -1, memory_order_acq_rel);
+        pthread_rwlock_unlock(&p->remote_io);
         if (old >= 0) {
             rot_drain_old(p, old);
             close(old);
@@ -3559,6 +3625,7 @@ static void rot_main_poll(proxy_t *p) {
     atomic_store_explicit(&p->rot_dual, 0, memory_order_relaxed);
     uint16_t from = p->rot_from, to = p->rot_to;    /* the c2s thread's, read under the lock */
     if (back) {
+        pthread_rwlock_wrlock(&p->remote_io);
         int fd = atomic_load_explicit(&p->remote_fd, memory_order_relaxed);
         if (fd >= 0) {
             rot_connect(p, fd, from);
@@ -3567,6 +3634,7 @@ static void rot_main_poll(proxy_t *p) {
             socklen_t el = sizeof(e);
             getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el);
         }
+        pthread_rwlock_unlock(&p->remote_io);
         /* A refused port, or one that stayed silent on its own, is dead. One
          * that ran beside the old port may merely have lost every race to its
          * copies (a new flow's first packets take the slow path through NAT),
@@ -3636,10 +3704,15 @@ static uint32_t sp_packets(proxy_t *p) {
            atomic_load_explicit(&p->st_s2c_tx, memory_order_relaxed);
 }
 
+static unsigned long long remote_socket_drops(proxy_t *p, unsigned long long fallback) {
+    int fd = remote_io_begin(p);
+    unsigned long long drops = fd >= 0 ? udp_socket_drops(fd) : fallback;
+    remote_io_end(p);
+    return drops;
+}
+
 static unsigned long long sp_drops(proxy_t *p) {
-    int rfd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
-    return udp_socket_drops(p->listen_fd) +
-           (rfd >= 0 ? udp_socket_drops(rfd) : 0);
+    return udp_socket_drops(p->listen_fd) + remote_socket_drops(p, 0);
 }
 
 static void sp_init(proxy_t *p, spin_ctl_t *c) {
@@ -3957,11 +4030,7 @@ int proxy_run(proxy_t *p) {
                              * against the new profile it has not yet tried. */
                             silent_ticks = 0;
                             init_unanswered = 0;
-                            int rfd2 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
-                            if (rfd2 >= 0) {
-                                atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);
-                                shutdown(rfd2, SHUT_RDWR);
-                            }
+                            remote_request_reconnect(p);
                         }
                     }
                 }
@@ -3996,11 +4065,7 @@ int proxy_run(proxy_t *p) {
                             atomic_store_explicit(&p->he_reset, 1, memory_order_relaxed);
                         }
                         atomic_store_explicit(&p->remote_dead, 1, memory_order_relaxed);
-                        int rfd2 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
-                        if (rfd2 >= 0) {
-                            atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);
-                            shutdown(rfd2, SHUT_RDWR);
-                        }
+                        remote_request_reconnect(p);
                         silent_ticks = 0;
                         init_unanswered = 0;
                     } else if (silent_ticks >= checks_needed && init_unanswered) {
@@ -4008,11 +4073,7 @@ int proxy_run(proxy_t *p) {
                                  "triggering reconnect");
                         atomic_store_explicit(&p->he_reset, 1, memory_order_relaxed);
                         atomic_store_explicit(&p->remote_dead, 1, memory_order_relaxed);
-                        int rfd2 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
-                        if (rfd2 >= 0) {
-                            atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);
-                            shutdown(rfd2, SHUT_RDWR);
-                        }
+                        remote_request_reconnect(p);
                         silent_ticks = 0;
                         init_unanswered = 0;
                     }
@@ -4033,13 +4094,14 @@ int proxy_run(proxy_t *p) {
                     if (nr) atomic_store_explicit(&p->rb_remote, nr, memory_order_relaxed);
                     /* A reconnect opens a new socket with whatever rb_remote held
                      * at that moment; one tick later it gets the current value. */
-                    int rfd3 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
+                    int rfd3 = remote_io_begin(p);
                     if (rfd3 >= 0 && (nr || rfd3 != rb_fd)) {
                         int want = atomic_load_explicit(&p->rb_remote, memory_order_relaxed);
                         setsockopt(rfd3, SOL_SOCKET, SO_RCVBUFFORCE, &want, sizeof(want));
                         rb_fd = rfd3;
                         rb_moved |= nr != 0;
                     }
+                    remote_io_end(p);
                 }
 
                 if (stats_checks > 0 && ++stats_tick >= stats_checks) {
@@ -4067,9 +4129,8 @@ int proxy_run(proxy_t *p) {
                      * upload the listen socket carries the data and the remote
                      * one only the ACKs, and the netns-wide counter cannot tell
                      * them apart. */
-                    int rfd_now = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
                     unsigned long long sl = udp_socket_drops(p->listen_fd);
-                    unsigned long long sr = rfd_now >= 0 ? udp_socket_drops(rfd_now) : pv_sl_r;
+                    unsigned long long sr = remote_socket_drops(p, pv_sl_r);
                     unsigned long long d_sl = sl > pv_sl_l ? sl - pv_sl_l : 0;
                     unsigned long long d_sr = sr > pv_sl_r ? sr - pv_sl_r : 0;
                     pv_sl_l = sl; pv_sl_r = sr;
@@ -4122,8 +4183,9 @@ int proxy_run(proxy_t *p) {
                         rb_moved = 0;
                         unsigned lr, lw, rr = 0, rw = 0;
                         sock_buf_kb(p->listen_fd, &lr, &lw);
-                        int rfd4 = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
+                        int rfd4 = remote_io_begin(p);
                         if (rfd4 >= 0) sock_buf_kb(rfd4, &rr, &rw);
+                        remote_io_end(p);
                         char rb[2][12];
                         const char *rparts[] = { "rcvbuf KB: listen=", u32_to_str(rb[0], lr),
                                                  " remote=", u32_to_str(rb[1], rr) };
@@ -4149,9 +4211,17 @@ int proxy_run(proxy_t *p) {
                         }
                         if (r == 1 && ++dns_miss >= 2) {
                             dns_miss = 0;
-                            log_info("DNS changed (current IP gone), triggering reconnect");
-                            atomic_store_explicit(&p->reconnect_needed, 1, memory_order_relaxed);
-                            shutdown(rfd2, SHUT_RDWR);
+                            /* The resolver ran unlocked. Only the path it
+                             * checked can be invalidated by this result. */
+                            if (pthread_mutex_trylock(&p->remote_mu) == 0) {
+                                int same = sa_addr_eq((struct sockaddr *)&cur,
+                                                      (struct sockaddr *)&p->remote.sa);
+                                if (same)
+                                    remote_request_reconnect(p);
+                                pthread_mutex_unlock(&p->remote_mu);
+                                if (same)
+                                    log_info("DNS changed (current IP gone), triggering reconnect");
+                            }
                         } else if (r == 0) {
                             dns_miss = 0;
                         }
@@ -4166,12 +4236,13 @@ int proxy_run(proxy_t *p) {
     atomic_store_explicit(&p->stopped, 1, memory_order_relaxed);
     if (p->listen_fd >= 0)
         shutdown(p->listen_fd, SHUT_RDWR);
-    rfd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
+    rfd = remote_io_begin(p);
     if (rfd >= 0)
         shutdown(rfd, SHUT_RDWR);
     rfd = atomic_load_explicit(&p->remote_fd2, memory_order_acquire);
     if (rfd >= 0)
         shutdown(rfd, SHUT_RDWR);
+    remote_io_end(p);
 
     pthread_join(t_c2s, NULL);
     pthread_join(t_s2c, NULL);

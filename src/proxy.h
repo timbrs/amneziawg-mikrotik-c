@@ -270,7 +270,8 @@ typedef struct {
     /* Size an outgoing datagram may reach before log_frag_warn() speaks: 1500
      * at start, the path MTU once an ICMP taught it, INT_MAX once said. */
     _Atomic int frag_lim;
-    cliaddr_t client_addr;          /* 16B v4 / 28B v6 */
+    cliaddr_t client_addr;          /* 16B v4 / 28B v6; protected by client_mu */
+    pthread_mutex_t client_mu;
     socklen_t cli_len;              /* 4B — namelen for every client-leg msg */
     int gso_ok;                     /* 4B */
     int gro_enabled;                /* 4B */
@@ -312,6 +313,9 @@ typedef struct {
     /* === Cold: init/reconnect === */
     cliaddr_t listen_addr;
     int listen_family;              /* AF_INET or AF_INET6 */
+    /* Pins published UDP sockets during nonblocking I/O. Reconnect and old
+     * port retirement must take the write lock before unpublishing. */
+    pthread_rwlock_t remote_io;
     /* Remote is the only leg that speaks both families. The socket is
      * connect()ed and every send goes through send(), so nothing on the hot
      * path ever looks at these. */

@@ -6,7 +6,7 @@ SRCS = src/main.c src/proxy.c src/transform.c src/blake2s.c src/chacha20.c src/c
 CFLAGS = -O2 -Wall -Wextra -Werror -std=c11 -D_GNU_SOURCE -ffunction-sections -fdata-sections -flto -DVERSION=\"$(VERSION)\"
 LDFLAGS = -static -Wl,--gc-sections -flto -s -lpthread
 
-.PHONY: build clean test test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns test-state test-gro test-gso test-mtu test-perf test-rotate test-stress \
+.PHONY: build clean test test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns test-state test-gro test-gso test-mtu test-perf test-rotate test-concurrency test-stress \
 	docker-arm64 docker-arm docker-armv5 docker-amd64 docker-all \
 	docker-arm64-7.20-docker docker-arm-7.20-docker docker-armv5-7.20-docker docker-amd64-7.20-docker docker-all-7.20-docker
 
@@ -17,7 +17,7 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(IMAGE_NAME) $(SRCS)
 
-test: test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns test-state test-gro test-gso test-mtu test-perf test-rotate
+test: test-blake2s test-chacha20 test-cps test-transform test-base64 test-session test-dns test-state test-gro test-gso test-mtu test-perf test-rotate test-concurrency
 	@echo "All tests passed"
 
 test-blake2s: src/test_blake2s.c $(TEST_SRCS)
@@ -71,6 +71,13 @@ test-perf: src/test_perf.c src/proxy.c $(TEST_SRCS)
 test-rotate: src/test_rotate.c src/proxy.c $(TEST_SRCS)
 	$(CC) $(TEST_CFLAGS) -o /tmp/test_rotate $^ -lpthread
 	/tmp/test_rotate
+
+test-concurrency: src/test_client_addr.c src/test_remote_fd.c src/proxy.c src/proxy.h $(TEST_SRCS)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(TEST_CFLAGS) -o $(BUILD_DIR)/test_client_addr src/test_client_addr.c $(TEST_SRCS) -pthread
+	$(CC) $(TEST_CFLAGS) -o $(BUILD_DIR)/test_remote_fd src/test_remote_fd.c $(TEST_SRCS) -pthread -Wl,--wrap=sendmmsg,--wrap=close,--wrap=pthread_rwlock_wrlock
+	$(BUILD_DIR)/test_client_addr
+	$(BUILD_DIR)/test_remote_fd
 
 # Stress test — manual only, NOT part of `make test` or CI
 test-stress: src/test_stress.c build
