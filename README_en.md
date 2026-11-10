@@ -85,7 +85,7 @@ Done: the tunnel is up, and all traffic or only the services you picked in the c
 
 This is the current repository. The old Go version, [timbrs/amneziawg-mikrotik](https://github.com/timbrs/amneziawg-mikrotik), is no longer developed.
 
-Docs last reviewed on 30 October 2026 for awg-proxy 1.4.5. Tested on RouterOS 7.24.4 (hAP ax², arm64) and hAP ac² (arm) against AmneziaWG 3.1 servers (amneziawg-go and the kernel module).
+Docs last reviewed on 11 November 2026 for awg-proxy 1.4.6. Tested on RouterOS 7.24.4 (hAP ax², arm64) and hAP ac² (arm) against AmneziaWG 3.1 servers (amneziawg-go and the kernel module).
 
 ![Speed test on MikroTik AX3](https://github.com/user-attachments/assets/9fb34444-681b-4f34-8306-8f202f1b121d)
 
@@ -97,7 +97,7 @@ Docs last reviewed on 30 October 2026 for awg-proxy 1.4.5. Tested on RouterOS 7.
 
 | Models | Architecture | Image for RouterOS 7.21+ | Notes |
 |--------|--------------|--------------------------|-------|
-| hAP ax², hAP ax³, RB5009, CCR2004, CCR2116, CCR2216 | arm64 | `awg-proxy-arm64.tar.gz` or `ghcr.io/timbrs/awg-proxy:latest` | Fastest option. Thread pinning and `AWG_RT` are available on 4 cores |
+| hAP ax², hAP ax³, RB5009, CCR2004, CCR2116, CCR2216 | arm64 | `awg-proxy-arm64.tar.gz` or `ghcr.io/timbrs/awg-proxy:latest` | Fastest option. On 4 cores the proxy picks its own cores (needs `privileged=yes`) |
 | hAP ac², hAP ac³, RB4011, RB3011 | arm | `awg-proxy-arm.tar.gz` or `ghcr.io/timbrs/awg-proxy:latest` | hAP ac² has 16 MB flash: install to an ext4 USB stick, see [troubleshooting](docs/en/troubleshooting.md#child-spawn-failed--could-not-load-next-layer) |
 | hEX refresh (E50UG), hEX S 2025 (E60iUGS), hAP ax S (E62iUGS) | arm, but the CPU runs ARMv5 only | `awg-proxy-armv5.tar.gz` or `ghcr.io/timbrs/awg-proxy:latest-armv5` | The regular arm image dies with `signal 4 (Illegal instruction)` |
 | x86, CHR | x86_64 | `awg-proxy-amd64.tar.gz` or `ghcr.io/timbrs/awg-proxy:latest` | |

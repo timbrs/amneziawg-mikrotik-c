@@ -166,18 +166,30 @@ check('all non-RU traffic, exclusions, DoH, PPPoE',
       { install: 'output', routing: 'routing-output', uninstall: 'uninstall-output' });
 
 check('picked services, own domain, every tuning knob',
-      ['--services', 'youtube,telegram', '--domain', 'example.org', '--perf', 'strong', '--extra-time', '1h',
+      ['--services', 'youtube,telegram', '--domain', 'example.org', '--extra-time', '1h',
        '--no-force-ipv4', '--no-autoupdate', '--clear-df', '--ipv6', '--storage', 'sata1-part1', '--dns', '192.168.88.1'], AWG,
       function (p) {
           p.type('conf-input', AWG).click('button[onclick="toggleAllServices(false)"]')
            .box('input[name="svc"][value="youtube"]', true).box('input[name="svc"][value="telegram"]', true);
           p.d.getElementById('custom-domain-input').value = 'example.org';
-          p.click('button[onclick="addCustomDomain()"]').radio('perf-mode', 'strong')
+          p.click('button[onclick="addCustomDomain()"]')
            .box('#extratime-enable', true).type('extratime-value', '1h').box('#v6block-enable', false)
            .box('#autoupdate-enable', false).box('#df-enable', true).box('#ipv6-enable', true)
            .pick('storage-select', '__custom').type('storage-custom', 'sata1-part1').type('awg-dns', '192.168.88.1').generate();
       },
       { install: 'output', routing: 'routing-output', uninstall: 'uninstall-output' });
+
+const thin = cli(['--scenario', 'tunnel', '-'], AWG);
+ok('ACK thinning: only on 64-bit routers with 4+ cores',
+   /architecture-name\] = "arm64"\) && \(\[\/system\/resource\/get cpu-count\] >= 4/.test(thin.out));
+ok('ACK thinning: the queue comes after the interface it hangs on',
+   thin.out.indexOf('/interface/wireguard/add name=wg-awg-proxy-1') < thin.out.indexOf('/queue/tree/add name=awg-proxy-1-ack'));
+ok('ACK thinning: the uninstall script takes all of it away',
+   /queue\/tree\/remove \[find where comment="awg-proxy-1-ack"\]/.test(thin.out) &&
+   /queue\/type\/remove \[find where name="awg-proxy-1-ack"\]/.test(thin.out) &&
+   /mangle\/remove \[find where comment="awg-proxy-1-ack"\]/.test(thin.out));
+ok('ACK thinning: the queue goes before its type in the uninstall script',
+   thin.out.indexOf('queue/tree/remove') < thin.out.indexOf('queue/type/remove'));
 
 check('standalone proxy device', ['--mode', 'standalone', '--proxy-ip', '192.168.88.10', '--scenario', 'tunnel'], AWG,
       p => p.radio('deploy-mode', 'standalone').type('conf-input', AWG).type('proxy-ip', '192.168.88.10')

@@ -203,8 +203,6 @@ const OPTIONS = [
       apply: ui => ui.check('v6block-enable', false) },
     { name: 'no-autoupdate', bool: true, help: 'no daily check for container updates',
       apply: ui => ui.check('autoupdate-enable', false) },
-    { name: 'perf', arg: 'auto|strong|weak', help: 'router class for the performance tuning (default auto: asked from the router)',
-      apply: (ui, v) => ui.choose('perf-mode', oneOf('--perf', v, ui.values('perf-mode'))) },
     { name: 'clear-df', bool: true, help: 'clear the DF bit on the proxy\'s UDP (AWG_NO_DF=1)',
       apply: ui => ui.check('df-enable', true) },
     { name: 'ipv6', bool: true, help: 'the server is reached over IPv6 (set by itself for an IPv6 endpoint)',

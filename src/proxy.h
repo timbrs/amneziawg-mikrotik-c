@@ -17,7 +17,9 @@
  * 128 dropped tunnel throughput from 208 to 127 Mbit/s. The batch buffers
  * (BATCH_SIZE * ~1.7 KB per direction) stop fitting the cache, and the saving
  * on syscalls is spent again on misses. */
+#ifndef BATCH_SIZE
 #define BATCH_SIZE     32
+#endif
 #define H4_RING_SIZE   4096
 #define GRO_BUF_SIZE   65536
 
@@ -56,6 +58,21 @@ static inline int cliaddr_eq(const cliaddr_t *a, const cliaddr_t *b) {
     return a->v4.sin_port == b->v4.sin_port &&
            a->v4.sin_addr.s_addr == b->v4.sin_addr.s_addr;
 }
+
+/* One batch as read, and the same batch ready to go out. addrs are filled
+ * only where the leg needs them (unconnected socket, server mode). */
+typedef struct {
+    uint8_t bufs[BATCH_SIZE][BUF_SIZE + AWG_PACKET_HEADROOM];
+    struct mmsghdr msgs[BATCH_SIZE];
+    struct iovec iovecs[BATCH_SIZE];
+    cliaddr_t addrs[BATCH_SIZE];
+} batch_in_t;
+
+typedef struct {
+    struct mmsghdr msgs[BATCH_SIZE];
+    struct iovec iovecs[BATCH_SIZE];
+    cliaddr_t addrs[BATCH_SIZE];
+} batch_out_t;
 
 typedef struct {
     uint32_t sender_index;
@@ -283,31 +300,12 @@ typedef struct {
 
     /* === Warm: batch I/O === */
 
-    /* Batch I/O buffers — c2s direction */
-    struct {
-        uint8_t bufs[BATCH_SIZE][BUF_SIZE + AWG_PACKET_HEADROOM];
-        struct mmsghdr msgs[BATCH_SIZE];
-        struct iovec iovecs[BATCH_SIZE];
-        cliaddr_t addrs[BATCH_SIZE];
-    } recv_c2s;
-
-    struct {
-        struct mmsghdr msgs[BATCH_SIZE];
-        struct iovec iovecs[BATCH_SIZE];
-    } send_c2s;
-
-    /* Batch I/O buffers — s2c direction (non-GRO path) */
-    struct {
-        uint8_t bufs[BATCH_SIZE][BUF_SIZE + AWG_PACKET_HEADROOM];
-        struct mmsghdr msgs[BATCH_SIZE];
-        struct iovec iovecs[BATCH_SIZE];
-    } recv_s2c;
-
-    struct {
-        struct mmsghdr msgs[BATCH_SIZE];
-        struct iovec iovecs[BATCH_SIZE];
-        cliaddr_t addrs[BATCH_SIZE];
-    } send_s2c;
+    /* Batch I/O buffers. With a sender thread (AWG_TX_*) a direction works
+     * in its ring's slots instead. */
+    batch_in_t recv_c2s;
+    batch_out_t send_c2s;
+    batch_in_t recv_s2c;            /* non-GRO path */
+    batch_out_t send_s2c;
 
     /* === Cold: init/reconnect === */
     cliaddr_t listen_addr;
@@ -476,6 +474,10 @@ typedef struct {
      * the c2s thread against a reconnect or the Happy Eyeballs swap in the s2c
      * one. The hot paths never take it. */
     pthread_mutex_t remote_mu;
+    pthread_t t_s2c;            /* for moving it off WireGuard's core */
+    pthread_t t_tx[2];          /* sender threads (c2s, s2c), same reason */
+    _Atomic int tx_up[2];       /* ...and whether each exists */
+    _Atomic uint32_t wg_probe_since; /* listen socket connected for that probe, since (s); 0 = no */
 } proxy_t;
 
 /* Session table operations */
@@ -766,6 +768,55 @@ int gso_run_len(const struct iovec *iov, const cliaddr_t *addrs, int count);
 #define PERF_RPS_DROPPED 16   /* ...and nothing was left of it */
 #define PERF_32BIT       32   /* a 32-bit CPU: the whole set dropped */
 int perf_fit_hw(awg_config_t *cfg, int ncpu, uint32_t allowed, int wide);
+
+/* Nothing set by hand on a strong router: the set the proxy picks for itself. */
+#define PERF_AUTO_RT     10
+#define BATCH_WAIT_AUTO_US 300
+/* A batch smaller than this goes out from the reader while its sender idles:
+ * handing over the ACKs of a download cost it 6 % (hAP ax²). */
+#define TX_MIN_AUTO       8
+void perf_auto_defaults(awg_config_t *cfg, uint32_t allowed);
+int perf_rt_possible(void);
+int awg_v6_src_usable(const struct in6_addr *src, const struct in6_addr *dst);
+
+/* Keep the threads off the core WireGuard sends this tunnel from. */
+#define PERF_MOVED_C2S    1
+#define PERF_MOVED_S2C    2
+#define PERF_MOVED_RPS    4
+#define PERF_MOVED_TXC    8   /* c2s sender thread */
+#define PERF_MOVED_TXS   16   /* s2c sender thread */
+
+/* Threads that may be pinned: c2s, s2c and the two senders (AWG_TX_*). */
+#define PERF_THREADS      4
+static inline int perf_moved_flag(int t) {
+    return t == 0 ? PERF_MOVED_C2S : t == 1 ? PERF_MOVED_S2C : t == 2 ? PERF_MOVED_TXC : PERF_MOVED_TXS;
+}
+
+/* Real-time priority of a thread: AWG_RT_C2S/_S2C/_TX (stored +1, 0 = unset)
+ * over AWG_RT. Index 0 c2s, 1 s2c, 2 both senders. */
+static inline int thr_rt(const awg_config_t *cfg, int t) {
+    if (t > 2) t = 2;
+    return cfg->rt_thr[t] ? cfg->rt_thr[t] - 1 : cfg->rt_prio;
+}
+
+/* Each thread's pin, NULL for a sender that is off. */
+static inline void perf_pins(awg_config_t *cfg, int *pin[PERF_THREADS]) {
+    pin[0] = &cfg->cpu_c2s;
+    pin[1] = &cfg->cpu_s2c;
+    pin[2] = cfg->tx_on[0] > 0 ? &cfg->cpu_tx[0] : NULL;
+    pin[3] = cfg->tx_on[1] > 0 ? &cfg->cpu_tx[1] : NULL;
+}
+
+/* Cores with a pinned real-time thread: RPS there loses to it. */
+static inline uint32_t perf_rt_cores(awg_config_t *cfg) {
+    int *pin[PERF_THREADS];
+    perf_pins(cfg, pin);
+    uint32_t m = 0;
+    for (int t = 0; t < PERF_THREADS; t++)
+        if (pin[t] && *pin[t] >= 0 && *pin[t] < 32 && thr_rt(cfg, t) > 0) m |= 1u << *pin[t];
+    return m;
+}
+int perf_avoid_wg_core(awg_config_t *cfg, int wg_core, uint32_t allowed);
 /* A router the proxy is not the bottleneck on: 64-bit, four cores or more. */
 static inline int hw_strong(int ncpu, int wide) { return wide && ncpu >= PERF_MIN_CPUS; }
 
@@ -781,6 +832,16 @@ typedef struct {
 } rb_ctl_t;
 int rb_for_rate(uint32_t pps, int cap);
 int rb_step(rb_ctl_t *c, uint32_t pkts, int secs, int cap);
+
+/* Per-CPU drops and budget squeezes of the kernel backlog, see softnet_parse(). */
+#define SN_MAX       32
+#define SN_LOG_CPUS  5     /* a stats line names at most this many cores: RouterOS
+                            * cuts a container's log line at 179 characters */
+typedef struct {
+    int n;
+    uint32_t drop[SN_MAX], sq[SN_MAX];
+} softnet_t;
+int softnet_parse(const char *buf, int len, softnet_t *out);
 
 /* Initialize proxy. Returns 0 on success. */
 int proxy_init(proxy_t *p, awg_config_t *cfg,

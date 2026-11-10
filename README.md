@@ -85,7 +85,7 @@
 
 Это актуальный репозиторий. Старая Go-версия [timbrs/amneziawg-mikrotik](https://github.com/timbrs/amneziawg-mikrotik) больше не развивается.
 
-Последняя сверка документации: 30 октября 2026, awg-proxy 1.4.5. Проверено на RouterOS 7.24.4 (hAP ax², arm64) и hAP ac² (arm) с серверами AmneziaWG 3.1 (amneziawg-go и модуль ядра).
+Последняя сверка документации: 11 ноября 2026, awg-proxy 1.4.6. Проверено на RouterOS 7.24.4 (hAP ax², arm64) и hAP ac² (arm) с серверами AmneziaWG 3.1 (amneziawg-go и модуль ядра).
 
 ![Замеры скорости на MikroTik AX3](https://github.com/user-attachments/assets/9fb34444-681b-4f34-8306-8f202f1b121d)
 
@@ -97,7 +97,7 @@
 
 | Модели | Архитектура | Образ для RouterOS 7.21+ | Заметки |
 |--------|-------------|--------------------------|---------|
-| hAP ax², hAP ax³, RB5009, CCR2004, CCR2116, CCR2216 | arm64 | `awg-proxy-arm64.tar.gz` или `ghcr.io/timbrs/awg-proxy:latest` | Самый быстрый вариант. На 4 ядрах доступны пины потоков и `AWG_RT` |
+| hAP ax², hAP ax³, RB5009, CCR2004, CCR2116, CCR2216 | arm64 | `awg-proxy-arm64.tar.gz` или `ghcr.io/timbrs/awg-proxy:latest` | Самый быстрый вариант. На 4 ядрах прокси сам выбирает ядра (нужен `privileged=yes`) |
 | hAP ac², hAP ac³, RB4011, RB3011 | arm | `awg-proxy-arm.tar.gz` или `ghcr.io/timbrs/awg-proxy:latest` | У hAP ac² 16 МБ flash: ставьте на USB-накопитель в ext4, см. [неполадки](docs/troubleshooting.md#child-spawn-failed--could-not-load-next-layer) |
 | hEX refresh (E50UG), hEX S 2025 (E60iUGS), hAP ax S (E62iUGS) | arm, но процессор понимает только ARMv5 | `awg-proxy-armv5.tar.gz` или `ghcr.io/timbrs/awg-proxy:latest-armv5` | Обычный arm-образ падает с `signal 4 (Illegal instruction)` |
 | x86, CHR | x86_64 | `awg-proxy-amd64.tar.gz` или `ghcr.io/timbrs/awg-proxy:latest` | |

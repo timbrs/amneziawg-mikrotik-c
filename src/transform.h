@@ -183,7 +183,16 @@ typedef struct {
     int no_gro;         /* disable UDP GRO (AWG_NO_GRO=1) */
     int no_gso;         /* disable UDP GSO on send (AWG_NO_GSO=1) */
     int rt_prio;        /* SCHED_RR priority for the I/O threads (AWG_RT, 0=off) */
+    int rt_thr[3];      /* AWG_RT_C2S/_S2C/_TX: prio + 1, 0 = take rt_prio */
+    int tx_on[2];       /* AWG_TX_C2S/_S2C: a sender thread for that direction; -1 = by the auto set */
+    int cpu_tx[2];      /* ...its core, -1 = unpinned */
+    int tx_slots;       /* AWG_TX_SLOTS: batches in flight between the two */
+    int tx_min;         /* AWG_TX_MIN: smaller batches skip the sender while it idles */
     char rps_mask[16];  /* hex CPU mask for the container veth RPS (AWG_RPS) */
+    int batch_wait_us;  /* AWG_BATCH_WAIT: let a batch of 2+ packets fill up, 0 = off */
+    int auto_cpu;       /* AWG_AUTO_CPU: pick the cores here, keep off WireGuard's */
+    int wg_core_watch;  /* WireGuard's send core not known yet, threads are pinned */
+    uint32_t cpus_allowed; /* cores this process may use */
     int no_df;          /* clear DF bit on UDP sockets (AWG_NO_DF=1) */
     int stats_interval; /* seconds between throughput/drop stat lines, 0 = off */
 
@@ -274,6 +283,12 @@ uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
 
 /* Same, on the active profile. */
 uint8_t *transform_inbound(uint8_t *buf, int n, const awg_config_t *cfg, int *out_len);
+
+/* AWG 3.1: is this datagram, which also looks like transport, a handshake with a
+ * trailer? Answered by MAC1, so a transport packet can never be taken for one.
+ * Nothing in the packet is changed. */
+int awg_rt_proved_handshake(const awg_config_t *cfg, const awg_profile_t *pr,
+                            const uint8_t *pkt, int n, uint32_t type_mask);
 
 /* Header-protection keystream block for a received packet (nonce = first 12
  * bytes). Cached in ks. */

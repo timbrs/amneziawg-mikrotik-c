@@ -1,4 +1,5 @@
 #include "transform.h"
+#include "log.h"
 #include "blake2s.h"
 #include "chacha20.h"
 #include "fastrand.h"
@@ -415,6 +416,38 @@ int config_server_resolve_peer_for_init(const awg_config_t *cfg,
     return -1;
 }
 
+/* AWG 3.1 random trailers take the size out of the classification: a handshake
+ * is whatever length it likes, so random bytes of a longer message can land in
+ * another message's H range. On wide H that sent 16 % of the handshake responses
+ * to WireGuard under the wrong type. MAC1 settles it: the sender computes it with
+ * its H type in place, over the plaintext, so it can be checked before anything
+ * in the packet is touched. Plain BLAKE2s on a copy, reached only by a candidate. */
+static int rt_mac1_proves(const awg_config_t *cfg, const awg_profile_t *pr,
+                          const uint8_t *pkt, int off, int size, int mac_off) {
+    uint8_t mac[16];
+    uint8_t plain[WG_INIT_SIZE];
+    const uint8_t *msg = pkt + off;
+    if (pr->hp_on) {
+        memcpy(plain, msg, (size_t)size);
+        chacha20_xor(cfg->hp_key, pkt, plain, size);
+        msg = plain;
+    }
+    blake2s_128mac(cfg->mac1key_in, msg, mac_off, mac);
+    return memcmp(mac, msg + mac_off, 16) == 0;
+}
+
+int awg_rt_proved_handshake(const awg_config_t *cfg, const awg_profile_t *pr,
+                            const uint8_t *pkt, int n, uint32_t type_mask) {
+    if (!cfg->mac1key_in) return 0;
+    if (n >= pr->resp_total && hrange_contains(&pr->h2, read32_le(pkt + pr->s2) ^ type_mask) &&
+        rt_mac1_proves(cfg, pr, pkt, pr->s2, WG_RESP_SIZE, 60))
+        return 1;
+    if (n >= pr->init_total && hrange_contains(&pr->h1, read32_le(pkt + pr->s1) ^ type_mask) &&
+        rt_mac1_proves(cfg, pr, pkt, pr->s1, WG_INIT_SIZE, 116))
+        return 1;
+    return 0;
+}
+
 __attribute__((hot))
 uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
                                    const awg_profile_t *pr, awg_hp_ks_t *ks,
@@ -445,28 +478,27 @@ uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
     /* Size-based dispatch: handshake first, transport last. With v3.1 random
      * trailers the peer appends an arbitrary tail, so any length at or above
      * the expected one qualifies and the tail is cut off by returning the fixed
-     * message size — same rule as receive.go's pskb_trim. */
+     * message size — same rule as receive.go's pskb_trim. With trailers an H match
+     * is only a candidate: MAC1 has to confirm it. One that does not stays the last
+     * resort below, so a server whose MAC1 we cannot check loses nothing. */
+    const int prove = pr->rt && cfg->mac1key_in;
+    int maybe_init = 0, maybe_resp = 0;
+
     if (n == pr->init_total || (pr->rt && n > pr->init_total)) {
         uint32_t h = read32_le(buf + pr->s1) ^ type_mask;
         if (hrange_contains(&pr->h1, h)) {
-            if (kstream) chacha20_xor(cfg->hp_key, buf, buf + pr->s1, WG_INIT_SIZE);
-            write32_le(buf + pr->s1, WG_HANDSHAKE_INIT);
-            if (cfg->mac1key_in)
-                recompute_mac1(buf + pr->s1, cfg->mac1key_in);
-            *out_len = WG_INIT_SIZE;
-            return buf + pr->s1;
+            if (!prove || rt_mac1_proves(cfg, pr, buf, pr->s1, WG_INIT_SIZE, 116))
+                goto is_init;
+            maybe_init = 1;
         }
     }
 
     if (n == pr->resp_total || (pr->rt && n > pr->resp_total)) {
         uint32_t h = read32_le(buf + pr->s2) ^ type_mask;
         if (hrange_contains(&pr->h2, h)) {
-            if (kstream) chacha20_xor(cfg->hp_key, buf, buf + pr->s2, WG_RESP_SIZE);
-            write32_le(buf + pr->s2, WG_HANDSHAKE_RESPONSE);
-            if (cfg->mac1key_in)
-                recompute_mac1_response(buf + pr->s2, cfg->mac1key_in);
-            *out_len = WG_RESP_SIZE;
-            return buf + pr->s2;
+            if (!prove || rt_mac1_proves(cfg, pr, buf, pr->s2, WG_RESP_SIZE, 60))
+                goto is_resp;
+            maybe_resp = 1;
         }
     }
 
@@ -492,7 +524,26 @@ uint8_t *transform_inbound_profile(uint8_t *buf, int n, const awg_config_t *cfg,
         }
     }
 
+    if (maybe_resp || maybe_init) log_debug("inbound: handshake passed without a MAC1 proof");
+    if (maybe_resp) goto is_resp;
+    if (maybe_init) goto is_init;
     return NULL;
+
+is_init:
+    if (kstream) chacha20_xor(cfg->hp_key, buf, buf + pr->s1, WG_INIT_SIZE);
+    write32_le(buf + pr->s1, WG_HANDSHAKE_INIT);
+    if (cfg->mac1key_in)
+        recompute_mac1(buf + pr->s1, cfg->mac1key_in);
+    *out_len = WG_INIT_SIZE;
+    return buf + pr->s1;
+
+is_resp:
+    if (kstream) chacha20_xor(cfg->hp_key, buf, buf + pr->s2, WG_RESP_SIZE);
+    write32_le(buf + pr->s2, WG_HANDSHAKE_RESPONSE);
+    if (cfg->mac1key_in)
+        recompute_mac1_response(buf + pr->s2, cfg->mac1key_in);
+    *out_len = WG_RESP_SIZE;
+    return buf + pr->s2;
 }
 
 __attribute__((hot))

@@ -6,6 +6,7 @@
  * every bit of it, because there it is what removes the last drops. */
 #include <stdint.h>
 #include <string.h>
+#include <arpa/inet.h>
 #include "test.h"
 #include "proxy.h"
 
@@ -167,6 +168,221 @@ static void test_rps_high_bits_rendered(void) {
     ASSERT(strcmp(cfg.rps_mask, "f0000000") == 0);
 }
 
+/* ---- the core WireGuard sends this tunnel from ---- */
+
+static void test_auto_defaults_top_two_cores(void) {
+    memset(&cfg, 0, sizeof(cfg));
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(cfg.cpu_c2s, 3);
+    ASSERT_EQ(cfg.cpu_s2c, 2);
+    ASSERT_EQ(cfg.rt_prio, PERF_AUTO_RT);
+    ASSERT(strcmp(cfg.rps_mask, "3") == 0);
+    /* cpu-list gave cores 2..5 of six */
+    memset(&cfg, 0, sizeof(cfg));
+    perf_auto_defaults(&cfg, 0x3C);
+    ASSERT_EQ(cfg.cpu_c2s, 5);
+    ASSERT_EQ(cfg.cpu_s2c, 4);
+    ASSERT(strcmp(cfg.rps_mask, "c") == 0);
+}
+
+static void test_auto_set_on_each_wg_core(void) {
+    /* The bottom of the four cores: only the receive mask changes. */
+    memset(&cfg, 0, sizeof(cfg));
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 1, 0xF), PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.cpu_c2s, 3);
+    ASSERT_EQ(cfg.cpu_s2c, 2);
+    ASSERT(strcmp(cfg.rps_mask, "1") == 0);
+
+    memset(&cfg, 0, sizeof(cfg));
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 0, 0xF), PERF_MOVED_RPS);
+    ASSERT(strcmp(cfg.rps_mask, "2") == 0);
+
+    /* The top two: the thread sitting there has to go. */
+    memset(&cfg, 0, sizeof(cfg));
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 3, 0xF), PERF_MOVED_C2S | PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.cpu_c2s, 1);
+    ASSERT_EQ(cfg.cpu_s2c, 2);
+    ASSERT(strcmp(cfg.rps_mask, "1") == 0);
+
+    memset(&cfg, 0, sizeof(cfg));
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 2, 0xF), PERF_MOVED_S2C | PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.cpu_c2s, 3);
+    ASSERT_EQ(cfg.cpu_s2c, 1);
+    ASSERT(strcmp(cfg.rps_mask, "1") == 0);
+}
+
+static void test_old_configurator_set_on_each_wg_core(void) {
+    /* 1/2/9 is what every installation so far carries. The measured case: WireGuard
+     * on core 1 gave 110 Mbit/s upload, and this placement gave 217. */
+    four_core_set();
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 1, 0xF), PERF_MOVED_C2S | PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.cpu_c2s, 3);
+    ASSERT_EQ(cfg.cpu_s2c, 2);
+    ASSERT(strcmp(cfg.rps_mask, "1") == 0);
+
+    four_core_set();
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 2, 0xF), PERF_MOVED_S2C | PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.cpu_c2s, 1);
+    ASSERT_EQ(cfg.cpu_s2c, 3);
+    ASSERT(strcmp(cfg.rps_mask, "1") == 0);
+
+    /* No collision: the threads stay, the mask only loses WireGuard's core. */
+    four_core_set();
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 0, 0xF), PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.cpu_c2s, 1);
+    ASSERT_EQ(cfg.cpu_s2c, 2);
+    ASSERT(strcmp(cfg.rps_mask, "8") == 0);
+
+    four_core_set();
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 3, 0xF), PERF_MOVED_RPS);
+    ASSERT(strcmp(cfg.rps_mask, "1") == 0);
+}
+
+static void test_avoid_nothing_to_do(void) {
+    /* Pins only, no mask, no collision: not a single change. */
+    four_core_set();
+    cfg.rps_mask[0] = 0;
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 0, 0xF), 0);
+    ASSERT_EQ(cfg.rps_mask[0], 0);
+    /* A mask made of the taken cores only goes away whole. */
+    four_core_set();
+    strcpy(cfg.rps_mask, "1");
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 0, 0xF), PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.rps_mask[0], 0);
+    /* Nonsense from the socket changes nothing. */
+    four_core_set();
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, -1, 0xF), 0);
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 99, 0xF), 0);
+    ASSERT_EQ(cfg.cpu_c2s, 1);
+    ASSERT(strcmp(cfg.rps_mask, "9") == 0);
+}
+
+static void test_avoid_with_no_free_core(void) {
+    /* Nowhere to go: stay put rather than unpin into the unknown. */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.cpu_c2s = 0;
+    cfg.cpu_s2c = 1;
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 0, 0x3), 0);
+    ASSERT_EQ(cfg.cpu_c2s, 0);
+    ASSERT_EQ(cfg.cpu_s2c, 1);
+}
+
+/* ---- sender threads (AWG_TX_*) ---- */
+
+static void test_auto_defaults_place_sender(void) {
+    /* The sender takes the next core down; the receive mask keeps the rest. */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.tx_on[0] = 1;
+    cfg.cpu_tx[0] = -1;
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(cfg.cpu_c2s, 3);
+    ASSERT_EQ(cfg.cpu_s2c, 2);
+    ASSERT_EQ(cfg.cpu_tx[0], 1);
+    /* the receiver loses real-time, and RPS joins it on its core */
+    ASSERT_EQ(thr_rt(&cfg, 0), 0);
+    ASSERT_EQ(thr_rt(&cfg, 1), PERF_AUTO_RT);
+    ASSERT_EQ(thr_rt(&cfg, 2), PERF_AUTO_RT);
+    ASSERT(strcmp(cfg.rps_mask, "9") == 0);
+    /* unset (-1): the auto set turns the sender on */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.tx_on[0] = -1;
+    cfg.cpu_tx[0] = -1;
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(cfg.tx_on[0], 1);
+    ASSERT_EQ(cfg.cpu_tx[0], 1);
+    /* AWG_RT_C2S given by hand stays */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.tx_on[0] = 1;
+    cfg.cpu_tx[0] = -1;
+    cfg.rt_thr[0] = 5 + 1;
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(thr_rt(&cfg, 0), 5);
+    ASSERT(strcmp(cfg.rps_mask, "1") == 0);
+    /* An off sender keeps its zeroed pin out of the way. */
+    memset(&cfg, 0, sizeof(cfg));
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT(strcmp(cfg.rps_mask, "3") == 0);
+}
+
+static void test_sender_moved_off_wg_core(void) {
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.tx_on[0] = 1;
+    cfg.cpu_tx[0] = -1;
+    perf_auto_defaults(&cfg, 0xF);              /* 3, 2, sender 1, mask 9 */
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 1, 0xF), PERF_MOVED_TXC | PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.cpu_tx[0], 0);
+    ASSERT(strcmp(cfg.rps_mask, "8") == 0);     /* the receiver's core only */
+    /* WireGuard on the receiver's core (the stand on a hAP ax²): it moves to the
+     * free core and RPS follows it there. */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.tx_on[0] = 1;
+    cfg.cpu_tx[0] = -1;
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 3, 0xF), PERF_MOVED_C2S | PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.cpu_c2s, 0);
+    ASSERT(strcmp(cfg.rps_mask, "1") == 0);
+    /* An off sender never moves, whatever its pin says. */
+    memset(&cfg, 0, sizeof(cfg));
+    perf_auto_defaults(&cfg, 0xF);
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 0, 0xF), PERF_MOVED_RPS);
+    ASSERT_EQ(cfg.cpu_tx[0], 0);
+}
+
+static void test_rps_kept_on_non_rt_thread(void) {
+    /* RPS loses to a real-time thread only: next to a plain one it may stay. */
+    four_core_set();
+    cfg.rt_thr[0] = 0 + 1;                      /* AWG_RT_C2S=0 */
+    strcpy(cfg.rps_mask, "3");                  /* cores 0, 1; c2s on 1 */
+    ASSERT_EQ(perf_fit_hw(&cfg, 4, 0xF, 1), 0);
+    ASSERT(strcmp(cfg.rps_mask, "3") == 0);
+    ASSERT_EQ(perf_avoid_wg_core(&cfg, 0, 0xF), PERF_MOVED_RPS);
+    ASSERT(strcmp(cfg.rps_mask, "2") == 0);
+    ASSERT_EQ(thr_rt(&cfg, 0), 0);
+    ASSERT_EQ(thr_rt(&cfg, 1), 10);
+    ASSERT_EQ(thr_rt(&cfg, 3), 10);             /* senders follow AWG_RT */
+}
+
+static void test_weak_hw_drops_sender_pin(void) {
+    four_core_set();
+    cfg.tx_on[0] = 1;
+    cfg.cpu_tx[0] = 3;
+    cfg.rt_thr[2] = 11;
+    ASSERT_EQ(perf_fit_hw(&cfg, 2, 0x3, 1), PERF_FEW_CPUS);
+    ASSERT_EQ(cfg.cpu_tx[0], -1);
+    ASSERT_EQ(cfg.tx_on[0], 1);
+    ASSERT_EQ(thr_rt(&cfg, 2), 0);
+    /* a sender pin outside the cpu-list is unpinned */
+    four_core_set();
+    cfg.tx_on[1] = 1;
+    cfg.cpu_tx[1] = 5;
+    perf_fit_hw(&cfg, 4, 0xF, 1);
+    ASSERT_EQ(cfg.cpu_tx[1], -1);
+}
+
+/* ---- softnet_stat ---- */
+
+static void test_softnet_parse(void) {
+    /* 5.6 has no cpu index column; rows are the online CPUs in order. */
+    static const char t[] =
+        "0001a2b3 00000000 00000004 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000\n"
+        "0000ffff 0001e8a2 0000000c 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000\n"
+        "00000010 00000001 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000002\n";
+    softnet_t s;
+    ASSERT_EQ(softnet_parse(t, (int)sizeof(t) - 1, &s), 3);
+    ASSERT_EQ(s.drop[0], 0u);
+    ASSERT_EQ(s.sq[0], 4u);
+    ASSERT_EQ(s.drop[1], 125090u);
+    ASSERT_EQ(s.sq[1], 12u);
+    ASSERT_EQ(s.drop[2], 1u);
+    /* a cut-off last row (short read) is not a CPU */
+    ASSERT_EQ(softnet_parse(t, 120, &s), 1);
+    ASSERT_EQ(softnet_parse("", 0, &s), 0);
+}
+
 /* ---- receive buffer sized by the traffic ---- */
 
 #define CAP (16 * 1024 * 1024)
@@ -243,6 +459,28 @@ static void test_rb_regrows_after_decay(void) {
     ASSERT_EQ(tick(20000), rb_for_rate(20000, CAP));
 }
 
+/* A socket connected while the veth address is tentative keeps the link-local
+ * source, and the tunnel stays silent for all of AWG_TIMEOUT. */
+static int v6_ok(const char *src, const char *dst) {
+    struct in6_addr s, d;
+    inet_pton(AF_INET6, src, &s);
+    inet_pton(AF_INET6, dst, &d);
+    return awg_v6_src_usable(&s, &d);
+}
+
+static void test_v6_source_not_ready(void) {
+    ASSERT(!v6_ok("fe80::1", "2a0a:4cc0:40::1"));
+    ASSERT(!v6_ok("::", "2a0a:4cc0:40::1"));
+    ASSERT(!v6_ok("::1", "2a0a:4cc0:40::1"));
+    ASSERT(v6_ok("fdcc:2222:22::2", "2a0a:4cc0:40::1"));
+    ASSERT(v6_ok("2a02:6b8::5", "2a0a:4cc0:40::1"));
+}
+
+static void test_v6_source_link_local_peer(void) {
+    ASSERT(v6_ok("fe80::1", "fe80::2"));
+    ASSERT(v6_ok("::1", "::1"));
+}
+
 int main(void) {
     printf("=== perf fit tests ===\n");
     RUN_TEST(rb_floor_is_the_old_buffer);
@@ -266,5 +504,17 @@ int main(void) {
     RUN_TEST(rps_trim_follows_dropped_pin);
     RUN_TEST(rps_wide_or_odd_left_alone);
     RUN_TEST(rps_high_bits_rendered);
+    RUN_TEST(auto_defaults_top_two_cores);
+    RUN_TEST(auto_set_on_each_wg_core);
+    RUN_TEST(old_configurator_set_on_each_wg_core);
+    RUN_TEST(avoid_nothing_to_do);
+    RUN_TEST(avoid_with_no_free_core);
+    RUN_TEST(auto_defaults_place_sender);
+    RUN_TEST(sender_moved_off_wg_core);
+    RUN_TEST(rps_kept_on_non_rt_thread);
+    RUN_TEST(weak_hw_drops_sender_pin);
+    RUN_TEST(softnet_parse);
+    RUN_TEST(v6_source_not_ready);
+    RUN_TEST(v6_source_link_local_peer);
     TEST_MAIN_END();
 }

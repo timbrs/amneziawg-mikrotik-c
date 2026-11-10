@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <sched.h>
 #include <sys/syscall.h>
 #include <dirent.h>
@@ -573,15 +574,45 @@ static void set_busy_poll(int fd, int usec) {
  * ncpu и allowed — сколько ядер и какие именно доступны процессу, с учётом
  * cpu-list контейнера; wide — 64-битный ли процессор. Возвращает PERF_* того,
  * что пришлось поменять. */
+/* Маска RPS в обе стороны. 0 от rps_parse — длиннее восьми hex-цифр (больше 32
+ * ядер) или не маска вовсе: такую не трогаем. */
+static int rps_parse(const char *mask, uint32_t *out) {
+    uint32_t m = 0;
+    int n = 0;
+    for (const char *c = mask; *c; c++, n++) {
+        int d = (*c >= '0' && *c <= '9') ? *c - '0' :
+                (*c >= 'a' && *c <= 'f') ? *c - 'a' + 10 :
+                (*c >= 'A' && *c <= 'F') ? *c - 'A' + 10 : -1;
+        if (d < 0 || n >= 8) return 0;
+        m = (m << 4) | (uint32_t)d;
+    }
+    *out = m;
+    return n;
+}
+
+static void rps_render(uint32_t m, char *out) {
+    static const char hex[] = "0123456789abcdef";
+    int k = 0;
+    for (int sh = 28; sh >= 0; sh -= 4)
+        if (k || (m >> sh) & 0xF) out[k++] = hex[(m >> sh) & 0xF];
+    out[k] = 0;
+}
+
 int perf_fit_hw(awg_config_t *cfg, int ncpu, uint32_t allowed, int wide) {
-    if (cfg->cpu_c2s < 0 && cfg->cpu_s2c < 0 && cfg->rt_prio <= 0 && !cfg->rps_mask[0])
-        return 0;
+    int any = cfg->cpu_c2s >= 0 || cfg->cpu_s2c >= 0 || cfg->rt_prio > 0 || cfg->rps_mask[0] ||
+              (cfg->rt_thr[0] | cfg->rt_thr[1] | cfg->rt_thr[2]) ||
+              (cfg->tx_on[0] > 0 && cfg->cpu_tx[0] >= 0) || (cfg->tx_on[1] > 0 && cfg->cpu_tx[1] >= 0);
+    if (!any) return 0;
     if (!hw_strong(ncpu, wide)) {
-        cfg->cpu_c2s = cfg->cpu_s2c = -1;
+        cfg->cpu_c2s = cfg->cpu_s2c = cfg->cpu_tx[0] = cfg->cpu_tx[1] = -1;
         cfg->rt_prio = 0;
+        memset(cfg->rt_thr, 0, sizeof(cfg->rt_thr));
         cfg->rps_mask[0] = 0;
         return ncpu < PERF_MIN_CPUS ? PERF_FEW_CPUS : PERF_32BIT;
     }
+    for (int d = 0; d < 2; d++)
+        if (cfg->cpu_tx[d] >= 32 || (cfg->cpu_tx[d] >= 0 && !((allowed >> cfg->cpu_tx[d]) & 1)))
+            cfg->cpu_tx[d] = -1;
     int changed = 0;
     if (cfg->cpu_c2s >= 32 || (cfg->cpu_c2s >= 0 && !((allowed >> cfg->cpu_c2s) & 1))) {
         cfg->cpu_c2s = -1;
@@ -592,39 +623,104 @@ int perf_fit_hw(awg_config_t *cfg, int ncpu, uint32_t allowed, int wide) {
         changed |= PERF_NO_S2C_CPU;
     }
     /* RPS на ядрах пришпиленных потоков съедает весь выигрыш: real-time поток
-     * вытесняет softirq ровно там, куда RPS его кладёт. Маска длиннее восьми
-     * hex-цифр (больше 32 ядер) — не роутер, её не трогаем. */
+     * вытесняет softirq ровно там, куда RPS его кладёт. */
     uint32_t m = 0;
-    int n = 0;
-    for (const char *c = cfg->rps_mask; *c; c++, n++) {
-        int d = (*c >= '0' && *c <= '9') ? *c - '0' :
-                (*c >= 'a' && *c <= 'f') ? *c - 'a' + 10 :
-                (*c >= 'A' && *c <= 'F') ? *c - 'A' + 10 : -1;
-        if (d < 0 || n >= 8) { n = 0; break; }
-        m = (m << 4) | (uint32_t)d;
-    }
-    if (n > 0) {
-        uint32_t busy = 0;
-        if (cfg->cpu_c2s >= 0) busy |= 1u << cfg->cpu_c2s;
-        if (cfg->cpu_s2c >= 0) busy |= 1u << cfg->cpu_s2c;
+    if (rps_parse(cfg->rps_mask, &m) > 0) {
+        uint32_t busy = perf_rt_cores(cfg);
         if (m & busy) {
             m &= ~busy;
             if (!m) {
                 cfg->rps_mask[0] = 0;
                 changed |= PERF_RPS_DROPPED;
             } else {
-                static const char hex[] = "0123456789abcdef";
-                char tmp[9];
-                int k = 0;
-                for (int sh = 28; sh >= 0; sh -= 4)
-                    if (k || (m >> sh) & 0xF) tmp[k++] = hex[(m >> sh) & 0xF];
-                memcpy(cfg->rps_mask, tmp, (size_t)k);
-                cfg->rps_mask[k] = 0;
+                rps_render(m, cfg->rps_mask);
                 changed |= PERF_RPS_TRIMMED;
             }
         }
     }
     return changed;
+}
+
+/* Набор по умолчанию для сильного роутера, если ручки никто не трогал: верхние ядра
+ * под потоки прокси, остальное приёму и WireGuard. Маска здесь предварительная,
+ * окончательную считает perf_avoid_wg_core(), когда станет известно ядро WireGuard.
+ *
+ * Отдачу пересылает ядро, с которого шла отправка, и одно ядро упирается в ~20 тыс.
+ * пакетов в секунду. Поэтому c2s отправляет отдельный поток на своём ядре (hAP ax²:
+ * отдача UDP +13..19 %, TCP +1..9 %), а приёму c2s real-time не нужен: он только
+ * перекладывает пачки, и RPS садится на его же ядро. Заданное руками не трогаем. */
+void perf_auto_defaults(awg_config_t *cfg, uint32_t allowed) {
+    if (cfg->tx_on[0] < 0) cfg->tx_on[0] = 1;
+    if (cfg->tx_on[0] > 0 && !cfg->rt_thr[0]) cfg->rt_thr[0] = 0 + 1;   /* приём c2s без RT */
+    int *pin[PERF_THREADS];
+    perf_pins(cfg, pin);
+    uint32_t rest = allowed;
+    for (int t = 0; t < PERF_THREADS; t++) {
+        if (!pin[t]) continue;
+        *pin[t] = -1;
+        for (int i = 31; i >= 0; i--) {
+            if (!((rest >> i) & 1)) continue;
+            *pin[t] = i;
+            rest &= ~(1u << i);
+            break;
+        }
+    }
+    cfg->rt_prio = PERF_AUTO_RT;
+    rps_render(allowed & ~perf_rt_cores(cfg), cfg->rps_mask);
+}
+
+/* Ядро, с которого WireGuard отдаёт этот туннель, занимать нельзя.
+ *
+ * Шифрует WireGuard на всех ядрах, а отправляет один воркер строго по порядку, и
+ * живёт он на ядре номер peer_id % число_ядер. Поток прокси в real-time на том же
+ * ядре его вытесняет: очередь WG (1024 пакета) стоит полной, пинг +100 мс, лишнее
+ * выбрасывается. На hAP ax² это отдача 110 Мбит/с с потерями 49 % при свободном
+ * процессоре, а тот же поток на соседнем ядре даёт 217 без потерь. Поэтому пин
+ * нельзя выбрать заранее: у каждого туннеля ядро своё и после перезагрузки другое.
+ *
+ * Перевозим только то, что столкнулось; из маски RPS убираем это ядро и ядра потоков.
+ * Возвращает PERF_MOVED_*. */
+int perf_avoid_wg_core(awg_config_t *cfg, int wg_core, uint32_t allowed) {
+    if (wg_core < 0 || wg_core >= 32) return 0;
+    int changed = 0;
+    int *pin[PERF_THREADS];
+    perf_pins(cfg, pin);
+    uint32_t taken = 1u << wg_core;
+    for (int t = 0; t < PERF_THREADS; t++)
+        if (pin[t] && *pin[t] >= 0 && *pin[t] < 32) taken |= 1u << *pin[t];
+    for (int t = 0; t < PERF_THREADS; t++) {
+        if (!pin[t] || *pin[t] != wg_core) continue;
+        for (int i = 31; i >= 0; i--) {
+            if (!((allowed >> i) & 1) || ((taken >> i) & 1)) continue;
+            *pin[t] = i;
+            taken |= 1u << i;
+            changed |= perf_moved_flag(t);
+            break;
+        }
+    }
+    /* Приёму нельзя на ядро WireGuard и на ядра real-time потоков. */
+    uint32_t keep_off = (1u << wg_core) | perf_rt_cores(cfg);
+    uint32_t m = 0;
+    if (rps_parse(cfg->rps_mask, &m) > 0 && (m & keep_off)) {
+        m &= ~keep_off;
+        if (m) rps_render(m, cfg->rps_mask);
+        else cfg->rps_mask[0] = 0;
+        changed |= PERF_MOVED_RPS;
+    }
+    return changed;
+}
+
+/* Даст ли ядро real-time: только привилегированному контейнеру. Без него пины без
+ * RT скорее мешают (замер: 136 Мбит/с против 182 у свободных потоков), поэтому набор
+ * по умолчанию включается либо целиком, либо никак. */
+int perf_rt_possible(void) {
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.sched_priority = 1;
+    if (syscall(SYS_sched_setscheduler, 0, SCHED_RR, &sp) != 0) return 0;
+    sp.sched_priority = 0;
+    syscall(SYS_sched_setscheduler, 0, SCHED_OTHER, &sp);
+    return 1;
 }
 
 static void set_thread_affinity(int cpu, const char *name) {
@@ -665,7 +761,7 @@ static void set_thread_affinity(int cpu, const char *name) {
  *
  * Запись в /sys доступна только привилегированному контейнеру; без него
  * молча пропускаем. */
-static void set_rps(const char *mask) {
+static void set_rps_ex(const char *mask, int quiet) {
     if (!mask || !mask[0]) return;
     DIR *d = opendir("/sys/class/net");
     if (!d) { log_info("rps: /sys/class/net unavailable"); return; }
@@ -697,13 +793,15 @@ static void set_rps(const char *mask) {
 
     int fd = open(path, O_WRONLY);
     if (fd < 0) {
-        log_info3("rps: ", ifn, " not writable, skipped");
+        if (!quiet) log_info3("rps: ", ifn, " not writable, skipped");
         return;
     }
     ssize_t n = write(fd, mask, strlen(mask));
     close(fd);
-    log_info3("rps: ", ifn, n > 0 ? " mask applied" : " write failed");
+    if (!quiet) log_info3("rps: ", ifn, n > 0 ? " mask applied" : " write failed");
 }
+
+static void set_rps(const char *mask) { set_rps_ex(mask, 0); }
 
 /* 0 — ещё не писали, 1 — сообщили об успехе, 2 — об отказе. */
 static _Atomic int g_rt_logged = 0;
@@ -728,6 +826,113 @@ static void set_thread_rt(int prio, const char *name) {
         const char *parts[] = { name, ": realtime refused (", strerror(errno), ")" };
         log_infon(parts, 4);
     }
+}
+
+#ifndef SO_INCOMING_CPU
+#define SO_INCOMING_CPU 49
+#endif
+
+static uint64_t mono_us(void);
+
+/* Сколько пакетов данных подождать перед замером и сколько пачек подряд должны прийти
+ * с одного ядра, чтобы ему поверить. Рукопожатия отправляет другая очередь, поэтому
+ * смотрим только на данные. */
+#define WG_CORE_SEEN     4
+#define WG_CORE_SAMPLES  8
+/* Сокет подключён к клиенту дольше этого — туннель затих, главный поток отключает. */
+#define WG_CORE_CONNECT_S 30
+
+typedef struct {
+    int seen;       /* пакетов данных до замера */
+    int connected;  /* сокет сейчас подключён к клиенту */
+    int last, same; /* последнее ядро и сколько пачек подряд оно держится */
+} wg_watch_t;
+
+static void listen_disconnect(proxy_t *p) {
+    struct sockaddr sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_family = AF_UNSPEC;
+    connect(p->listen_fd, &sa, sizeof(sa));
+}
+
+/* Узнать ядро воркера WireGuard. Пока на veth контейнера нет RPS, ядро доставляет
+ * пакет в сокет прямо в контексте отправителя, и сокет запоминает этот процессор.
+ * Но UDP запоминает его только у подключённого сокета, поэтому на время замера сокет
+ * подключается к клиенту: на отправку это не влияет, а приём и так идёт только от
+ * него. Держим недолго: чужой адрес в это время не прочитать. Возвращает, надо ли
+ * смотреть дальше. */
+static int wg_core_watch_step(proxy_t *p, wg_watch_t *w, const cliaddr_t *from) {
+    awg_config_t *cfg = p->cfg;
+    if (w->connected && !atomic_load_explicit(&p->wg_probe_since, memory_order_acquire)) {
+        /* главный поток отключил: всё это время почти не было трафика */
+        w->connected = 0;
+        w->seen = 0;
+    }
+    if (!w->connected) {
+        if (++w->seen < WG_CORE_SEEN) return 1;
+        if (connect(p->listen_fd, &from->sa, p->cli_len) != 0) {
+            set_rps(cfg->rps_mask);
+            return 0;
+        }
+        w->connected = 1;
+        w->last = -1;
+        w->same = 0;
+        atomic_store_explicit(&p->wg_probe_since, (uint32_t)(mono_us() / 1000000) | 1u,
+                              memory_order_release);
+        return 1;
+    }
+    int cpu = -1;
+    socklen_t len = sizeof(cpu);
+    if (getsockopt(p->listen_fd, SOL_SOCKET, SO_INCOMING_CPU, &cpu, &len) != 0) {
+        atomic_store_explicit(&p->wg_probe_since, 0, memory_order_release);
+        listen_disconnect(p);
+        set_rps(cfg->rps_mask);
+        return 0;
+    }
+    if (cpu != w->last) {
+        w->last = cpu;
+        w->same = 1;
+        return 1;
+    }
+    if (cpu < 0 || ++w->same < WG_CORE_SAMPLES) return 1;
+
+    atomic_store_explicit(&p->wg_probe_since, 0, memory_order_release);
+    listen_disconnect(p);
+    static const char *const tname[PERF_THREADS] = { "c2s", "s2c", "c2s-tx", "s2c-tx" };
+    int *pin[PERF_THREADS], was[PERF_THREADS];
+    perf_pins(cfg, pin);
+    for (int t = 0; t < PERF_THREADS; t++) was[t] = pin[t] ? *pin[t] : -1;
+    int moved = perf_avoid_wg_core(cfg, cpu, cfg->cpus_allowed);
+    char wb[12], ob[12], nb[12];
+    for (int t = 0; t < PERF_THREADS; t++) {
+        if (!(moved & perf_moved_flag(t))) continue;
+        const char *parts[] = { "perf: WireGuard sends this tunnel from cpu", u32_to_str(wb, (unsigned)cpu),
+                                ", ", tname[t], " moved from cpu", u32_to_str(ob, (unsigned)was[t]),
+                                " to cpu", u32_to_str(nb, (unsigned)*pin[t]) };
+        log_infon(parts, 8);
+        if (t == 0) {
+            set_thread_affinity(*pin[t], "c2s");
+            continue;
+        }
+        /* The others are not this thread: move them by handle. A sender
+         * already stopping is left alone. */
+        if (t > 1 && !atomic_load_explicit(&p->tx_up[t - 2], memory_order_acquire)) continue;
+        pthread_t th = t == 1 ? p->t_s2c : p->t_tx[t - 2];
+        cpu_set_t cs;
+        CPU_ZERO(&cs);
+        CPU_SET(*pin[t], &cs);
+        pthread_setaffinity_np(th, sizeof(cs), &cs);
+    }
+    if (!(moved & ~PERF_MOVED_RPS)) {
+        const char *parts[] = { "perf: WireGuard sends this tunnel from cpu", u32_to_str(wb, (unsigned)cpu),
+                                ", threads already clear of it" };
+        log_infon(parts, 3);
+    }
+    if (cfg->rps_mask[0]) {
+        log_info2("perf: rps mask ", cfg->rps_mask);
+        set_rps(cfg->rps_mask);
+    }
+    return 0;
 }
 
 static void sock_buf_kb(int fd, unsigned *rd, unsigned *wr) {
@@ -827,6 +1032,41 @@ static void check_path_mtu(proxy_t *p) {
     log_infon(parts, 3);
 }
 
+/* Is the source the kernel picked for a connected v6 socket any use for this
+ * destination? The address of a fresh veth stays tentative for about two
+ * seconds (duplicate address detection), and a socket connected in that window
+ * gets the link-local one and keeps it. Nothing answers such a packet, so the
+ * tunnel stayed silent for the whole AWG_TIMEOUT after every container start. */
+int awg_v6_src_usable(const struct in6_addr *src, const struct in6_addr *dst) {
+    if (IN6_IS_ADDR_LINKLOCAL(dst) || IN6_IS_ADDR_LOOPBACK(dst)) return 1;
+    return !IN6_IS_ADDR_LINKLOCAL(src) && !IN6_IS_ADDR_UNSPECIFIED(src) &&
+           !IN6_IS_ADDR_LOOPBACK(src);
+}
+
+#define V6_SRC_WAIT_NS 200000000L
+#define V6_SRC_TRIES   20    /* 4 s: DAD takes about two */
+
+/* Disconnecting drops the picked source, connecting again picks a new one. */
+static void wait_v6_src(int fd, const awg_addr_t *a) {
+    const struct in6_addr *dst = &((const struct sockaddr_in6 *)&a->sa)->sin6_addr;
+    for (int i = 0; i < V6_SRC_TRIES; i++) {
+        struct sockaddr_in6 me;
+        socklen_t len = sizeof(me);
+        if (getsockname(fd, (struct sockaddr *)&me, &len) < 0 ||
+            awg_v6_src_usable(&me.sin6_addr, dst))
+            return;
+        if (i == 0) log_info("remote: IPv6 address not ready yet, waiting");
+        struct timespec ts = { 0, V6_SRC_WAIT_NS };
+        nanosleep(&ts, NULL);
+        struct sockaddr un;
+        memset(&un, 0, sizeof(un));
+        un.sa_family = AF_UNSPEC;
+        if (connect(fd, &un, sizeof(un)) < 0 ||
+            connect(fd, (const struct sockaddr *)&a->sa, a->len) < 0)
+            return;
+    }
+}
+
 /* Open and connect one socket to a resolved endpoint. */
 static int dial_one(proxy_t *p, const awg_addr_t *a, int blocking) {
     int family = a->sa.ss_family;
@@ -874,6 +1114,8 @@ static int dial_one(proxy_t *p, const awg_addr_t *a, int blocking) {
         close(fd);
         return -1;
     }
+    if (family == AF_INET6)
+        wait_v6_src(fd, a);
 
     if (g_log_level >= LOG_INFO) {
         char ipbuf[INET6_ADDRSTRLEN], pbuf[12];
@@ -1133,6 +1375,20 @@ static uint64_t mono_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+/* Дать пачке дозреть. На 200+ Мбит/с поток просыпается на каждые два-три пакета: много
+ * системных вызовов, серии GSO короткие, а firewall и NAT идут на каждую серию, поэтому
+ * процессор уходит на пересылку, а не на данные. Заодно поток в real-time наконец отдаёт
+ * ядро softirq: без этого очередь veth переполняется и теряет тысячи пакетов за секунды.
+ * Один пакет не ждёт, значит пинг и редкий трафик ничего не платят. */
+static inline int batch_ripen(const proxy_t *p, int fd, struct mmsghdr *msgs, int n) {
+    int us = p->cfg->batch_wait_us;
+    if (us <= 0 || n < 2 || n >= BATCH_SIZE) return n;   /* 0 = выключено */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = us * 1000L };
+    nanosleep(&ts, NULL);
+    int m = recvmmsg(fd, msgs + n, (unsigned)(BATCH_SIZE - n), MSG_DONTWAIT, NULL);
+    return m > 0 ? n + m : n;
 }
 
 /* ---- Spin-drain ---------------------------------------------------------
@@ -1569,6 +1825,42 @@ static int send_gso(int fd, struct iovec *iovecs, int run, cliaddr_t *addr) {
 
 /* ---- Init ---- */
 
+/* Invariant fields of the batch structures, set once (NULL skips one). In
+ * normal mode the client leg names only the first packet of a batch: there is
+ * one client. Reverse and server mode route every packet by its own address. */
+static void batch_setup(proxy_t *p, batch_in_t *rc, batch_out_t *sc,
+                        batch_in_t *rs, batch_out_t *ss) {
+    int every = p->cfg->mode != AWG_MODE_NORMAL;
+    for (int i = 0; i < BATCH_SIZE; i++) {
+        if (rc) {   /* listen socket */
+            rc->iovecs[i].iov_base = rc->bufs[i] + p->c2s_headroom;
+            rc->iovecs[i].iov_len = BUF_SIZE;
+            rc->msgs[i].msg_hdr.msg_iov = &rc->iovecs[i];
+            rc->msgs[i].msg_hdr.msg_iovlen = 1;
+            if (every || i == 0) {
+                rc->msgs[i].msg_hdr.msg_name = &rc->addrs[i];
+                rc->msgs[i].msg_hdr.msg_namelen = p->cli_len;
+            }
+        }
+        if (sc) {   /* remote, connected: no address */
+            sc->msgs[i].msg_hdr.msg_iov = &sc->iovecs[i];
+            sc->msgs[i].msg_hdr.msg_iovlen = 1;
+        }
+        if (rs) {   /* remote, connected */
+            rs->iovecs[i].iov_base = rs->bufs[i] + p->s2c_headroom;
+            rs->iovecs[i].iov_len = BUF_SIZE + AWG_PACKET_HEADROOM - p->s2c_headroom;
+            rs->msgs[i].msg_hdr.msg_iov = &rs->iovecs[i];
+            rs->msgs[i].msg_hdr.msg_iovlen = 1;
+        }
+        if (ss) {   /* listen socket, to the client */
+            ss->msgs[i].msg_hdr.msg_iov = &ss->iovecs[i];
+            ss->msgs[i].msg_hdr.msg_iovlen = 1;
+            ss->msgs[i].msg_hdr.msg_name = &ss->addrs[i];
+            ss->msgs[i].msg_hdr.msg_namelen = p->cli_len;
+        }
+    }
+}
+
 int proxy_init(proxy_t *p, awg_config_t *cfg,
                const char *listen_str, const char *remote_str, int src_port) {
     const char *cfg_err = NULL;
@@ -1729,44 +2021,7 @@ int proxy_init(proxy_t *p, awg_config_t *cfg,
     int s2c_headroom = (cfg->mode == AWG_MODE_NORMAL) ? 0 : cfg->max_s4;
     p->c2s_headroom = c2s_headroom;
     p->s2c_headroom = s2c_headroom;
-    for (int i = 0; i < BATCH_SIZE; i++) {
-        /* recv_c2s: listen socket */
-        p->recv_c2s.iovecs[i].iov_base = p->recv_c2s.bufs[i] + c2s_headroom;
-        p->recv_c2s.iovecs[i].iov_len = BUF_SIZE;
-        p->recv_c2s.msgs[i].msg_hdr.msg_iov = &p->recv_c2s.iovecs[i];
-        p->recv_c2s.msgs[i].msg_hdr.msg_iovlen = 1;
-    }
-    /* In reverse/server mode, capture addr from every packet for routing */
-    if (cfg->mode != AWG_MODE_NORMAL) {
-        for (int i = 0; i < BATCH_SIZE; i++) {
-            p->recv_c2s.msgs[i].msg_hdr.msg_name = &p->recv_c2s.addrs[i];
-            p->recv_c2s.msgs[i].msg_hdr.msg_namelen = p->cli_len;
-        }
-    } else {
-        /* Normal: capture client addr only from first packet in batch */
-        p->recv_c2s.msgs[0].msg_hdr.msg_name = &p->recv_c2s.addrs[0];
-        p->recv_c2s.msgs[0].msg_hdr.msg_namelen = p->cli_len;
-    }
-
-    for (int i = 0; i < BATCH_SIZE; i++) {
-        /* send_s2c: to listen socket with client addr */
-        p->send_s2c.msgs[i].msg_hdr.msg_iov = &p->send_s2c.iovecs[i];
-        p->send_s2c.msgs[i].msg_hdr.msg_iovlen = 1;
-        p->send_s2c.msgs[i].msg_hdr.msg_name = &p->send_s2c.addrs[i];
-        p->send_s2c.msgs[i].msg_hdr.msg_namelen = p->cli_len;
-
-        /* send_c2s: to remote, connected — no addr needed */
-        p->send_c2s.msgs[i].msg_hdr.msg_iov = &p->send_c2s.iovecs[i];
-        p->send_c2s.msgs[i].msg_hdr.msg_iovlen = 1;
-    }
-
-    /* recv_s2c: remote socket, connected — no addr needed */
-    for (int i = 0; i < BATCH_SIZE; i++) {
-        p->recv_s2c.iovecs[i].iov_base = p->recv_s2c.bufs[i] + s2c_headroom;
-        p->recv_s2c.iovecs[i].iov_len = BUF_SIZE + AWG_PACKET_HEADROOM - s2c_headroom;
-        p->recv_s2c.msgs[i].msg_hdr.msg_iov = &p->recv_s2c.iovecs[i];
-        p->recv_s2c.msgs[i].msg_hdr.msg_iovlen = 1;
-    }
+    batch_setup(p, &p->recv_c2s, &p->send_c2s, &p->recv_s2c, &p->send_s2c);
 
     /* S4 padding is generated fresh for every packet in the send paths. A
      * pre-filled pool would give a DPI only BATCH_SIZE distinct prefixes for
@@ -1797,6 +2052,84 @@ static inline void stats_add_tx(_Atomic uint32_t *tx, _Atomic uint32_t *drop,
 static inline void stats_add_rx(_Atomic uint32_t *rx, int n) {
     if (n > 0)
         atomic_fetch_add_explicit(rx, (uint32_t)n, memory_order_relaxed);
+}
+
+/* /proc/net/softnet_stat: a row of hex columns per CPU, the second the packets
+ * the backlog had to drop, the third the times softirq ran out of budget. It
+ * is not per network namespace, so a container reads the router's own: the
+ * one place where a packet lost after the proxy sent it shows up. RouterOS
+ * forwards what the container sends in the backlog of the sending core, and a
+ * real-time thread that never sleeps keeps ksoftirqd off that core; neither
+ * the proxy's counters nor RouterOS's see those drops. */
+int softnet_parse(const char *buf, int len, softnet_t *out) {
+    int row = 0, col = 0;
+    uint32_t v = 0;
+    int in = 0;
+    for (int i = 0; i < len && row < SN_MAX; i++) {   /* a row counts once its newline is in */
+        char c = buf[i];
+        int d = (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 :
+                (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (d >= 0) {
+            v = (v << 4) | (uint32_t)d;
+            in = 1;
+            continue;
+        }
+        if (in) {
+            if (col == 1) out->drop[row] = v;
+            else if (col == 2) out->sq[row] = v;
+            col++;
+            v = 0;
+            in = 0;
+        }
+        if (c == '\n') {
+            if (col >= 3) row++;
+            col = 0;
+        }
+    }
+    out->n = row;
+    return row;
+}
+
+static int softnet_read(softnet_t *s) {
+    char buf[6144];
+    int fd = open("/proc/net/softnet_stat", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    int len = 0;
+    for (;;) {
+        ssize_t r = read(fd, buf + len, sizeof(buf) - (size_t)len);
+        if (r <= 0) break;
+        len += (int)r;
+        if (len == (int)sizeof(buf)) break;
+    }
+    close(fd);
+    return softnet_parse(buf, len, s);
+}
+
+/* One line, only the cores that moved since the last one: the drops of the
+ * backlog and the budget squeezes. Silent when nothing moved. */
+static void softnet_log(softnet_t *pv) {
+    softnet_t cur;
+    if (!softnet_read(&cur) || cur.n != pv->n) {
+        *pv = cur;
+        return;
+    }
+    const char *parts[1 + 7 * SN_LOG_CPUS];
+    char b[SN_LOG_CPUS][3][12];
+    int np = 0, k = 0;
+    parts[np++] = "softnet:";
+    for (int i = 0; i < cur.n && k < SN_LOG_CPUS; i++) {
+        uint32_t d = cur.drop[i] - pv->drop[i], q = cur.sq[i] - pv->sq[i];
+        if (!d && !q) continue;
+        parts[np++] = " cpu";
+        parts[np++] = u32_to_str(b[k][0], (unsigned)i);
+        parts[np++] = " drop=";
+        parts[np++] = u32_to_str(b[k][1], d);
+        parts[np++] = " sq=";
+        parts[np++] = u32_to_str(b[k][2], q);
+        k++;
+    }
+    *pv = cur;
+    if (k) log_infon(parts, np);
 }
 
 /* The kernel's own UDP drop counters for this network namespace. In a MikroTik
@@ -2208,12 +2541,11 @@ static int rot_lag_service(proxy_t *p, uint64_t now) {
 }
 
 /* Every c2s → remote flush goes through here, so the Happy Eyeballs probe gets
- * its copy without the per-packet fast path knowing anything about it. */
-static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
-                                     struct iovec *iovecs, int nsend) {
-    /* A move that just fell back: the copies still waiting are older than
-     * this batch, so they go first. */
-    if (p->rot_lag_n) rot_lag_service(p, mono_us());
+ * its copy without the per-packet fast path knowing anything about it. This
+ * half is all the sender thread does: it never sees a port move, see
+ * c2s_thread_normal(). */
+static inline void send_batch_remote_plain(proxy_t *p, int fd, struct mmsghdr *msgs,
+                                           struct iovec *iovecs, int nsend) {
     he_stash(p, iovecs[0].iov_base, (int)iovecs[0].iov_len, 0);
     int v6 = atomic_load_explicit(&p->remote_v6, memory_order_relaxed);
     int outer = (int)iovecs[0].iov_len + (v6 ? 48 : 28);
@@ -2224,6 +2556,14 @@ static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
                              &p->st_c2s_gso_msgs, &p->st_c2s_gso_segs);
     stats_add_tx(&p->st_c2s_tx, &p->st_c2s_drop, nsend, sent);
     if (err) note_remote_send_err(p, err);
+}
+
+static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
+                                     struct iovec *iovecs, int nsend) {
+    /* A move that just fell back: the copies still waiting are older than
+     * this batch, so they go first. */
+    if (p->rot_lag_n) rot_lag_service(p, mono_us());
+    send_batch_remote_plain(p, fd, msgs, iovecs, nsend);
     /* A port move: the same batch on the old port too, ROT_LAG_MS later,
      * until the new one answers. */
     if (atomic_load_explicit(&p->rot_dual, memory_order_relaxed)) {
@@ -2234,6 +2574,158 @@ static inline void send_batch_remote(proxy_t *p, int fd, struct mmsghdr *msgs,
                 rot_lag_put(p, old, iovecs[i].iov_base, (int)iovecs[i].iov_len, now);
         }
     }
+}
+
+/* ---- Sender thread (AWG_TX_C2S, AWG_TX_S2C) ----
+ *
+ * RouterOS forwards what a container hands to its veth on the core that made
+ * the send: the router's whole way out (conntrack, mangle, filter, NAT, the
+ * driver) runs in that core's backlog. A thread that reads, transforms and
+ * sends therefore carries all of it on one core. A second thread that only
+ * sends splits the work over two. Batches pass through a ring of slots in
+ * order, and one sender keeps the packets in order too. The reader blocks only
+ * when every slot is still waiting to go out. */
+#define TX_SLOTS_MIN 2
+#define TX_SLOTS_MAX 8
+
+typedef struct {
+    batch_in_t in;
+    batch_out_t out;
+    int n;                  /* packets in out; -1 stops the sender */
+} tx_slot_t;
+
+/* A second sender, batches alternating between two cores, doubles what the
+ * router forwards (UDP upload 235 -> 285 Mbit/s on a hAP ax²), but the two
+ * cores put batches out of order and TCP pays for it: 213 -> 200 up, 299 -> 240
+ * down. So one sender. */
+typedef struct {
+    proxy_t *p;
+    tx_slot_t *slots;
+    int nslots;
+    int cur;                /* the reader's slot */
+    int tidx;               /* the sender's */
+    int dir;                /* 0 c2s, 1 s2c */
+    int cpu, rt;
+    int min;                /* smaller batches go out from the reader while idle */
+    sem_t sfree, sfull;
+} txring_t;
+
+static void *tx_thread(void *arg) {
+    txring_t *r = (txring_t *)arg;
+    proxy_t *p = r->p;
+    const char *name = r->dir ? "s2c-tx" : "c2s-tx";
+    set_thread_affinity(r->cpu, name);
+    set_thread_rt(r->rt, name);
+    for (;;) {
+        while (sem_wait(&r->sfull) != 0) { }
+        tx_slot_t *s = &r->slots[r->tidx];
+        if (s->n < 0) break;
+        if (r->dir) {
+            int sent = 0;
+            send_batch_gso(p, p->listen_fd, s->out.msgs, s->out.iovecs, s->n,
+                           s->out.addrs, &sent, &p->st_s2c_gso_msgs, &p->st_s2c_gso_segs);
+            stats_add_tx(&p->st_s2c_tx, &p->st_s2c_drop, s->n, sent);
+        } else {
+            int fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
+            if (fd >= 0)
+                send_batch_remote_plain(p, fd, s->out.msgs, s->out.iovecs, s->n);
+            else
+                stats_add_tx(&p->st_c2s_tx, &p->st_c2s_drop, s->n, 0);
+        }
+        r->tidx = r->tidx + 1 == r->nslots ? 0 : r->tidx + 1;
+        sem_post(&r->sfree);
+    }
+    return NULL;
+}
+
+/* NULL when the direction has no sender thread: the reader then sends itself,
+ * from the batch structures in proxy_t, as before. Client mode only. */
+static txring_t *tx_start(proxy_t *p, int dir) {
+    awg_config_t *cfg = p->cfg;
+    if (cfg->tx_on[dir] <= 0 || cfg->mode != AWG_MODE_NORMAL) return NULL;
+    int n = cfg->tx_slots;
+    if (n < TX_SLOTS_MIN) n = TX_SLOTS_MIN;
+    if (n > TX_SLOTS_MAX) n = TX_SLOTS_MAX;
+    txring_t *r = calloc(1, sizeof(*r));
+    tx_slot_t *s = calloc((size_t)n, sizeof(*s));
+    if (!r || !s) {
+        free(r);
+        free(s);
+        log_error("sender thread: out of memory, sending from the reader");
+        return NULL;
+    }
+    r->p = p;
+    r->slots = s;
+    r->nslots = n;
+    r->dir = dir;
+    r->cpu = cfg->cpu_tx[dir];
+    r->rt = thr_rt(cfg, 2);
+    r->min = cfg->tx_min;
+    for (int i = 0; i < n; i++) {
+        if (dir) batch_setup(p, NULL, NULL, &s[i].in, &s[i].out);
+        else batch_setup(p, &s[i].in, &s[i].out, NULL, NULL);
+    }
+    sem_init(&r->sfree, 0, (unsigned)(n - 1));   /* slot 0 is the reader's */
+    sem_init(&r->sfull, 0, 0);
+    if (pthread_create(&p->t_tx[dir], NULL, tx_thread, r) != 0) {
+        sem_destroy(&r->sfree);
+        sem_destroy(&r->sfull);
+        free(s);
+        free(r);
+        log_error("sender thread: create failed, sending from the reader");
+        return NULL;
+    }
+    atomic_store_explicit(&p->tx_up[dir], 1, memory_order_release);
+    char nb[12];
+    const char *parts[] = { dir ? "s2c" : "c2s", ": sender thread on, ",
+                            u32_to_str(nb, (unsigned)n), " slots" };
+    log_infon(parts, 4);
+    return r;
+}
+
+/* Hand the current slot over and move to the next free one. */
+static inline void tx_publish(txring_t *r, int n) {
+    r->slots[r->cur].n = n;
+    sem_post(&r->sfull);
+    while (sem_wait(&r->sfree) != 0) { }
+    r->cur = r->cur + 1 == r->nslots ? 0 : r->cur + 1;
+}
+
+/* Nothing handed over is still waiting or on its way out: a batch sent by the
+ * reader itself now lands behind all of it. */
+static inline int tx_idle(txring_t *r) {
+    int v = 0;
+    sem_getvalue(&r->sfree, &v);
+    return v == r->nslots - 1;
+}
+
+/* A batch worth the handover. A small one (the ACKs of a download, a quiet
+ * tunnel) costs the sender a wake-up for a few packets, so while the sender is
+ * idle the reader sends it itself; under load batches are full and go through
+ * the ring. */
+static inline int tx_take(txring_t *r, int n) {
+    return n >= r->min || !tx_idle(r);
+}
+
+/* Wait until everything handed over has gone out. Holding every free slot
+ * means the sender is idle; the reader may then send itself, in order. */
+static void tx_drain(txring_t *r) {
+    for (int i = 1; i < r->nslots; i++)
+        while (sem_wait(&r->sfree) != 0) { }
+    for (int i = 1; i < r->nslots; i++)
+        sem_post(&r->sfree);
+}
+
+static void tx_stop(proxy_t *p, txring_t *r) {
+    if (!r) return;
+    atomic_store_explicit(&p->tx_up[r->dir], 0, memory_order_release);
+    r->slots[r->cur].n = -1;      /* after everything handed over before it */
+    sem_post(&r->sfull);
+    pthread_join(p->t_tx[r->dir], NULL);
+    sem_destroy(&r->sfree);
+    sem_destroy(&r->sfull);
+    free(r->slots);
+    free(r);
 }
 
 /* ---- Port rotation ----
@@ -2383,7 +2875,8 @@ static int rot_move(proxy_t *p, int fd, int soft) {
  * way. Moves when the tunnel is quiet and the batch carries something the
  * server answers: that answer is what confirms the new port. Returns 1 when
  * the socket moved. */
-static int rot_try(proxy_t *p, int fd, const rot_seen_t *v, int nrecv, int prefix) {
+static int rot_try(proxy_t *p, int fd, const rot_seen_t *v, const batch_in_t *rc,
+                   int nrecv, int prefix) {
     uint32_t now = atomic_load_explicit(&p->tick, memory_order_relaxed);
     uint32_t busy = v->busy;
     uint32_t sb = atomic_load_explicit(&p->s2c_busy_tick, memory_order_relaxed);
@@ -2399,10 +2892,10 @@ static int rot_try(proxy_t *p, int fd, const rot_seen_t *v, int nrecv, int prefi
     }
     int what = 0;
     for (int i = 0; i < nrecv && what != (ROT_PKT_USER | ROT_PKT_INIT); i++) {
-        int n = (int)p->recv_c2s.msgs[i].msg_len;
+        int n = (int)rc->msgs[i].msg_len;
         uint32_t h;
         if (n < 4) continue;
-        memcpy(&h, p->recv_c2s.bufs[i] + prefix, 4);
+        memcpy(&h, rc->bufs[i] + prefix, 4);
         if (h == WG_TRANSPORT_DATA && n > WG_TRANSPORT_MIN) what |= ROT_PKT_USER;
         else if (h == WG_HANDSHAKE_INIT) what |= ROT_PKT_INIT;
     }
@@ -2536,7 +3029,7 @@ static void *c2s_thread_normal(void *arg) {
     proxy_t *p = (proxy_t *)arg;
     awg_config_t *cfg = p->cfg;
     set_thread_affinity(cfg->cpu_c2s, "c2s");
-    set_thread_rt(cfg->rt_prio, "c2s");
+    set_thread_rt(thr_rt(cfg, 0), "c2s");
     const int prefix = p->c2s_headroom;
     int prev_nrecv = BATCH_SIZE;
     int gro_no_coalesce = 0;
@@ -2549,6 +3042,12 @@ static void *c2s_thread_normal(void *arg) {
     /* Port rotation: what this direction has seen. Off, it is never touched. */
     const int rot_on = p->rot_on;
     rot_seen_t rot_seen = { 0, 0, 0, 0 };
+    int wg_watching = cfg->wg_core_watch;
+    wg_watch_t wg_watch = { 0, 0, -1, 0 };
+    /* With a sender thread every batch is read into a slot of its ring. */
+    txring_t *tx = tx_start(p, 0);
+    batch_in_t *rc = tx ? &tx->slots[0].in : &p->recv_c2s;
+    batch_out_t *sc = tx ? &tx->slots[0].out : &p->send_c2s;
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
         int nrecv;
@@ -2589,7 +3088,7 @@ static void *c2s_thread_normal(void *arg) {
             }
 
             /* Copy source address for client detection below */
-            p->recv_c2s.addrs[0] = p->gro_addr_c2s;
+            rc->addrs[0] = p->gro_addr_c2s;
             nrecv = 0;
 
             if (seg_size > 0 && total > seg_size) {
@@ -2605,8 +3104,8 @@ static void *c2s_thread_normal(void *arg) {
                         nrecv = 0;
                         break;
                     }
-                    memcpy(p->recv_c2s.bufs[nrecv] + prefix, p->gro_buf_c2s + off, plen);
-                    p->recv_c2s.msgs[nrecv].msg_len = plen;
+                    memcpy(rc->bufs[nrecv] + prefix, p->gro_buf_c2s + off, plen);
+                    rc->msgs[nrecv].msg_len = plen;
                     nrecv++;
                 }
                 if (nrecv > 0) gro_no_coalesce = 0;
@@ -2630,8 +3129,8 @@ static void *c2s_thread_normal(void *arg) {
                     log_debug("c2s: dropping oversized GRO datagram");
                     continue;
                 }
-                memcpy(p->recv_c2s.bufs[0] + prefix, p->gro_buf_c2s, (int)total);
-                p->recv_c2s.msgs[0].msg_len = (unsigned int)total;
+                memcpy(rc->bufs[0] + prefix, p->gro_buf_c2s, (int)total);
+                rc->msgs[0].msg_len = (unsigned int)total;
                 nrecv = 1;
             }
         } else {
@@ -2645,23 +3144,31 @@ static void *c2s_thread_normal(void *arg) {
                 continue;
             }
             for (int i = 0; i < prev_nrecv; i++)
-                p->recv_c2s.iovecs[i].iov_len = BUF_SIZE;
-            p->recv_c2s.msgs[0].msg_hdr.msg_namelen = p->cli_len;
+                rc->iovecs[i].iov_len = BUF_SIZE;
+            rc->msgs[0].msg_hdr.msg_namelen = p->cli_len;
 
-            nrecv = spin_recvmmsg(p, p->listen_fd, p->recv_c2s.msgs, BATCH_SIZE);
+            nrecv = spin_recvmmsg(p, p->listen_fd, rc->msgs, BATCH_SIZE);
             if (nrecv <= 0) {
                 if (atomic_load_explicit(&p->stopped, memory_order_relaxed)) break;
                 continue;
             }
+            nrecv = batch_ripen(p, p->listen_fd, rc->msgs, nrecv);
             prev_nrecv = nrecv;
         }
 
         atomic_store_explicit(&p->last_active, 1, memory_order_relaxed);
         stats_add_rx(&p->st_c2s_rx, nrecv);
 
+        if (__builtin_expect(wg_watching, 0)) {
+            uint32_t t;
+            memcpy(&t, rc->bufs[0] + prefix, 4);
+            if (t == WG_TRANSPORT_DATA)
+                wg_watching = wg_core_watch_step(p, &wg_watch, &rc->addrs[0]);
+        }
+
         /* Check client address from first packet */
-        if (note_client_addr(p, &p->recv_c2s.addrs[0]) && p->auto_src_port) {
-            int cp = ntohs(cliaddr_port(&p->recv_c2s.addrs[0]));
+        if (note_client_addr(p, &rc->addrs[0]) && p->auto_src_port) {
+            int cp = ntohs(cliaddr_port(&rc->addrs[0]));
             if (p->local_port != cp) {
                 p->local_port = cp;
                 char pb2[12];
@@ -2676,10 +3183,20 @@ static void *c2s_thread_normal(void *arg) {
 
         /* A due port moves before this batch goes out, so the batch is what
          * carries the server over. Three relaxed loads while not due. */
-        if (rot_on && atomic_load_explicit(&p->rot_due, memory_order_relaxed) &&
-            atomic_load_explicit(&p->rot_state, memory_order_relaxed) == ROT_IDLE &&
-            atomic_load_explicit(&p->rot_old_fd, memory_order_relaxed) < 0)
-            rot_try(p, remote_fd, &rot_seen, nrecv, prefix);
+        int due = rot_on && atomic_load_explicit(&p->rot_due, memory_order_relaxed) &&
+                  atomic_load_explicit(&p->rot_state, memory_order_relaxed) == ROT_IDLE &&
+                  atomic_load_explicit(&p->rot_old_fd, memory_order_relaxed) < 0;
+        /* The sender thread only ever sends plain data on the current port. A
+         * port move, its doubled sends and anything that is not data wait until
+         * it has sent everything before them, then go out from here, as
+         * without it: the rotation state stays this thread's alone. */
+        int sync = !tx;
+        if (tx && (due || p->rot_lag_n || atomic_load_explicit(&p->rot_dual, memory_order_relaxed))) {
+            tx_drain(tx);
+            sync = 1;
+        }
+        if (due)
+            rot_try(p, remote_fd, &rot_seen, rc, nrecv, prefix);
 
         /* Build sendmmsg batch. Both flags are hoisted out of the loop, so a
          * v2 config pays one predicted branch per packet and no ChaCha20. */
@@ -2690,10 +3207,10 @@ static void *c2s_thread_normal(void *arg) {
         uint32_t bytes = 0;
 
         for (int i = 0; i < nrecv; i++) {
-            int n = (int)p->recv_c2s.msgs[i].msg_len;
+            int n = (int)rc->msgs[i].msg_len;
             if (n <= 0) continue;
 
-            uint8_t *data = p->recv_c2s.bufs[i] + prefix;
+            uint8_t *data = rc->bufs[i] + prefix;
 
             /* Transport data fast-path */
             if (n >= WG_TRANSPORT_MIN) {
@@ -2714,8 +3231,8 @@ static void *c2s_thread_normal(void *arg) {
                     if (hp)
                         chacha20_xor(cfg->hp_key, base, data, AWG_HP_TRANSPORT_HDR);
                     awg_window_note(cfg, total);
-                    p->send_c2s.iovecs[nsend].iov_base = base;
-                    p->send_c2s.iovecs[nsend].iov_len = total;
+                    sc->iovecs[nsend].iov_base = base;
+                    sc->iovecs[nsend].iov_len = total;
                     nsend++;
                     xport = 1;
                     bytes += (uint32_t)total;
@@ -2726,9 +3243,13 @@ static void *c2s_thread_normal(void *arg) {
             }
 
             /* Handshake slow path: flush batch first */
+            if (!sync) {
+                tx_drain(tx);
+                sync = 1;
+            }
             if (nsend > 0) {
-                send_batch_remote(p, remote_fd, p->send_c2s.msgs,
-                                  p->send_c2s.iovecs, nsend);
+                send_batch_remote(p, remote_fd, sc->msgs,
+                                  sc->iovecs, nsend);
                 nsend = 0;
             }
 
@@ -2751,7 +3272,7 @@ static void *c2s_thread_normal(void *arg) {
             }
 
             int out_len, sendJunk;
-            uint8_t *out = transform_outbound(p->recv_c2s.bufs[i], prefix, n,
+            uint8_t *out = transform_outbound(rc->bufs[i], prefix, n,
                                                cfg, fastrand_u64(&p->rng_c2s),
                                                &out_len, &sendJunk);
             if (!out) {
@@ -2781,14 +3302,19 @@ static void *c2s_thread_normal(void *arg) {
             }
 
             /* Non-junk handshake */
-            p->send_c2s.iovecs[nsend].iov_base = out;
-            p->send_c2s.iovecs[nsend].iov_len = out_len;
+            sc->iovecs[nsend].iov_base = out;
+            sc->iovecs[nsend].iov_len = out_len;
             nsend++;
         }
 
-        if (nsend > 0) {
-            send_batch_remote(p, remote_fd, p->send_c2s.msgs,
-                              p->send_c2s.iovecs, nsend);
+        if (nsend > 0 && !sync && tx_take(tx, nsend)) {
+            tx_publish(tx, nsend);
+            rc = &tx->slots[tx->cur].in;
+            sc = &tx->slots[tx->cur].out;
+            prev_nrecv = BATCH_SIZE;
+        } else if (nsend > 0) {
+            send_batch_remote(p, remote_fd, sc->msgs,
+                              sc->iovecs, nsend);
         }
         if (rot_on && xport) {
             uint32_t t = atomic_load_explicit(&p->tick, memory_order_relaxed);
@@ -2800,6 +3326,7 @@ static void *c2s_thread_normal(void *arg) {
         }
     }
 
+    tx_stop(p, tx);
     return NULL;
 }
 
@@ -2859,16 +3386,16 @@ static void *c2s_thread_reverse(void *arg) {
             if (n >= s4 + WG_TRANSPORT_MIN) {
                 if (!pr->transport_size_ambiguous ||
                     (n != pr->init_total && n != pr->resp_total && n != pr->cookie_total)) {
-                    uint32_t h;
+                    uint32_t h, mask = 0;
                     memcpy(&h, pkt + s4, 4);
                     const uint8_t *kstream = NULL;
                     if (pr->hp_on) {
                         kstream = hp_recv_ks(cfg, pkt, &ks);
-                        uint32_t mask;
                         memcpy(&mask, kstream, 4);
                         h ^= mask;
                     }
-                    if (hrange_contains(&pr->h4, h)) {
+                    if (hrange_contains(&pr->h4, h) &&
+                        !(pr->rt && awg_rt_proved_handshake(cfg, pr, pkt, n, mask))) {
                         if (kstream)
                             chacha20_xor_ks(pkt + s4, kstream, AWG_HP_TRANSPORT_HDR);
                         uint32_t wt = WG_TRANSPORT_DATA;
@@ -2992,16 +3519,16 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
     if (n >= s4 + WG_TRANSPORT_MIN) {
         if (!cfg->transport_size_ambiguous ||
             (n != cfg->init_total && n != cfg->resp_total && n != cfg->cookie_total)) {
-            uint32_t h;
+            uint32_t h, mask = 0;
             memcpy(&h, pkt + s4, 4);
             const uint8_t *kstream = NULL;
             if (cfg->hp_on) {
                 kstream = hp_recv_ks(cfg, pkt, &ks);
-                uint32_t mask;
                 memcpy(&mask, kstream, 4);
                 h ^= mask;
             }
-            if (hrange_contains(&cfg->h4, h)) {
+            if (hrange_contains(&cfg->h4, h) &&
+                !(cfg->rt && awg_rt_proved_handshake(cfg, config_active_profile(cfg), pkt, n, mask))) {
                 if (kstream)
                     chacha20_xor_ks(pkt + s4, kstream, AWG_HP_TRANSPORT_HDR);
                 uint32_t wt = WG_TRANSPORT_DATA;
@@ -3028,10 +3555,12 @@ static inline int process_s2c_pkt_normal(proxy_t *p, uint8_t *pkt, int n,
         return 0;
     }
 
-    /* Identify handshake type for diagnostics */
+    /* Identify handshake type for diagnostics. A data packet whose size happens
+     * to equal a handshake size also lands here; it is not a handshake and
+     * used to be logged as "type=unknown" many times a second (#82). */
     uint32_t mtype = 0;
     if (out_len >= 4) memcpy(&mtype, out, 4);
-    if (g_log_level >= LOG_DEBUG) {
+    if (g_log_level >= LOG_DEBUG && mtype != WG_TRANSPORT_DATA) {
         const char *type_str = "unknown";
         if (mtype == WG_HANDSHAKE_INIT) type_str = "init";
         else if (mtype == WG_HANDSHAKE_RESPONSE) type_str = "resp";
@@ -3273,7 +3802,7 @@ __attribute__((hot))
 static void *s2c_thread(void *arg) {
     proxy_t *p = (proxy_t *)arg;
     set_thread_affinity(p->cfg->cpu_s2c, "s2c");
-    set_thread_rt(p->cfg->rt_prio, "s2c");
+    set_thread_rt(thr_rt(p->cfg, 1), "s2c");
     int reconnect_backoff = 1;
     int prev_nrecv = BATCH_SIZE;
 
@@ -3307,6 +3836,12 @@ static void *s2c_thread(void *arg) {
     int gro_pend_off = 0, gro_pend_total = 0, gro_pend_seg = 0;
     const int rot_on = p->rot_on;
     rot_seen_t rot_seen = { 0, 0, 0, 0 };
+    /* With a sender thread every batch is read into a slot of its ring. A GRO
+     * read is split out of gro_buf, which the next read overwrites, so that
+     * one still goes out from here. */
+    txring_t *tx = tx_start(p, 1);
+    batch_in_t *rs = tx ? &tx->slots[0].in : &p->recv_s2c;
+    batch_out_t *ss = tx ? &tx->slots[0].out : &p->send_s2c;
 
     while (!atomic_load_explicit(&p->stopped, memory_order_relaxed)) {
         remote_fd = atomic_load_explicit(&p->remote_fd, memory_order_acquire);
@@ -3342,10 +3877,12 @@ static void *s2c_thread(void *arg) {
 
         /* === Receive === */
         int nsend = 0;
+        int in_gro = 0;
 
         if (p->gro_enabled && !reverse) {
             /* GRO path: normal mode only (reverse uses outbound which needs headroom) */
             int seg_size, n;
+            in_gro = 1;
 
             /* Drain any segments left over from the previous read first — one
              * 64 KiB coalesced read can carry more than BATCH_SIZE of them. */
@@ -3388,7 +3925,7 @@ static void *s2c_thread(void *arg) {
                     if (end > n) end = n;
                     int pkt_len = end - off;
                     process_s2c_pkt_normal(p, p->gro_buf + off, pkt_len,
-                                           p->send_s2c.iovecs, p->send_s2c.addrs, &nsend);
+                                           ss->iovecs, ss->addrs, &nsend);
                 }
                 if (off < n) {
                     gro_pend_off = off;
@@ -3407,7 +3944,7 @@ static void *s2c_thread(void *arg) {
                         log_info("s2c: GRO not coalescing, falling back to recvmmsg");
                 }
                 process_s2c_pkt_normal(p, p->gro_buf, n,
-                                       p->send_s2c.iovecs, p->send_s2c.addrs, &nsend);
+                                       ss->iovecs, ss->addrs, &nsend);
             }
         } else {
             /* Non-GRO path (or reverse mode): recvmmsg with MSG_WAITFORONE */
@@ -3420,13 +3957,14 @@ static void *s2c_thread(void *arg) {
                 continue;
             }
             for (int i = 0; i < prev_nrecv; i++)
-                p->recv_s2c.iovecs[i].iov_len = s2c_buflen;
+                rs->iovecs[i].iov_len = s2c_buflen;
 
-            int nrecv = spin_recvmmsg(p, remote_fd, p->recv_s2c.msgs, BATCH_SIZE);
+            int nrecv = spin_recvmmsg(p, remote_fd, rs->msgs, BATCH_SIZE);
             if (nrecv <= 0) {
                 note_remote_read_err(p, nrecv, errno);
                 continue;
             }
+            nrecv = batch_ripen(p, remote_fd, rs->msgs, nrecv);
             prev_nrecv = nrecv;
 
             atomic_store_explicit(&p->last_active, 1, memory_order_relaxed);
@@ -3434,7 +3972,7 @@ static void *s2c_thread(void *arg) {
             reconnect_backoff = 1;
 
             if (!atomic_exchange_explicit(&p->fe_remote_pkt, 1, memory_order_relaxed)) {
-                int first_n = (int)p->recv_s2c.msgs[0].msg_len;
+                int first_n = (int)rs->msgs[0].msg_len;
                 char nb[12];
                 const char *parts[] = { "s2c: first packet received from remote (size=",
                                         u32_to_str(nb, first_n), ")" };
@@ -3446,16 +3984,16 @@ static void *s2c_thread(void *arg) {
             if (!reverse && !atomic_load_explicit(&p->has_client, memory_order_acquire)) continue;
 
             for (int i = 0; i < nrecv; i++) {
-                int n = (int)p->recv_s2c.msgs[i].msg_len;
+                int n = (int)rs->msgs[i].msg_len;
                 if (n <= 0) continue;
                 if (reverse) {
-                    process_s2c_pkt_reverse(p, p->recv_s2c.bufs[i],
-                                            p->recv_s2c.bufs[i] + s2c_headroom, n,
+                    process_s2c_pkt_reverse(p, rs->bufs[i],
+                                            rs->bufs[i] + s2c_headroom, n,
                                             s2c_headroom,
-                                            p->send_s2c.iovecs, p->send_s2c.addrs, &nsend);
+                                            ss->iovecs, ss->addrs, &nsend);
                 } else {
-                    process_s2c_pkt_normal(p, p->recv_s2c.bufs[i], n,
-                                           p->send_s2c.iovecs, p->send_s2c.addrs, &nsend);
+                    process_s2c_pkt_normal(p, rs->bufs[i], n,
+                                           ss->iovecs, ss->addrs, &nsend);
                 }
             }
         }
@@ -3464,7 +4002,7 @@ static void *s2c_thread(void *arg) {
         if (rot_on && nsend > 0) {
             uint32_t bytes = 0;
             for (int i = 0; i < nsend; i++)
-                bytes += (uint32_t)p->send_s2c.iovecs[i].iov_len;
+                bytes += (uint32_t)ss->iovecs[i].iov_len;
             if (rot_seen_note(&rot_seen, atomic_load_explicit(&p->tick, memory_order_relaxed),
                               bytes))
                 atomic_store_explicit(&p->s2c_busy_tick, rot_seen.busy, memory_order_relaxed);
@@ -3477,7 +4015,13 @@ static void *s2c_thread(void *arg) {
         }
 
         /* === Send === */
-        if (nsend > 0) {
+        if (nsend > 0 && tx && !in_gro && tx_take(tx, nsend)) {
+            tx_publish(tx, nsend);
+            rs = &tx->slots[tx->cur].in;
+            ss = &tx->slots[tx->cur].out;
+            prev_nrecv = BATCH_SIZE;
+        } else if (nsend > 0) {
+            if (tx && !tx_idle(tx)) tx_drain(tx);
             /* The listening socket is never connected, in any mode, so every
              * segmented send has to name its destination. Server mode used to
              * pass NULL here and earn EDESTADDRREQ on every batch — an error
@@ -3487,13 +4031,14 @@ static void *s2c_thread(void *arg) {
              * with whoever each packet is for, and gso_run_len splits the runs
              * accordingly. */
             int sent_s2c = 0;
-            send_batch_gso(p, p->listen_fd, p->send_s2c.msgs,
-                           p->send_s2c.iovecs, nsend, p->send_s2c.addrs, &sent_s2c,
+            send_batch_gso(p, p->listen_fd, ss->msgs,
+                           ss->iovecs, nsend, ss->addrs, &sent_s2c,
                            &p->st_s2c_gso_msgs, &p->st_s2c_gso_segs);
             stats_add_tx(&p->st_s2c_tx, &p->st_s2c_drop, nsend, sent_s2c);
         }
     }
 
+    tx_stop(p, tx);
     return NULL;
 }
 
@@ -3747,7 +4292,10 @@ int proxy_run(proxy_t *p) {
     int rb_auto = set_socket_buffers(p->listen_fd,
                                      cfg->socket_buf_auto ? RB_FLOOR : cfg->socket_buf,
                                      cfg->socket_buf) && cfg->socket_buf_auto;
-    set_rps(cfg->rps_mask);
+    /* Ядро WireGuard видно только без RPS, а маска переживает перезапуск контейнера
+     * вместе с veth: снять её, вернётся из wg_core_watch_step(). */
+    if (cfg->wg_core_watch) set_rps_ex("0", 1);
+    else set_rps(cfg->rps_mask);
     atomic_store_explicit(&p->spin_us, cfg->spin_us, memory_order_relaxed);
     set_busy_poll(p->listen_fd, cfg->busy_poll);
     if (cfg->no_df)
@@ -3818,10 +4366,12 @@ int proxy_run(proxy_t *p) {
     ev.data.fd = p->timer_fd;
     epoll_ctl(epfd, EPOLL_CTL_ADD, p->timer_fd, &ev);
 
-    /* Launch c2s and s2c threads */
+    /* Launch s2c and c2s threads. s2c first: c2s may need to move it, see
+     * wg_core_watch_step(). */
     pthread_t t_c2s, t_s2c;
-    pthread_create(&t_c2s, NULL, c2s_thread, p);
     pthread_create(&t_s2c, NULL, s2c_thread, p);
+    p->t_s2c = t_s2c;
+    pthread_create(&t_c2s, NULL, c2s_thread, p);
 
     /* Main thread: signal handling + timeout */
     int timeout_secs = cfg->timeout > 0 ? cfg->timeout : 180;
@@ -3887,9 +4437,12 @@ int proxy_run(proxy_t *p) {
     uint32_t pv_cgm = 0, pv_cgs = 0, pv_sgm = 0, pv_sgs = 0;
     udp_kstats_t pv_k = { 0, 0, 0 };
     unsigned long long pv_sl_l = 0, pv_sl_r = 0;
+    softnet_t pv_sn;
+    pv_sn.n = 0;
     if (stats_checks > 0) {
         read_udp_kstats(&pv_k);
         pv_sl_l = udp_socket_drops(p->listen_fd);
+        softnet_read(&pv_sn);
     }
 
     struct epoll_event events[3];
@@ -3931,6 +4484,11 @@ int proxy_run(proxy_t *p) {
                 atomic_store_explicit(&p->tick, ++tick, memory_order_relaxed);
                 if (p->rot_on) rot_main_tick(p, &rot_m, tick);
                 check_path_mtu(p);
+                uint32_t wg_since = atomic_load_explicit(&p->wg_probe_since, memory_order_acquire);
+                if (wg_since && (uint32_t)(mono_us() / 1000000) - wg_since > WG_CORE_CONNECT_S) {
+                    atomic_store_explicit(&p->wg_probe_since, 0, memory_order_release);
+                    listen_disconnect(p);
+                }
                 int had_activity = atomic_exchange_explicit(&p->last_active, 0, memory_order_relaxed);
                 int had_remote_rx = atomic_exchange_explicit(&p->last_remote_rx, 0, memory_order_relaxed);
                 int had_init = atomic_exchange_explicit(&p->client_init, 0, memory_order_relaxed);
@@ -4114,6 +4672,7 @@ int proxy_run(proxy_t *p) {
                             " run=", u32_to_str(g[6], sw), ".", u32_to_str(g[7], st) };
                         log_infon(gparts, 16);
                     }
+                    softnet_log(&pv_sn);
                     pv_c2s_rx = c2s_rx; pv_c2s_tx = c2s_tx; pv_c2s_dr = c2s_dr;
                     pv_s2c_tx = s2c_tx; pv_s2c_dr = s2c_dr; pv_k = k;
                     /* Only when it moved: an idle tunnel stays silent, and a busy

@@ -3,7 +3,7 @@
 > Part of the [awg-proxy](../../README_en.md) documentation: a RouterOS container that connects MikroTik to AmneziaWG servers. The easiest way to install it is the [configurator](https://timbrs.github.io/amneziawg-mikrotik-c/conf3.0.html), which generates all commands. Other pages: [install](install.md) · [updating](update.md) · [variables](env.md) · [AWG 3.x and IPv6](protocol.md) · [routing and MTU](routing.md) · [server mode](server-mode.md) · [troubleshooting](troubleshooting.md).
 
 The questions come from user discussions and are worded the way people usually ask them. Answers are
-current for awg-proxy 1.4.5 (October 2026).
+current for awg-proxy 1.4.6 (November 2026).
 
 ## Is it for me
 
@@ -115,12 +115,16 @@ VPS there are Linux binaries in the [releases](https://github.com/timbrs/amnezia
 The router CPU sets the ceiling, because the router itself does the WireGuard crypto; the proxy is almost
 never the bottleneck. Rough figures from the author's measurements (they depend on the link and the server):
 
-- hAP ax²: about 200–250 Mbit/s with `privileged=yes` and the `AWG_RT`/`AWG_RPS` tuning (see [variables](env.md#optional----network-and-diagnostics));
+- hAP ax²: about 200–250 Mbit/s both ways with `privileged=yes` (since 1.4.6 the proxy picks its cores by itself, see [variables](env.md#optional----network-and-diagnostics));
 - hAP ax³: about 190–200 Mbit/s;
 - hAP ac²: about 100 Mbit/s.
 
 One tunnel is one flow, and WireGuard handles it on one or two cores. Once the CPU sits at 100 %, it will not
 go faster. Turning off unneeded services and fasttracking traffic that bypasses the tunnel helps.
+
+### Why is upload half of download?
+
+Before 1.4.6 a common cause: a proxy thread sat on the very core WireGuard sends the tunnel from. Signs: upload stops around 110 Mbit/s, ping under upload grows by 100 ms, and the CPU is less than half busy. Update to 1.4.6 and turn on `privileged=yes`: the proxy moves the thread by itself, and the log shows `perf: WireGuard sends this tunnel from cpuN`. Better remove `AWG_CPU_C2S`, `AWG_CPU_S2C`, `AWG_RT` and `AWG_RPS` altogether.
 
 ### Why is it slower than the AmneziaVPN app on my PC?
 
@@ -149,6 +153,10 @@ First find out where the problem is:
    drops handshakes.
 
 The full walkthrough is in [troubleshooting](troubleshooting.md).
+
+### AWG 3.1: handshake is fine, download works, upload is almost zero
+
+A server with `RandomTrailers` and wide `H1`-`H3` loses the client's data packets: random bytes land in the handshake type ranges, and the packet silently dies on the MAC1 check (a server bug, [amneziawg-go#186](https://github.com/amnezia-vpn/amneziawg-go/issues/186)). The proxy cannot do anything about it, but warns at startup with the line `AWG_RANDOM_TRAILERS with wide H1-H3`. Workaround on the server: turn `RandomTrailers` off or narrow `H1`-`H3`.
 
 ### It worked, then stopped after a couple of days: handshake yes, data no
 

@@ -1157,15 +1157,6 @@
             <span data-i18n="autoUpdateLabel">Check for container updates daily</span></label>
             <div class="hint" data-i18n="autoUpdateHint">Adds a scheduler that runs the <code>&lt;prefix&gt;-update</code> script at 04:30. The script compares the published release with the installed one and only calls <code>/container/repull</code> when the version actually changed &mdash; a pull restarts the container and the tunnel is down for about ten seconds. Needs RouterOS 7.22+ and an install from the registry; the script itself is always created, so you can update by hand with <code>/system/script/run &lt;prefix&gt;-update</code>.</div>
         </div>
-        <div id="perf-row" class="warp-adv" style="margin-top:8px">
-            <label data-i18n="perfLabel">How powerful is your router?</label>
-            <div class="radio-group">
-                <label><input type="radio" name="perf-mode" value="auto" checked> <span data-i18n="perfAuto">Detect automatically (recommended)</span></label>
-                <label><input type="radio" name="perf-mode" value="strong"> <span data-i18n="perfStrong">It has 4 cores or more</span></label>
-                <label><input type="radio" name="perf-mode" value="weak"> <span data-i18n="perfWeak">It has 1-2 cores</span></label>
-            </div>
-            <div class="hint" data-i18n="perfHint">On a router with four cores or more and a 64-bit CPU (hAP ax2, ax3) the proxy gets two cores of its own, its threads are given the CPU first, and packet receive is spread over the other cores. That removes the last packet drops and makes the speed steady instead of jumping between runs. On a weaker router &mdash; fewer cores, or a 32-bit arm such as the hAP ac2 &mdash; these settings are skipped: there they take the CPU away from WireGuard, and the container drops them by itself even if they are set. Automatic detection asks the router itself during install, so it is the safe choice. Needs RouterOS 7.24+; on older versions the settings are accepted but do nothing.</div>
-        </div>
         <div id="df-row" class="warp-adv" style="margin-top:8px">
             <label><input type="checkbox" id="df-enable">
             <span data-i18n="dfLabel">Clear DF bit on UDP (DPI workaround)</span></label>
@@ -1678,11 +1669,6 @@
             netwatchHint: 'Monitors tunnel availability by pinging 8.8.8.8 through the WG interface (via a pinned probe route). If the tunnel is down, disables its route \u2014 traffic falls back to the next tunnel (by distance) or goes direct. Re-enables when the tunnel recovers.',
             v6blockLabel: 'Force IPv4 (block native IPv6 past the tunnel)',
             v6blockHint: 'Only IPv4 goes into the tunnel. If the ISP hands the router native IPv6, every IPv6 flow leaves straight out of WAN and the routing policy never sees it: the site opens past the VPN, or hangs for about 10 seconds until the client falls back to IPv4. These rules reject such connections (TCP with a reset, so the fallback is instant). Anything that must keep speaking IPv6 directly goes into the ...-v6-direct address list.',
-            perfLabel: 'How powerful is your router?',
-            perfAuto: 'Detect automatically (recommended)',
-            perfStrong: 'It has 4 cores or more',
-            perfWeak: 'It has 1-2 cores',
-            perfHint: 'On a router with four cores or more and a 64-bit CPU (hAP ax2, ax3) the proxy gets two cores of its own, its threads are given the CPU first, and packet receive is spread over the other cores. That removes the last packet drops and makes the speed steady instead of jumping between runs. On a weaker router - fewer cores, or a 32-bit arm such as the hAP ac2 - these settings are skipped: there they take the CPU away from WireGuard, and the container drops them by itself even if they are set. Automatic detection asks the router itself during install, so it is the safe choice. Needs RouterOS 7.24+; on older versions the settings are accepted but do nothing.',
             btnDiag: 'Check the router',
             diagTitle: 'Router check',
             btnCopyDiag: 'Copy check',
@@ -1968,11 +1954,6 @@
             netwatchHint: '\u041f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e\u0441\u0442\u044c \u0442\u0443\u043d\u043d\u0435\u043b\u044f \u043f\u0438\u043d\u0433\u043e\u043c 8.8.8.8 \u0447\u0435\u0440\u0435\u0437 WG-\u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441 (\u0447\u0435\u0440\u0435\u0437 \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0451\u043d\u043d\u044b\u0439 probe-\u043c\u0430\u0440\u0448\u0440\u0443\u0442). \u0415\u0441\u043b\u0438 \u0442\u0443\u043d\u043d\u0435\u043b\u044c \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d \u2014 \u043e\u0442\u043a\u043b\u044e\u0447\u0430\u0435\u0442 \u0435\u0433\u043e \u043c\u0430\u0440\u0448\u0440\u0443\u0442, \u0442\u0440\u0430\u0444\u0438\u043a \u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0430\u0435\u0442\u0441\u044f \u043d\u0430 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u0442\u0443\u043d\u043d\u0435\u043b\u044c (\u043f\u043e distance) \u0438\u043b\u0438 \u0438\u0434\u0451\u0442 \u043d\u0430\u043f\u0440\u044f\u043c\u0443\u044e. \u041f\u0440\u0438 \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u0438 \u043c\u0430\u0440\u0448\u0440\u0443\u0442 \u0432\u043a\u043b\u044e\u0447\u0430\u0435\u0442\u0441\u044f \u043e\u0431\u0440\u0430\u0442\u043d\u043e.',
             v6blockLabel: '\u0424\u043e\u0440\u0441\u0438\u0440\u043e\u0432\u0430\u0442\u044c IPv4 (\u043d\u0435 \u043f\u0443\u0441\u043a\u0430\u0442\u044c IPv6 \u043c\u0438\u043c\u043e \u0442\u0443\u043d\u043d\u0435\u043b\u044f)',
             v6blockHint: '\u0412 \u0442\u0443\u043d\u043d\u0435\u043b\u044c \u0437\u0430\u0432\u043e\u0434\u0438\u0442\u0441\u044f \u0442\u043e\u043b\u044c\u043a\u043e IPv4. \u0415\u0441\u043b\u0438 \u043f\u0440\u043e\u0432\u0430\u0439\u0434\u0435\u0440 \u0432\u044b\u0434\u0430\u043b \u0440\u043e\u0443\u0442\u0435\u0440\u0443 \u043d\u0430\u0442\u0438\u0432\u043d\u044b\u0439 IPv6, \u0432\u0435\u0441\u044c IPv6-\u0442\u0440\u0430\u0444\u0438\u043a \u0443\u0445\u043e\u0434\u0438\u0442 \u043f\u0440\u044f\u043c\u043e \u0432 WAN \u0438 \u043f\u0440\u0430\u0432\u0438\u043b\u0430 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0438\u0437\u0430\u0446\u0438\u0438 \u0435\u0433\u043e \u043d\u0435 \u0432\u0438\u0434\u044f\u0442: \u0441\u0430\u0439\u0442 \u043e\u0442\u043a\u0440\u044b\u0432\u0430\u0435\u0442\u0441\u044f \u043c\u0438\u043c\u043e VPN \u0438\u043b\u0438 \u0432\u0438\u0441\u043d\u0435\u0442 \u043e\u043a\u043e\u043b\u043e 10 \u0441\u0435\u043a\u0443\u043d\u0434, \u043f\u043e\u043a\u0430 \u043a\u043b\u0438\u0435\u043d\u0442 \u043d\u0435 \u043e\u0442\u043a\u0430\u0442\u0438\u0442\u0441\u044f \u043d\u0430 IPv4. \u041f\u0440\u0430\u0432\u0438\u043b\u0430 \u043e\u0442\u0431\u0438\u0432\u0430\u044e\u0442 \u0442\u0430\u043a\u0438\u0435 \u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u0438\u044f (TCP \u2014 \u0447\u0435\u0440\u0435\u0437 reset, \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u043e\u0442\u043a\u0430\u0442 \u043c\u0433\u043d\u043e\u0432\u0435\u043d\u043d\u044b\u0439). \u0422\u043e, \u0447\u0442\u043e \u0434\u043e\u043b\u0436\u043d\u043e \u0445\u043e\u0434\u0438\u0442\u044c \u043f\u043e IPv6 \u043d\u0430\u043f\u0440\u044f\u043c\u0443\u044e, \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0439\u0442\u0435 \u0432 \u0430\u0434\u0440\u0435\u0441-\u043b\u0438\u0441\u0442 ...-v6-direct.',
-            perfLabel: '\u041d\u0430\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u043c\u043e\u0449\u043d\u044b\u0439 \u0443 \u0432\u0430\u0441 \u0440\u043e\u0443\u0442\u0435\u0440?',
-            perfAuto: '\u041e\u043f\u0440\u0435\u0434\u0435\u043b\u0438\u0442\u044c \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 (\u0440\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0443\u0435\u0442\u0441\u044f)',
-            perfStrong: '\u0423 \u043c\u0435\u043d\u044f 4 \u044f\u0434\u0440\u0430 \u0438\u043b\u0438 \u0431\u043e\u043b\u044c\u0448\u0435',
-            perfWeak: '\u0423 \u043c\u0435\u043d\u044f 1-2 \u044f\u0434\u0440\u0430',
-            perfHint: 'На роутере с четырьмя ядрами и больше и 64-битным процессором (hAP ax², ax³) прокси получает два ядра в своё распоряжение, его потоки начинают получать процессор в первую очередь, а разбор входящих пакетов раскладывается по остальным ядрам. Это убирает остатки потерь и делает скорость ровной, а не скачущей от замера к замеру. На слабом роутере — меньше ядер или 32-битный arm вроде hAP ac² — эти настройки не включаются: там они отнимают процессор у WireGuard, и контейнер сам их отбрасывает, даже если они заданы. Автоматический выбор спрашивает сам роутер во время установки, поэтому он безопаснее всего. Нужен RouterOS 7.24 или новее; на старых версиях настройки принимаются, но ничего не делают.',
             btnDiag: '\u041f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u0440\u043e\u0443\u0442\u0435\u0440',
             diagTitle: '\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0440\u043e\u0443\u0442\u0435\u0440\u0430',
             btnCopyDiag: '\u0421\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0443',
@@ -4294,6 +4275,28 @@
         ];
     }
 
+    // При скачивании половину CPU съедают ACK: Windows шлёт 80 на 100 пакетов, и каждый
+    // идёт полным путём отдачи (WireGuard, контейнер, фаервол). Из контейнера на них не
+    // ответить: он видит только шифротекст. Проредить можно до WireGuard: CAKE с
+    // ack-filter выбрасывает устаревшие ACK, но только когда они стоят в очереди, поэтому
+    // очередь с лимитом и только для чистых ACK. Пока их меньше 4 Мбит/с, она ничего не
+    // делает. Остальной трафик её не касается. На hAP ax2 в паре с ожиданием пачки в
+    // прокси это +7 % скачивания и меньше повторов. На 32-битном железе не применяется.
+    function ackThinLines(prefix) {
+        var tag = prefix + '-ack';
+        return [
+            '',
+            '# Thin out TCP ACKs going into the tunnel (64-bit routers with 4+ cores)',
+            ':if (([/system/resource/get architecture-name] = "arm64") && ([/system/resource/get cpu-count] >= 4)) do={',
+            '  :do {',
+            '    /queue/type/add name=' + tag + ' kind=cake cake-ack-filter=aggressive cake-flowmode=triple-isolate',
+            '    /ip/firewall/mangle/add chain=forward action=mark-packet new-packet-mark=' + tag + ' passthrough=yes protocol=tcp packet-size=0-80 tcp-flags=ack,!syn,!fin,!rst out-interface=wg-' + prefix + ' comment=' + tag,
+            '    /queue/tree/add name=' + tag + ' parent=wg-' + prefix + ' packet-mark=' + tag + ' queue=' + tag + ' max-limit=4M comment=' + tag,
+            '  } on-error={ :put "ACK thinning skipped" }',
+            '}',
+        ];
+    }
+
     function buildUninstallScriptSource(hasDNS, storageDisk, prefix, net, scenario) {
         var isAuto = storageDisk === '__auto';
         var src = [];
@@ -4319,6 +4322,10 @@
         if (hasDNS) {
             src.push('  /ip/route/remove [find where comment=' + prefix + '-dns]');
         }
+        // Очередь раньше типа: занятый тип RouterOS удалить не даст.
+        src.push('  :do { /queue/tree/remove [find where comment="' + prefix + '-ack"] } on-error={}');
+        src.push('  :do { /queue/type/remove [find where name="' + prefix + '-ack"] } on-error={}');
+        src.push('  :do { /ip/firewall/mangle/remove [find where comment="' + prefix + '-ack"] } on-error={}');
         src.push('  :do { /system/scheduler/remove [find where comment~"' + prefix + '"] } on-error={}');
         src.push('  :do { /system/script/remove [find where comment~"' + prefix + '" and name!="' + prefix + '-uninstall"] } on-error={}');
         if (scenario !== 'tunnel') {
@@ -4565,6 +4572,7 @@
             '/ip/address/add address=' + i.Address + ' interface=wg-' + prefix,
         ]);
         lines = lines.concat(ipv6MtuProbeLines(prefix, p.Endpoint, i));
+        lines = lines.concat(ackThinLines(prefix));
         lines = lines.concat([
             '',
             '# 4. Container environment variables',
@@ -4597,40 +4605,10 @@
         var awgDns = awgDnsValue();
         if (awgDns) lines.push('/container/envs/add list=' + prefix + '-env key=AWG_DNS value="' + awgDns + '"');
 
-        // Perf settings for a router that has cores to spare. Three of them and
-        // they only make sense together:
-        //   AWG_CPU_C2S/S2C - a core of its own for each forwarding thread. The
-        //     socket receive buffer is small, so a thread that loses its core
-        //     for a couple of milliseconds loses packets outright. Measured on a
-        //     hAP ax3: pinned 1/2 dropped 0.92% against 2.11% unpinned.
-        //   AWG_RT - real-time priority for those threads. Once the buffer is
-        //     large (privileged mode), the drops that remain arrive in one burst,
-        //     which is the signature of a thread that did not get the CPU at all
-        //     for tens of milliseconds. Measured: drops to zero, and the spread
-        //     between runs falls from 24% to 3%.
-        //   AWG_RPS - spreads packet receive over the OTHER cores. On its own it
-        //     hurts; paired with AWG_RT it helps, but only when the masks do not
-        //     overlap. Threads sit on cores 1 and 2, so receive gets 0 and 3
-        //     (mask 9). Mask e (cores 1-3) overlaps them and eats the gain.
-        // All three need privileged mode, so RouterOS 7.24+; on older versions
-        // the proxy accepts them and reports in its log that it cannot apply them.
-        var perfEnv = ' /container/envs/add list=' + prefix + '-env key=AWG_CPU_C2S value="1";' +
-                      ' /container/envs/add list=' + prefix + '-env key=AWG_CPU_S2C value="2";' +
-                      ' /container/envs/add list=' + prefix + '-env key=AWG_RT value="10";' +
-                      ' /container/envs/add list=' + prefix + '-env key=AWG_RPS value="9"';
-        var perf = perfMode();
-        if (perf === 'strong') {
-            lines.push('# Perf: you said this router has 4+ cores');
-            lines.push('{' + perfEnv + ' }');
-        } else if (perf === 'auto') {
-            // Not on 32-bit arm, four cores or not: on a hAP ac2 the pinned real-time
-            // thread starved WireGuard's crypto worker on its core, and upload fell
-            // from 100 to 34 Mbit/s (#68). The set was only ever measured on arm64.
-            lines.push('# Perf: applied only if the router really has 4+ cores and a 64-bit CPU');
-            lines.push('{ :if ([/system/resource/get cpu-count] >= 4 && [/system/resource/get architecture-name] != "arm") do={' + perfEnv + ' } }');
-        } else {
-            lines.push('# Perf: skipped, you said this router has 1-2 cores');
-        }
+        // No perf settings here on purpose. A fixed core is a coin toss: WireGuard sends
+        // each tunnel from one core of its own (peer id % cores), and a real-time thread
+        // on that core halved upload (110 against 217 Mbit/s on a hAP ax2). Since 1.4.6 the
+        // proxy finds that core itself and picks the rest, on 64-bit routers with 4+ cores.
         lines.push('# NOTE on MTU: the value above assumes this tunnel is the last hop.');
         lines.push('#   If the server forwards your traffic into another tunnel, subtract');
         lines.push('#   that tunnel\'s overhead too, or every packet leaves in two fragments.');
@@ -5097,11 +5075,6 @@
         pre.dataset.plain = text;
         sec.style.display = '';
         sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-
-    function perfMode() {
-        var el = document.querySelector('input[name="perf-mode"]:checked');
-        return el ? el.value : 'auto';
     }
 
     function isAutoUpdateEnabled() {

@@ -50,6 +50,13 @@
 | `AWG_CPU_S2C` | No | `-1` | CPU for server→client thread |
 | `AWG_RT` | No | `0` | `SCHED_RR` priority for the I/O threads (1..50, `0` = off). Needs privileges |
 | `AWG_RPS` | No | — | Core mask for RPS on the container's interface (hex, e.g. `9`). Needs privileges |
+| `AWG_AUTO_CPU` | No | `on` | Pick the cores by itself on a 64-bit router with 4+ cores and keep the threads off WireGuard's core. `off` = as in 1.4.5 |
+| `AWG_BATCH_WAIT` | No | auto | Microseconds to let a batch of 2+ packets fill up. `300` on a 64-bit router with 4+ cores, otherwise `0`. 9 % less CPU for the same traffic; a lone packet never waits |
+| `AWG_TX_C2S` | No | auto | A separate sender thread for upload: `on`, `off` or a core number. Turns itself on with the automatic core set (64-bit router, 4+ cores, privileged container) |
+| `AWG_TX_S2C` | No | `off` | The same for download. Does not help on a hAP ax² |
+| `AWG_TX_MIN` | No | `8` | A batch smaller than this goes out from the reader itself while the sender idles |
+| `AWG_TX_SLOTS` | No | `4` | How many batches may wait for the sender (2..8) |
+| `AWG_RT_C2S`, `AWG_RT_S2C`, `AWG_RT_TX` | No | — | `SCHED_RR` priority for the upload reader, the s2c thread and the senders separately (`0` = no real-time); unset, as `AWG_RT` |
 | `AWG_BUSY_POLL` | No | `0` | SO_BUSY_POLL timeout (μs). Unavailable on RouterOS — its kernel is built without `CONFIG_NET_RX_BUSY_POLL` |
 | `AWG_SPIN` | No | `0` | Userspace spin instead of busy poll: μs of non-blocking re-reads before sleeping. `auto` self-tunes |
 | `AWG_STATS` | No | `0` | Seconds between stat lines (throughput, our drops, kernel drops, per-socket drops) |
@@ -307,6 +314,28 @@ AWG_NO_DF=0   # default, DF bit as set by the system (usually DF=1)
 AWG_NO_DF=1   # clear the DF bit on the proxy's UDP packets
 ```
 
+**Since 1.4.6 there is no need to set the cores.** On a 64-bit router with four cores or more, in a privileged container, the proxy spreads its threads over the top three cores: the upload reader (no real-time, RPS on its own core), the upload sender and download (both `SCHED_RR 10`). Then it finds the core WireGuard sends this tunnel from and moves its threads off it. **Recommendation: do not set `AWG_CPU_C2S`, `AWG_CPU_S2C`, `AWG_RT` and `AWG_RPS` at all, keep only `privileged=yes`.** The old configurator values (`1`, `2`, `10`, `9`) keep working: on a collision the thread moves by itself. The log shows it:
+
+```
+INFO: perf: WireGuard sends this tunnel from cpu1, c2s moved from cpu1 to cpu3
+```
+
+Why. WireGuard encrypts on every core, but one worker sends, strictly in order, and it lives on core `peer_id % cores`. A real-time proxy thread on that core starves it: WireGuard's queue stays full, ping grows by 100 ms, the excess is thrown away, and the CPU is almost idle all the while. On a hAP ax² that is 110 Mbit/s upload with 49 % loss, against 217 Mbit/s without loss from the same thread one core over. The core cannot be chosen in advance: each tunnel has its own, and it can change after a reboot. `AWG_AUTO_CPU=off` brings back the 1.4.5 behaviour. There is no auto-tuning in server mode (`AWG_MODE=server`) and on weak hardware.
+
+**`AWG_TX_C2S`** -- a separate sender thread for upload. RouterOS forwards whatever a container hands to its veth on the core that made the send: firewall, NAT and the way out to the port all run in that core's backlog. When one thread both reads and sends, upload stops at what one core can forward -- about 20k packets a second on a hAP ax² -- and the router silently drops the rest (the `softnet:` line under `AWG_STATS` shows it). With a sender thread, reading and forwarding run on different cores; batches pass through a ring in order, and a single sender keeps the packets in order. The upload reader then needs no real-time priority, and RPS goes on its own core. Small batches (download ACKs, a quiet tunnel) go out from the reader itself while the sender is idle (`AWG_TX_MIN`, 8 by default): otherwise every few packets cost a wake-up of the second thread, and download lost 6 %.
+
+Measured on a hAP ax² (a stand next to the production tunnels: PC → the router's WireGuard → container → a server in Moscow, iperf3 with 4 streams, 2026-11-11). Three runs, the variants alternating round by round, medians, Mbit/s:
+
+| Run (WireGuard's core) | Upload TCP | Download TCP | Upload UDP, 300 offered |
+|---|---|---|---|
+| 1 (cpu3) | 197 → 213 | 281 → 299 | 198 → 235 |
+| 2 (cpu3) | 211 → 231 | 283 → 279 | 127 → 144 |
+| 3 (cpu0) | 204 → 207 | 290 → 277 | 141 → 165 |
+
+UDP upload grows steadily (+13--19 %), TCP upload by 1--9 % depending on the layout, download stays within the spread (UDP 300 of 300 either way).
+
+Tried and left out: a sender for download too (`AWG_TX_S2C=on`) -- TCP 164/225; two senders taking turns -- UDP upload up to 281 (forwarding on two cores), but batches arrive out of order and TCP drops to 200/233; a sender without real-time -- 223/261; a reader without real-time and no sender -- the loss moves into the socket buffer, 192/276; a 100 µs batch wait instead of 300 -- 205/276. It turns on by itself with the automatic core set; `AWG_TX_C2S=off` turns it off.
+
 **`AWG_RT` and `AWG_RPS`** -- two levers against loss caused by the scheduler rather than by a full buffer. Both work **only in a privileged container** (on RouterOS, `/container set ... privileged=yes`, available since 7.24): the kernel checks the capability against the init namespace, so an ordinary container gets `EPERM` from `sched_setscheduler` and cannot write to `/sys/class/net`.
 
 `AWG_RT` puts the I/O threads into the `SCHED_RR` class at the given priority (1..50). Reach for it when drops arrive in a burst inside one window instead of being spread out: that is the signature of a reader thread not getting the CPU for tens of milliseconds, and no buffer size fixes it. It is deliberately incompatible with `AWG_SPIN` -- spinning under real time would starve the softirq that does the router's WG crypto; if both are set, `AWG_RT` is ignored with a log line.
@@ -396,3 +425,11 @@ gso: c2s msgs=3104 segs=68443 run=22.0 | s2c msgs=4723 segs=95671 run=20.2
 ```
 
 `msgs` is how many `sendmsg` calls carried a coalesced run, `segs` how many packets those runs held, and `run` the average per call. `run=1.0` means there was nothing to coalesce (mixed sizes); no line at all means the offload never fired. It is a separate line rather than more fields on `stats:` because RouterOS truncates a container's log message at 179 characters including the container name, and `stats:` already sits on that edge.
+
+A third line is the router kernel's backlog per CPU core (`/proc/net/softnet_stat`), only for the cores that moved during the period:
+
+```
+softnet: cpu1 drop=125034 sq=212 cpu3 drop=0 sq=9
+```
+
+`drop` is packets the kernel threw out of that core's backlog, `sq` how many times the receive handler ran out of its budget. These are losses **after** the proxy, and neither `stats:` nor RouterOS's own counters see them. RouterOS forwards whatever a container hands to its veth on the core that made the send: firewall, NAT and the way out to the port all run in that core's backlog. A real-time thread on the same core that never sleeps keeps the backlog from being drained, and packets vanish silently. The counter is the whole router's, not just the container's, so other traffic shows up in it too.

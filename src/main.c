@@ -309,7 +309,7 @@ static void report_unemulated_env(void) {
  * перенесённая с четырёхъядерного роутера, выглядела бы применённой.
  * Возвращает, сильный ли роутер (hw_strong); не удалось узнать — считаем
  * сильным, то есть ведём себя как 1.4.0. */
-static int fit_perf_to_hardware(awg_config_t *cfg) {
+static int fit_perf_to_hardware(awg_config_t *cfg, int set_by_hand) {
     cpu_set_t cs;
     CPU_ZERO(&cs);
     if (sched_getaffinity(0, sizeof(cs), &cs) != 0) return 1;
@@ -348,7 +348,45 @@ static int fit_perf_to_hardware(awg_config_t *cfg) {
         log_info3("perf: AWG_RPS=", was_rps, " lost the cores of the pinned threads");
     if (fit & PERF_RPS_DROPPED)
         log_info3("perf: AWG_RPS=", was_rps, " skipped: it only covered the pinned threads");
+
+    /* Клиентский режим: один туннель, одно ядро WireGuard, от него и отталкиваемся.
+     * На сервере пиров много и ядра у них разные, там увозить потоки некуда. */
+    cfg->cpus_allowed = allowed;
+    if (strong && cfg->auto_cpu && cfg->mode == AWG_MODE_NORMAL) {
+        if (!set_by_hand && cfg->spin_us <= 0 && !cfg->spin_auto) {
+            if (perf_rt_possible()) {
+                perf_auto_defaults(cfg, allowed);
+                log_info("perf: AWG_CPU_*, AWG_RT and AWG_RPS not set - picking cores automatically");
+            } else {
+                log_info("perf: container is not privileged - threads stay unpinned");
+            }
+        }
+        cfg->wg_core_watch = cfg->cpu_c2s >= 0 || cfg->cpu_s2c >= 0;
+    }
     return strong;
+}
+
+/* amneziawg-go#186, kernel module#226: с хвостами сервер проверяет типы рукопожатий
+ * раньше данных, и пакет, у которого случайные байты попали в H1-H3, гибнет молча.
+ * С нашей стороны это не чинится: на отдаче там шифротекст. Широкие диапазоны тут
+ * единственная подсказка, поэтому о них и говорим. */
+static void warn_trailers_with_wide_h(const awg_config_t *cfg) {
+    int n = cfg->profile_count > 0 ? cfg->profile_count : 1;
+    for (int i = 0; i < n; i++) {
+        const awg_profile_t *pr = &cfg->profiles[i];
+        if (!pr->rt) continue;
+        /* 2^32 / 1000 = 4294967: доля пространства в промилле */
+        uint32_t pm = (pr->h1.max - pr->h1.min) / 4294967u + (pr->h2.max - pr->h2.min) / 4294967u +
+                      (pr->h3.max - pr->h3.min) / 4294967u;
+        if (pm < 10) continue;
+        char a[12], b[12];
+        const char *parts[] = {
+            "AWG_RANDOM_TRAILERS with wide H1-H3: up to ", u32_to_str(a, pm / 10), ".", u32_to_str(b, pm % 10),
+            "% of uploaded packets can die on the server (amneziawg-go#186). Upload nearly "
+            "stops while download is fine: turn trailers off or narrow H1-H3" };
+        log_msgn("WARN: ", parts, 5);
+        return;
+    }
 }
 
 int main(void) {
@@ -588,13 +626,52 @@ int main(void) {
             src_port = parse_int_str(v);
     }
 
-    /* CPU affinity */
+    /* CPU affinity. Что-то из набора задано руками: это выбор пользователя, свой набор
+     * не подставляем, но с ядра WireGuard поток всё равно увозим (AWG_AUTO_CPU=off, чтобы нет). */
+    int perf_by_hand = 0;
     cfg->cpu_c2s = -1;
     cfg->cpu_s2c = -1;
-    if ((v = getenv("AWG_CPU_C2S")) && v[0])
+    if ((v = getenv("AWG_CPU_C2S")) && v[0]) {
         cfg->cpu_c2s = parse_int_str(v);
-    if ((v = getenv("AWG_CPU_S2C")) && v[0])
+        perf_by_hand = 1;
+    }
+    if ((v = getenv("AWG_CPU_S2C")) && v[0]) {
         cfg->cpu_s2c = parse_int_str(v);
+        perf_by_hand = 1;
+    }
+    cfg->auto_cpu = 1;
+    if ((v = getenv("AWG_AUTO_CPU")) && v[0])
+        cfg->auto_cpu = !(v[0] == '0' || strcmp(v, "off") == 0 || strcmp(v, "no") == 0);
+
+    /* Поток отправки на направление: off, on (ядро выберется само) или номер ядра. */
+    static const char *const tx_env[2] = { "AWG_TX_C2S", "AWG_TX_S2C" };
+    for (int d = 0; d < 2; d++) {
+        cfg->tx_on[d] = -1;
+        cfg->cpu_tx[d] = -1;
+        if (!(v = getenv(tx_env[d])) || !v[0]) continue;
+        if (v[0] >= '0' && v[0] <= '9') {
+            cfg->tx_on[d] = 1;
+            cfg->cpu_tx[d] = parse_int_str(v);
+            perf_by_hand = 1;
+        } else {
+            cfg->tx_on[d] = strcmp(v, "off") != 0 && strcmp(v, "no") != 0;
+        }
+    }
+    cfg->tx_slots = 4;
+    if ((v = getenv("AWG_TX_SLOTS")) && v[0])
+        cfg->tx_slots = parse_int_str(v);
+    cfg->tx_min = TX_MIN_AUTO;
+    if ((v = getenv("AWG_TX_MIN")) && v[0])
+        cfg->tx_min = parse_int_str(v);
+    /* Real-time по потокам поверх AWG_RT; хранится +1, 0 значит «как AWG_RT». */
+    static const char *const rt_env[3] = { "AWG_RT_C2S", "AWG_RT_S2C", "AWG_RT_TX" };
+    for (int t = 0; t < 3; t++) {
+        cfg->rt_thr[t] = 0;
+        if ((v = getenv(rt_env[t])) && v[0]) {
+            int r = parse_int_str(v);
+            cfg->rt_thr[t] = (r < 0 ? 0 : r > 50 ? 50 : r) + 1;
+        }
+    }
 
     /* Busy poll */
     cfg->busy_poll = 0;
@@ -614,6 +691,14 @@ int main(void) {
         } else {
             cfg->spin_us = parse_int_str(v);
         }
+    }
+
+    /* Сколько ждать, пока пачка из 2+ пакетов наберётся. Не задано: решает железо. */
+    cfg->batch_wait_us = -1;
+    if ((v = getenv("AWG_BATCH_WAIT")) && v[0]) {
+        cfg->batch_wait_us = parse_int_str(v);
+        if (cfg->batch_wait_us < 0) cfg->batch_wait_us = 0;
+        if (cfg->batch_wait_us > 2000) cfg->batch_wait_us = 2000;
     }
 
     /* No GRO */
@@ -636,9 +721,11 @@ int main(void) {
         cfg->rt_prio = parse_int_str(v);
         if (cfg->rt_prio > 50) cfg->rt_prio = 50;
         if (cfg->rt_prio < 0) cfg->rt_prio = 0;
+        perf_by_hand = 1;
     }
     cfg->rps_mask[0] = 0;
     if ((v = getenv("AWG_RPS")) && v[0]) {
+        perf_by_hand = 1;
         size_t n = strlen(v);
         if (n >= sizeof(cfg->rps_mask)) n = sizeof(cfg->rps_mask) - 1;
         memcpy(cfg->rps_mask, v, n);
@@ -770,12 +857,20 @@ int main(void) {
          * хуже, поэтому сочетание запрещено, а не просто не рекомендовано. */
         log_info("config: AWG_RT ignored — it must not be combined with AWG_SPIN");
         cfg->rt_prio = 0;
+        memset(cfg->rt_thr, 0, sizeof(cfg->rt_thr));
     }
     if (cfg->no_df)
         log_info("config: DF bit cleared on UDP sockets (AWG_NO_DF=1)");
     /* A strong router keeps the fixed 32 MB of 1.4.0: there the buffer only
      * absorbs bursts, and the traffic-sized one cost it drops and speed. */
-    int strong = fit_perf_to_hardware(cfg);
+    warn_trailers_with_wide_h(cfg);
+    int strong = fit_perf_to_hardware(cfg, perf_by_hand);
+    for (int d = 0; d < 2; d++)
+        if (cfg->tx_on[d] < 0) cfg->tx_on[d] = 0;   /* not in the auto set: no sender */
+    /* На слабом железе не мерили, а замер обязателен: см. hAP ac² в #68. */
+    if (cfg->batch_wait_us < 0)
+        cfg->batch_wait_us = (strong && cfg->auto_cpu && cfg->mode == AWG_MODE_NORMAL &&
+                              cfg->spin_us <= 0 && !cfg->spin_auto) ? BATCH_WAIT_AUTO_US : 0;
     if (strong && cfg->socket_buf_auto)
         cfg->socket_buf_auto = 0;
     if (cfg->rot_soft < 0)

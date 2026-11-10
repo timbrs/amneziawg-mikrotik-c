@@ -1984,6 +1984,145 @@ static void test_rt_window_grows_with_traffic(void) {
     ASSERT(longest > AWG_DEFAULT_UDP_WINDOW);
 }
 
+/* ---- AWG 3.1: a handshake with a tail is told apart by MAC1 (#85) ---- */
+
+/* Every range covers everything, so every offset looks like every type: the worst
+ * case of what wide H do by chance, here on every packet. */
+static void rt_wide_config(awg_config_t *cfg, int hp, int with_key) {
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->s1 = 20;
+    cfg->s2 = 24;
+    cfg->s3 = 18;
+    cfg->s4 = 14;
+    cfg->h1 = cfg->h2 = cfg->h3 = cfg->h4 = (hrange_t){0, 0xFFFFFFFFu};
+    if (hp) {
+        for (int i = 0; i < 32; i++) cfg->hp_key[i] = (uint8_t)(i * 7 + 1);
+        cfg->hp_on = 1;
+    }
+    if (with_key)
+        for (int i = 0; i < 32; i++) cfg->client_pub[i] = (uint8_t)(i * 3 + 5);
+    cfg->rt = 1;
+    config_compute(cfg);
+}
+
+/* What a server puts on the wire: padding, message with its H type and a good MAC1,
+ * header protection over the message, then a tail left in the clear. */
+static int rt_wire(const awg_config_t *cfg, uint8_t *pkt, int s, int size, int mac_off, int total) {
+    for (int i = 0; i < s; i++) pkt[i] = (uint8_t)(0xA5 ^ (i * 11));
+    uint8_t *msg = pkt + s;
+    write32_le(msg, 0x7A6B5C4Du);
+    for (int i = 4; i < mac_off; i++) msg[i] = (uint8_t)(i * 13 + 7);
+    blake2s_128mac(cfg->mac1key_in, msg, (size_t)mac_off, msg + mac_off);
+    for (int i = mac_off + 16; i < size; i++) msg[i] = 0;
+    if (cfg->hp_on) chacha20_xor(cfg->hp_key, pkt, msg, size);
+    for (int i = s + size; i < total; i++) pkt[i] = (uint8_t)(i * 29 + 3);
+    return total;
+}
+
+static uint32_t rt_mask(const awg_config_t *cfg, const uint8_t *pkt) {
+    if (!cfg->hp_on) return 0;
+    awg_hp_ks_t ks = { .valid = 0 };
+    return read32_le(hp_recv_ks(cfg, pkt, &ks));
+}
+
+/* The bug: a response longer than an init was taken for an init, or for transport. */
+static void test_rt_wide_h_response_stays_response(void) {
+    for (int hp = 0; hp < 2; hp++) {
+        static awg_config_t cfg;
+        rt_wide_config(&cfg, hp, 1);
+        uint8_t pkt[AWG_PACKET_BUF_SIZE];
+        int n = rt_wire(&cfg, pkt, cfg.s2, WG_RESP_SIZE, 60, 500);
+        ASSERT(awg_rt_proved_handshake(&cfg, config_active_profile(&cfg), pkt, n, rt_mask(&cfg, pkt)));
+        int out_len;
+        uint8_t *res = transform_inbound(pkt, n, &cfg, &out_len);
+        ASSERT(res != NULL);
+        ASSERT_EQ(out_len, WG_RESP_SIZE);
+        ASSERT_EQ(read32_le(res), WG_HANDSHAKE_RESPONSE);
+    }
+}
+
+static void test_rt_wide_h_init_stays_init(void) {
+    for (int hp = 0; hp < 2; hp++) {
+        static awg_config_t cfg;
+        rt_wide_config(&cfg, hp, 1);
+        uint8_t pkt[AWG_PACKET_BUF_SIZE];
+        int n = rt_wire(&cfg, pkt, cfg.s1, WG_INIT_SIZE, 116, 500);
+        ASSERT(awg_rt_proved_handshake(&cfg, config_active_profile(&cfg), pkt, n, rt_mask(&cfg, pkt)));
+        int out_len;
+        uint8_t *res = transform_inbound(pkt, n, &cfg, &out_len);
+        ASSERT(res != NULL);
+        ASSERT_EQ(out_len, WG_INIT_SIZE);
+        ASSERT_EQ(read32_le(res), WG_HANDSHAKE_INIT);
+    }
+}
+
+/* Data must never be taken for a handshake, however its bytes fall. */
+static void test_rt_wide_h_transport_is_not_a_handshake(void) {
+    for (int hp = 0; hp < 2; hp++) {
+        static awg_config_t cfg;
+        rt_wide_config(&cfg, hp, 1);
+        uint8_t pkt[AWG_PACKET_BUF_SIZE];
+        for (int i = 0; i < 1200; i++) pkt[i] = (uint8_t)(i * 31 + 17);
+        ASSERT(!awg_rt_proved_handshake(&cfg, config_active_profile(&cfg), pkt, 1200, rt_mask(&cfg, pkt)));
+        /* the slow path agrees once H3, the one type with no MAC1, is out of the way */
+        cfg.h3 = (hrange_t){0, 0};
+        config_compute(&cfg);
+        int out_len;
+        uint32_t mask = rt_mask(&cfg, pkt);
+        write32_le(pkt + cfg.s3, 0x55555555u ^ mask);
+        uint8_t *res = transform_inbound(pkt, 1200, &cfg, &out_len);
+        ASSERT(res != NULL);
+        ASSERT_EQ(out_len, 1200 - cfg.s4);
+        ASSERT_EQ(read32_le(res), WG_TRANSPORT_DATA);
+    }
+}
+
+/* MAC1 we cannot confirm costs nothing: nothing else claimed the packet, so it goes
+ * on as a handshake, as it always did. */
+static void test_rt_unproved_is_the_last_resort(void) {
+    static awg_config_t cfg;
+    rt_wide_config(&cfg, 0, 1);
+    cfg.h3 = (hrange_t){0, 0};
+    cfg.h4 = (hrange_t){0, 0};
+    config_compute(&cfg);
+    uint8_t pkt[AWG_PACKET_BUF_SIZE];
+    for (int i = 0; i < 500; i++) pkt[i] = (uint8_t)(i * 31 + 17);
+    int out_len;
+    uint8_t *res = transform_inbound(pkt, 500, &cfg, &out_len);
+    ASSERT(res != NULL);
+    ASSERT_EQ(out_len, WG_RESP_SIZE);
+    ASSERT_EQ(read32_le(res), WG_HANDSHAKE_RESPONSE);
+}
+
+/* No client key, nothing to check MAC1 with: the old order, not a dropped handshake. */
+static void test_rt_without_key_keeps_old_order(void) {
+    static awg_config_t cfg;
+    rt_wide_config(&cfg, 0, 0);
+    ASSERT(cfg.mac1key_in == NULL);
+    uint8_t pkt[AWG_PACKET_BUF_SIZE];
+    for (int i = 0; i < 500; i++) pkt[i] = (uint8_t)(i * 31 + 17);
+    ASSERT(!awg_rt_proved_handshake(&cfg, config_active_profile(&cfg), pkt, 500, 0));
+    int out_len;
+    uint8_t *res = transform_inbound(pkt, 500, &cfg, &out_len);
+    ASSERT(res != NULL);
+    ASSERT_EQ(out_len, WG_INIT_SIZE);
+}
+
+/* Trailers off: exact sizes decide and MAC1 is not looked at, the packet below has none. */
+static void test_rt_off_needs_no_mac1(void) {
+    static awg_config_t cfg;
+    rt_wide_config(&cfg, 0, 1);
+    cfg.rt = 0;
+    config_compute(&cfg);
+    uint8_t pkt[AWG_PACKET_BUF_SIZE];
+    for (int i = 0; i < cfg.init_total; i++) pkt[i] = (uint8_t)(i * 31 + 17);
+    int out_len;
+    uint8_t *res = transform_inbound(pkt, cfg.init_total, &cfg, &out_len);
+    ASSERT(res != NULL);
+    ASSERT_EQ(out_len, WG_INIT_SIZE);
+    ASSERT_EQ(read32_le(res), WG_HANDSHAKE_INIT);
+}
+
 /* Even at the largest padding the config allows, padding + message + trailer
  * stays inside the packet buffer. */
 static void test_rt_trailer_never_overflows_buffer(void) {
@@ -2162,5 +2301,11 @@ int main(void) {
     RUN_TEST(disable_cookies_drops_cookie_only);
     RUN_TEST(cookies_pass_when_enabled);
     RUN_TEST(rt_is_per_profile);
+    RUN_TEST(rt_wide_h_response_stays_response);
+    RUN_TEST(rt_wide_h_init_stays_init);
+    RUN_TEST(rt_wide_h_transport_is_not_a_handshake);
+    RUN_TEST(rt_unproved_is_the_last_resort);
+    RUN_TEST(rt_without_key_keeps_old_order);
+    RUN_TEST(rt_off_needs_no_mac1);
     TEST_MAIN_END();
 }
